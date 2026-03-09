@@ -1,0 +1,20 @@
+{
+  "name": "Ransomware Intrusion Chain",
+  "description": "Full ransomware attack chain from initial access through deployment and extortion",
+  "context_preset": "enterprise",
+  "root_objective": "Deploy ransomware across the enterprise and extort the organisation",
+  "nodes": [
+    {"id": "root", "parent_id": null, "node_type": "goal", "title": "Deploy Ransomware and Extort Organisation", "description": "Encrypt critical systems and exfiltrate data for double extortion", "logic_type": "AND", "position_x": 500, "position_y": 0, "impact": 10, "status": "draft"},
+    {"id": "n1", "parent_id": "root", "node_type": "sub_goal", "title": "Gain Initial Foothold", "description": "Establish initial access to the target network", "logic_type": "OR", "position_x": 150, "position_y": 150, "likelihood": 7, "impact": 5, "status": "draft"},
+    {"id": "n1a", "parent_id": "n1", "node_type": "attack_step", "title": "Phishing with Loader Malware", "description": "Deliver initial loader via phishing email that downloads second-stage payload", "logic_type": "OR", "position_x": 50, "position_y": 300, "likelihood": 7, "effort": 3, "status": "draft"},
+    {"id": "n1b", "parent_id": "n1", "node_type": "attack_step", "title": "Exploit Internet-Facing Service", "description": "Exploit vulnerability in VPN, RDP, or web application for initial access", "logic_type": "OR", "position_x": 250, "position_y": 300, "likelihood": 5, "effort": 5, "status": "draft"},
+    {"id": "n2", "parent_id": "root", "node_type": "sub_goal", "title": "Establish Persistence and Escalate", "description": "Maintain access and obtain elevated privileges for lateral movement", "logic_type": "AND", "position_x": 400, "position_y": 150, "likelihood": 6, "impact": 7, "status": "draft"},
+    {"id": "n2a", "parent_id": "n2", "node_type": "attack_step", "title": "Deploy Persistent Backdoor", "description": "Install persistent access mechanism (scheduled task, service, or registry modification)", "logic_type": "OR", "position_x": 400, "position_y": 300, "likelihood": 7, "effort": 3, "status": "draft"},
+    {"id": "n3", "parent_id": "root", "node_type": "sub_goal", "title": "Exfiltrate Data for Double Extortion", "description": "Stage and exfiltrate sensitive data before encryption for leverage in extortion", "logic_type": "AND", "position_x": 650, "position_y": 150, "likelihood": 6, "impact": 9, "status": "draft"},
+    {"id": "n3a", "parent_id": "n3", "node_type": "attack_step", "title": "Identify and Stage Sensitive Data", "description": "Locate and collect financial records, PII, IP, and other high-value data", "logic_type": "OR", "position_x": 550, "position_y": 300, "likelihood": 7, "effort": 4, "status": "draft"},
+    {"id": "n3b", "parent_id": "n3", "node_type": "attack_step", "title": "Exfiltrate via Cloud Storage", "description": "Upload staged data to attacker-controlled cloud storage service", "logic_type": "OR", "position_x": 750, "position_y": 300, "likelihood": 6, "effort": 3, "detectability": 5, "status": "draft"},
+    {"id": "n4", "parent_id": "root", "node_type": "sub_goal", "title": "Deploy Ransomware and Destroy Backups", "description": "Simultaneously encrypt systems and neutralize recovery options", "logic_type": "AND", "position_x": 900, "position_y": 150, "likelihood": 5, "impact": 10, "status": "draft"},
+    {"id": "n4a", "parent_id": "n4", "node_type": "attack_step", "title": "Delete/Encrypt Backup Systems", "description": "Destroy or encrypt backup infrastructure to prevent recovery without paying ransom", "logic_type": "OR", "position_x": 850, "position_y": 300, "likelihood": 5, "impact": 10, "effort": 5, "status": "draft"},
+    {"id": "n4b", "parent_id": "n4", "node_type": "attack_step", "title": "Mass Deploy Encryptor via GPO/PsExec", "description": "Use Group Policy, PsExec, or WMI to deploy ransomware encryptor to all reachable systems", "logic_type": "OR", "position_x": 1050, "position_y": 300, "likelihood": 5, "impact": 10, "effort": 4, "status": "draft"}
+  ]
+}

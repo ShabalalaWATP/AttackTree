@@ -1,0 +1,19 @@
+{
+  "name": "Thick Client Tampering and Backend Abuse",
+  "description": "Attack tree modelling compromise of a desktop thick client application and abuse of its backend services",
+  "context_preset": "thick_client",
+  "root_objective": "Tamper with thick client application to abuse backend services and access unauthorized data",
+  "nodes": [
+    {"id": "root", "parent_id": null, "node_type": "goal", "title": "Abuse Backend via Thick Client Tampering", "description": "Compromise thick client application to bypass client-side controls and abuse backend services", "logic_type": "OR", "position_x": 500, "position_y": 0, "impact": 8, "status": "draft"},
+    {"id": "n1", "parent_id": "root", "node_type": "sub_goal", "title": "Reverse Engineer Client Application", "description": "Analyze the thick client binary to understand its logic, API calls, and security mechanisms", "logic_type": "AND", "position_x": 200, "position_y": 150, "likelihood": 8, "impact": 5, "status": "draft"},
+    {"id": "n1a", "parent_id": "n1", "node_type": "attack_step", "title": "Decompile/Disassemble Binary", "description": "Use IDA Pro, Ghidra, or dnSpy to decompile and analyze the client application binary", "logic_type": "OR", "position_x": 100, "position_y": 300, "likelihood": 9, "effort": 4, "status": "draft"},
+    {"id": "n1b", "parent_id": "n1", "node_type": "attack_step", "title": "Extract Embedded Credentials", "description": "Find hardcoded API keys, database connection strings, or service account credentials in the binary", "logic_type": "OR", "position_x": 300, "position_y": 300, "likelihood": 6, "impact": 8, "effort": 3, "status": "draft"},
+    {"id": "n2", "parent_id": "root", "node_type": "sub_goal", "title": "Intercept and Modify Communications", "description": "Proxy client-server traffic to modify requests and bypass client-side validation", "logic_type": "OR", "position_x": 500, "position_y": 150, "likelihood": 8, "impact": 7, "status": "draft"},
+    {"id": "n2a", "parent_id": "n2", "node_type": "attack_step", "title": "Proxy Traffic via Burp/Fiddler", "description": "Configure a local proxy to intercept and modify all client-server API communications", "logic_type": "OR", "position_x": 450, "position_y": 300, "likelihood": 9, "effort": 2, "status": "draft"},
+    {"id": "n2b", "parent_id": "n2", "node_type": "attack_step", "title": "Bypass Client-Side Business Logic", "description": "Modify request parameters to bypass validation rules enforced only in the client", "logic_type": "OR", "position_x": 650, "position_y": 300, "likelihood": 7, "impact": 8, "effort": 3, "status": "draft"},
+    {"id": "n3", "parent_id": "root", "node_type": "sub_goal", "title": "Exploit Insecure Update Mechanism", "description": "Abuse the software update mechanism to deliver malicious payloads", "logic_type": "OR", "position_x": 800, "position_y": 150, "likelihood": 4, "impact": 9, "status": "draft"},
+    {"id": "n3a", "parent_id": "n3", "node_type": "attack_step", "title": "MITM Software Update Channel", "description": "Intercept unencrypted or improperly validated update checks to serve malicious updates", "logic_type": "OR", "position_x": 800, "position_y": 300, "likelihood": 4, "impact": 9, "effort": 6, "status": "draft"},
+    {"id": "n4", "parent_id": "root", "node_type": "sub_goal", "title": "Access Local Data Stores", "description": "Read sensitive data stored locally by the application", "logic_type": "OR", "position_x": 400, "position_y": 450, "likelihood": 7, "impact": 6, "status": "draft"},
+    {"id": "n4a", "parent_id": "n4", "node_type": "attack_step", "title": "Read Local SQLite/Config Files", "description": "Access unencrypted local databases, configuration files, and cached credentials", "logic_type": "OR", "position_x": 400, "position_y": 600, "likelihood": 7, "impact": 7, "effort": 2, "status": "draft"}
+  ]
+}

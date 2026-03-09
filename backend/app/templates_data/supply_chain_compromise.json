@@ -1,0 +1,17 @@
+{
+  "name": "Supply Chain Compromise",
+  "description": "Attack tree modelling compromise through third-party suppliers, software dependencies, and integration paths",
+  "context_preset": "supply_chain",
+  "root_objective": "Compromise target organisation through its supply chain and third-party integrations",
+  "nodes": [
+    {"id": "root", "parent_id": null, "node_type": "goal", "title": "Compromise via Supply Chain", "description": "Gain access to the target organisation by compromising a trusted third-party supplier, software dependency, or integration path", "logic_type": "OR", "position_x": 500, "position_y": 0, "impact": 9, "status": "draft"},
+    {"id": "n1", "parent_id": "root", "node_type": "sub_goal", "title": "Compromise Software Dependency", "description": "Insert malicious code through an upstream software package or library", "logic_type": "OR", "position_x": 200, "position_y": 150, "likelihood": 4, "impact": 9, "status": "draft"},
+    {"id": "n1a", "parent_id": "n1", "node_type": "attack_step", "title": "Typosquatting Package Attack", "description": "Publish malicious package with name similar to popular legitimate package on public registry", "logic_type": "OR", "position_x": 100, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 3, "status": "draft"},
+    {"id": "n1b", "parent_id": "n1", "node_type": "attack_step", "title": "Compromise Maintainer Account", "description": "Take over a legitimate package maintainer's account to push malicious update", "logic_type": "OR", "position_x": 300, "position_y": 300, "likelihood": 3, "impact": 9, "effort": 6, "status": "draft"},
+    {"id": "n2", "parent_id": "root", "node_type": "sub_goal", "title": "Compromise Managed Service Provider", "description": "Attack a managed service provider to gain access to multiple downstream customers", "logic_type": "OR", "position_x": 500, "position_y": 150, "likelihood": 4, "impact": 10, "status": "draft"},
+    {"id": "n2a", "parent_id": "n2", "node_type": "attack_step", "title": "Abuse MSP Remote Management Tools", "description": "Exploit MSP's remote monitoring and management (RMM) tools to deploy payloads to customer environments", "logic_type": "OR", "position_x": 500, "position_y": 300, "likelihood": 4, "impact": 10, "effort": 7, "status": "draft"},
+    {"id": "n3", "parent_id": "root", "node_type": "sub_goal", "title": "Exploit Third-Party Integration", "description": "Abuse API connections, SSO federation, or data sharing agreements with trusted third parties", "logic_type": "OR", "position_x": 800, "position_y": 150, "likelihood": 5, "impact": 8, "status": "draft"},
+    {"id": "n3a", "parent_id": "n3", "node_type": "attack_step", "title": "Abuse OAuth Integration", "description": "Compromise a third-party app with OAuth access to target's email, files, or APIs", "logic_type": "OR", "position_x": 700, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 5, "status": "draft"},
+    {"id": "n3b", "parent_id": "n3", "node_type": "attack_step", "title": "Pivot via Federated SSO Trust", "description": "Compromise a federated identity provider to gain access tokens for the target organisation", "logic_type": "OR", "position_x": 900, "position_y": 300, "likelihood": 3, "impact": 9, "effort": 7, "status": "draft"}
+  ]
+}

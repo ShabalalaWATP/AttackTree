@@ -1,0 +1,19 @@
+{
+  "name": "Cloud IAM Abuse",
+  "description": "Attack tree modelling abuse of cloud IAM misconfigurations and privilege escalation in AWS/Azure/GCP",
+  "context_preset": "cloud_iam",
+  "root_objective": "Achieve cloud admin access through IAM misconfiguration exploitation",
+  "nodes": [
+    {"id": "root", "parent_id": null, "node_type": "goal", "title": "Achieve Cloud Admin Access", "description": "Escalate to cloud administrator or equivalent highly privileged role through IAM abuse", "logic_type": "OR", "position_x": 500, "position_y": 0, "impact": 10, "status": "draft"},
+    {"id": "n1", "parent_id": "root", "node_type": "sub_goal", "title": "Obtain Initial Cloud Credentials", "description": "Acquire valid cloud credentials through various attack vectors", "logic_type": "OR", "position_x": 200, "position_y": 150, "likelihood": 7, "impact": 6, "status": "draft"},
+    {"id": "n1a", "parent_id": "n1", "node_type": "attack_step", "title": "Steal Credentials from CI/CD Pipeline", "description": "Extract cloud credentials stored in CI/CD environment variables, secrets managers, or build logs", "logic_type": "OR", "position_x": 50, "position_y": 300, "likelihood": 6, "impact": 7, "effort": 4, "status": "draft"},
+    {"id": "n1b", "parent_id": "n1", "node_type": "attack_step", "title": "Exploit Instance Metadata (SSRF)", "description": "Use SSRF to query cloud instance metadata service and obtain IAM role temporary credentials", "logic_type": "OR", "position_x": 250, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 4, "status": "draft"},
+    {"id": "n1c", "parent_id": "n1", "node_type": "attack_step", "title": "Leaked Credentials in Code Repository", "description": "Find cloud access keys committed to version control systems or public repositories", "logic_type": "OR", "position_x": 400, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 2, "status": "draft"},
+    {"id": "n2", "parent_id": "root", "node_type": "sub_goal", "title": "Escalate IAM Privileges", "description": "Abuse IAM policies and role trust relationships to escalate to higher privileges", "logic_type": "OR", "position_x": 700, "position_y": 150, "likelihood": 6, "impact": 9, "status": "draft"},
+    {"id": "n2a", "parent_id": "n2", "node_type": "attack_step", "title": "Exploit Overly Permissive IAM Policy", "description": "Abuse iam:PassRole, sts:AssumeRole, or equivalent to escalate privileges", "logic_type": "OR", "position_x": 600, "position_y": 300, "likelihood": 6, "impact": 9, "effort": 4, "status": "draft"},
+    {"id": "n2b", "parent_id": "n2", "node_type": "attack_step", "title": "Cross-Account Role Assumption", "description": "Abuse misconfigured cross-account trust policies to assume roles in other AWS accounts", "logic_type": "OR", "position_x": 800, "position_y": 300, "likelihood": 4, "impact": 9, "effort": 5, "status": "draft"},
+    {"id": "n3", "parent_id": "root", "node_type": "sub_goal", "title": "Abuse Cloud Service Misconfigurations", "description": "Exploit misconfigured cloud services that grant unintended access", "logic_type": "OR", "position_x": 500, "position_y": 450, "likelihood": 6, "impact": 8, "status": "draft"},
+    {"id": "n3a", "parent_id": "n3", "node_type": "attack_step", "title": "Access Open S3/Blob Storage", "description": "Discover and access publicly exposed or misconfigured cloud storage buckets", "logic_type": "OR", "position_x": 400, "position_y": 600, "likelihood": 5, "impact": 8, "effort": 2, "status": "draft"},
+    {"id": "n3b", "parent_id": "n3", "node_type": "attack_step", "title": "Exploit Lambda/Function Permissions", "description": "Abuse serverless function execution roles that have excessive permissions", "logic_type": "OR", "position_x": 650, "position_y": 600, "likelihood": 5, "impact": 8, "effort": 5, "status": "draft"}
+  ]
+}

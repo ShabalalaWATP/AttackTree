@@ -1,0 +1,22 @@
+[
+  {"id": "CAPEC-66", "name": "SQL Injection", "description": "Attacker exploits improperly sanitized input to inject SQL commands into backend database queries", "severity": "High"},
+  {"id": "CAPEC-86", "name": "XSS via HTTP Headers", "description": "Attacker injects malicious content via HTTP response headers that is rendered by the client browser", "severity": "Medium"},
+  {"id": "CAPEC-63", "name": "Cross-Site Scripting (XSS)", "description": "Attacker injects malicious scripts into web pages viewed by other users", "severity": "High"},
+  {"id": "CAPEC-98", "name": "Phishing", "description": "Attacker creates fake communications that appear to come from a trusted source to trick victims", "severity": "High"},
+  {"id": "CAPEC-112", "name": "Brute Force", "description": "Attacker attempts to gain access by trying many passwords or passphrases systematically", "severity": "Medium"},
+  {"id": "CAPEC-122", "name": "Privilege Abuse", "description": "Attacker exploits features of the target that they are already authorized to use to perform unintended actions", "severity": "High"},
+  {"id": "CAPEC-126", "name": "Path Traversal", "description": "Attacker manipulates file path references to access files outside the intended directory", "severity": "High"},
+  {"id": "CAPEC-153", "name": "Input Data Manipulation", "description": "Attacker modifies data sent to the application to achieve unauthorized actions", "severity": "Medium"},
+  {"id": "CAPEC-196", "name": "Session Credential Falsification through Forging", "description": "Attacker creates fraudulent session credentials to impersonate a legitimate user", "severity": "High"},
+  {"id": "CAPEC-233", "name": "Privilege Escalation", "description": "Attacker exploits a weakness to gain elevated access to resources normally protected", "severity": "High"},
+  {"id": "CAPEC-242", "name": "Code Injection", "description": "Attacker introduces code into a program to alter its execution", "severity": "High"},
+  {"id": "CAPEC-272", "name": "HTTP Response Smuggling", "description": "Attacker manipulates HTTP responses to inject malicious content or cause cache poisoning", "severity": "Medium"},
+  {"id": "CAPEC-309", "name": "Network Topology Mapping", "description": "Attacker maps the target network to identify hosts, services, and potential entry points", "severity": "Low"},
+  {"id": "CAPEC-459", "name": "Creating a Rogue Certification Authority Certificate", "description": "Attacker installs a rogue CA certificate to perform man-in-the-middle attacks", "severity": "High"},
+  {"id": "CAPEC-560", "name": "Use of Known Domain Credentials", "description": "Attacker uses previously obtained valid credentials to authenticate to a domain", "severity": "High"},
+  {"id": "CAPEC-600", "name": "Credential Stuffing", "description": "Attacker systematically tries stolen username/password pairs against target authentication systems", "severity": "High"},
+  {"id": "CAPEC-664", "name": "Server Side Request Forgery (SSRF)", "description": "Attacker abuses server functionality to make requests to internal resources", "severity": "High"},
+  {"id": "CAPEC-676", "name": "NoSQL Injection", "description": "Attacker injects malicious queries into NoSQL database operations", "severity": "High"},
+  {"id": "CAPEC-180", "name": "Exploiting Incorrectly Configured Access Control Security Levels", "description": "Attacker exploits access control misconfigurations to gain unauthorized access", "severity": "High"},
+  {"id": "CAPEC-116", "name": "Excavation", "description": "Attacker probes the target system to gather as much information as possible about its configuration", "severity": "Low"}
+]

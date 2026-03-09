@@ -1,0 +1,313 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 98%;
+    --foreground: 224 71% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 71% 4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71% 4%;
+    --primary: 220 90% 56%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 220 9% 46%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 93%;
+    --accent-foreground: 220 9% 30%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 220 90% 56%;
+    --radius: 0.5rem;
+
+    /* Semantic: risk levels */
+    --risk-critical-bg: 0 100% 95%;
+    --risk-critical-text: 0 72% 51%;
+    --risk-high-bg: 25 100% 95%;
+    --risk-high-text: 25 95% 53%;
+    --risk-medium-bg: 45 100% 94%;
+    --risk-medium-text: 45 92% 40%;
+    --risk-low-bg: 142 76% 94%;
+    --risk-low-text: 142 71% 35%;
+    --risk-none-bg: 220 14% 96%;
+    --risk-none-text: 220 9% 46%;
+
+    /* Semantic: status badges */
+    --status-validated-bg: 217 91% 95%;
+    --status-validated-text: 217 91% 50%;
+    --status-mitigated-bg: 142 76% 94%;
+    --status-mitigated-text: 142 71% 35%;
+    --status-accepted-bg: 270 70% 95%;
+    --status-accepted-text: 270 70% 50%;
+    --status-draft-bg: 220 14% 96%;
+    --status-draft-text: 220 9% 46%;
+
+    /* Semantic: warnings & info */
+    --warning-bg: 45 100% 94%;
+    --warning-border: 45 93% 60%;
+    --warning-text: 32 95% 30%;
+    --success-bg: 142 76% 94%;
+    --success-text: 142 71% 35%;
+    --info-bg: 217 91% 95%;
+    --info-text: 217 91% 50%;
+
+    /* Logic type badges */
+    --logic-and-bg: 217 91% 95%;
+    --logic-and-text: 217 91% 50%;
+    --logic-seq-bg: 270 70% 95%;
+    --logic-seq-text: 270 70% 50%;
+    --logic-or-bg: 220 14% 96%;
+    --logic-or-text: 220 9% 40%;
+  }
+
+  .dark {
+    --background: 224 71% 4%;
+    --foreground: 213 31% 91%;
+    --card: 224 50% 8%;
+    --card-foreground: 213 31% 91%;
+    --popover: 224 50% 8%;
+    --popover-foreground: 213 31% 91%;
+    --primary: 217 92% 60%;
+    --primary-foreground: 222 47% 8%;
+    --secondary: 222 47% 14%;
+    --secondary-foreground: 213 31% 80%;
+    --muted: 222 47% 14%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 222 47% 18%;
+    --accent-foreground: 213 31% 91%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 222 35% 16%;
+    --input: 222 35% 16%;
+    --ring: 224 76% 48%;
+    --radius: 0.5rem;
+
+    /* Semantic: risk levels (dark) */
+    --risk-critical-bg: 0 63% 15%;
+    --risk-critical-text: 0 72% 65%;
+    --risk-high-bg: 25 80% 13%;
+    --risk-high-text: 25 95% 63%;
+    --risk-medium-bg: 45 80% 12%;
+    --risk-medium-text: 45 92% 60%;
+    --risk-low-bg: 142 50% 12%;
+    --risk-low-text: 142 71% 55%;
+    --risk-none-bg: 222 47% 14%;
+    --risk-none-text: 215 20% 55%;
+
+    /* Semantic: status badges (dark) */
+    --status-validated-bg: 217 50% 16%;
+    --status-validated-text: 217 91% 70%;
+    --status-mitigated-bg: 142 50% 12%;
+    --status-mitigated-text: 142 71% 55%;
+    --status-accepted-bg: 270 40% 17%;
+    --status-accepted-text: 270 70% 68%;
+    --status-draft-bg: 222 47% 14%;
+    --status-draft-text: 215 20% 55%;
+
+    /* Semantic: warnings & info (dark) */
+    --warning-bg: 32 60% 10%;
+    --warning-border: 32 80% 30%;
+    --warning-text: 38 92% 65%;
+    --success-bg: 142 50% 10%;
+    --success-text: 142 71% 55%;
+    --info-bg: 217 50% 14%;
+    --info-text: 217 91% 70%;
+
+    /* Logic type badges (dark) */
+    --logic-and-bg: 217 50% 16%;
+    --logic-and-text: 217 91% 70%;
+    --logic-seq-bg: 270 40% 17%;
+    --logic-seq-text: 270 70% 68%;
+    --logic-or-bg: 222 47% 14%;
+    --logic-or-text: 215 20% 65%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ===== Global form controls ===== */
+@layer components {
+  .input-field {
+    @apply w-full px-2.5 py-1.5 text-[13px] rounded-md border border-border bg-background text-foreground
+      placeholder:text-muted-foreground transition-colors;
+  }
+  .input-field:focus {
+    @apply outline-none ring-2 ring-ring/30 border-ring;
+  }
+
+  .badge-risk-critical {
+    background: hsl(var(--risk-critical-bg));
+    color: hsl(var(--risk-critical-text));
+  }
+  .badge-risk-high {
+    background: hsl(var(--risk-high-bg));
+    color: hsl(var(--risk-high-text));
+  }
+  .badge-risk-medium {
+    background: hsl(var(--risk-medium-bg));
+    color: hsl(var(--risk-medium-text));
+  }
+  .badge-risk-low {
+    background: hsl(var(--risk-low-bg));
+    color: hsl(var(--risk-low-text));
+  }
+  .badge-risk-none {
+    background: hsl(var(--risk-none-bg));
+    color: hsl(var(--risk-none-text));
+  }
+
+  .badge-status-validated {
+    background: hsl(var(--status-validated-bg));
+    color: hsl(var(--status-validated-text));
+  }
+  .badge-status-mitigated {
+    background: hsl(var(--status-mitigated-bg));
+    color: hsl(var(--status-mitigated-text));
+  }
+  .badge-status-accepted {
+    background: hsl(var(--status-accepted-bg));
+    color: hsl(var(--status-accepted-text));
+  }
+  .badge-status-draft {
+    background: hsl(var(--status-draft-bg));
+    color: hsl(var(--status-draft-text));
+  }
+
+  .badge-logic-and {
+    background: hsl(var(--logic-and-bg));
+    color: hsl(var(--logic-and-text));
+  }
+  .badge-logic-seq {
+    background: hsl(var(--logic-seq-bg));
+    color: hsl(var(--logic-seq-text));
+  }
+  .badge-logic-or {
+    background: hsl(var(--logic-or-bg));
+    color: hsl(var(--logic-or-text));
+  }
+
+  .warning-box {
+    background: hsl(var(--warning-bg));
+    border-color: hsl(var(--warning-border));
+    color: hsl(var(--warning-text));
+  }
+  .success-box {
+    background: hsl(var(--success-bg));
+    color: hsl(var(--success-text));
+  }
+  .info-box {
+    background: hsl(var(--info-bg));
+    color: hsl(var(--info-text));
+  }
+
+  .text-risk-critical { color: hsl(var(--risk-critical-text)); }
+  .text-risk-high { color: hsl(var(--risk-high-text)); }
+  .text-risk-medium { color: hsl(var(--risk-medium-text)); }
+  .text-risk-low { color: hsl(var(--risk-low-text)); }
+  .text-success { color: hsl(var(--success-text)); }
+  .text-info { color: hsl(var(--info-text)); }
+  .text-warning { color: hsl(var(--warning-text)); }
+}
+
+/* ===== React Flow overrides ===== */
+.react-flow__node {
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.react-flow__minimap {
+  border-radius: 8px;
+  overflow: hidden;
+}
+.react-flow__controls {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Dark mode: React Flow controls */
+.dark .react-flow__controls-button {
+  background: hsl(var(--card));
+  border-color: hsl(var(--border));
+  fill: hsl(var(--foreground));
+}
+.dark .react-flow__controls-button:hover {
+  background: hsl(var(--accent));
+}
+.dark .react-flow__minimap {
+  background: hsl(var(--card));
+}
+.dark .react-flow__attribution {
+  background: transparent;
+}
+.dark .react-flow__attribution a {
+  color: hsl(var(--muted-foreground));
+}
+
+/* Scrollbar styling for dark mode */
+.dark ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.dark ::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Range input accent colour */
+input[type="range"] {
+  accent-color: hsl(var(--primary));
+}
+
+/* ===== Animations ===== */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-fade-in {
+  animation: fade-in 150ms ease-out;
+}
+.animate-scale-in {
+  animation: scale-in 150ms ease-out;
+}
+
+/* Loading skeleton */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--accent)) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 0.375rem;
+}
+
+/* Bar chart fill */
+.bar-fill {
+  transition: width 0.5s ease-out;
+}

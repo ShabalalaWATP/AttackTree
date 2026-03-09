@@ -1,0 +1,19 @@
+{
+  "name": "API Authentication Abuse and Backend Pivot",
+  "description": "Attack tree modelling abuse of API authentication and authorization to pivot to backend systems",
+  "context_preset": "api_microservice",
+  "root_objective": "Abuse API authentication weaknesses to access unauthorized data and pivot to backend services",
+  "nodes": [
+    {"id": "root", "parent_id": null, "node_type": "goal", "title": "Compromise Backend via API Abuse", "description": "Exploit API authentication and authorization weaknesses to access backend systems and sensitive data", "logic_type": "OR", "position_x": 500, "position_y": 0, "impact": 9, "status": "draft"},
+    {"id": "n1", "parent_id": "root", "node_type": "sub_goal", "title": "Exploit Token-Based Auth Weaknesses", "description": "Abuse JWT, OAuth, or API key authentication mechanisms", "logic_type": "OR", "position_x": 200, "position_y": 150, "likelihood": 6, "impact": 8, "status": "draft"},
+    {"id": "n1a", "parent_id": "n1", "node_type": "attack_step", "title": "JWT Algorithm Confusion Attack", "description": "Exploit JWT library accepting 'none' algorithm or confusing RSA with HMAC to forge tokens", "logic_type": "OR", "position_x": 50, "position_y": 300, "likelihood": 3, "impact": 9, "effort": 5, "status": "draft"},
+    {"id": "n1b", "parent_id": "n1", "node_type": "attack_step", "title": "Steal OAuth Tokens via Redirect Manipulation", "description": "Abuse open redirects in OAuth flow to steal authorization codes or access tokens", "logic_type": "OR", "position_x": 250, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 4, "status": "draft"},
+    {"id": "n1c", "parent_id": "n1", "node_type": "attack_step", "title": "API Key Exposure in Client Code", "description": "Extract API keys from client-side JavaScript, mobile apps, or public repositories", "logic_type": "OR", "position_x": 400, "position_y": 300, "likelihood": 6, "impact": 7, "effort": 2, "status": "draft"},
+    {"id": "n2", "parent_id": "root", "node_type": "sub_goal", "title": "Exploit Broken Object-Level Authorization", "description": "Access resources belonging to other users by manipulating object identifiers", "logic_type": "OR", "position_x": 600, "position_y": 150, "likelihood": 7, "impact": 8, "status": "draft"},
+    {"id": "n2a", "parent_id": "n2", "node_type": "attack_step", "title": "Enumerate User Data via IDOR", "description": "Iterate through sequential or predictable resource IDs to access other users' data", "logic_type": "OR", "position_x": 550, "position_y": 300, "likelihood": 7, "impact": 8, "effort": 2, "exploitability": 9, "status": "draft"},
+    {"id": "n2b", "parent_id": "n2", "node_type": "attack_step", "title": "Mass Assignment on User Properties", "description": "Modify protected user attributes by including them in API update requests", "logic_type": "OR", "position_x": 750, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 3, "status": "draft"},
+    {"id": "n3", "parent_id": "root", "node_type": "sub_goal", "title": "Exploit Service-to-Service Trust", "description": "Abuse trust relationships between microservices to access internal APIs", "logic_type": "OR", "position_x": 900, "position_y": 150, "likelihood": 5, "impact": 9, "status": "draft"},
+    {"id": "n3a", "parent_id": "n3", "node_type": "attack_step", "title": "Access Internal APIs via SSRF", "description": "Use SSRF in a public-facing service to call internal microservice APIs that lack their own auth", "logic_type": "OR", "position_x": 850, "position_y": 300, "likelihood": 5, "impact": 9, "effort": 5, "status": "draft"},
+    {"id": "n3b", "parent_id": "n3", "node_type": "attack_step", "title": "Exploit GraphQL Introspection", "description": "Use enabled GraphQL introspection to discover hidden queries, mutations, and data types", "logic_type": "OR", "position_x": 1050, "position_y": 300, "likelihood": 6, "impact": 6, "effort": 2, "status": "draft"}
+  ]
+}

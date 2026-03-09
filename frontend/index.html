@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AttackTree Builder</title>
+    <script>
+      // Sync dark mode from localStorage before first paint to prevent flash
+      try {
+        const stored = localStorage.getItem('atb-dark-mode');
+        if (stored === 'false') document.documentElement.classList.remove('dark');
+      } catch (e) {}
+    </script>
+    <style>
+      body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

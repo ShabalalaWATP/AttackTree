@@ -1,0 +1,19 @@
+{
+  "name": "OT Process Manipulation",
+  "description": "Attack tree modelling manipulation of operational technology process values in an industrial environment",
+  "context_preset": "ot_ics",
+  "root_objective": "Manipulate OT process values to cause physical disruption or safety incident",
+  "nodes": [
+    {"id": "root", "parent_id": null, "node_type": "goal", "title": "Manipulate OT Process Values", "description": "Alter industrial process parameters to cause disruption, safety hazard, or equipment damage", "logic_type": "AND", "position_x": 500, "position_y": 0, "impact": 10, "status": "draft"},
+    {"id": "n1", "parent_id": "root", "node_type": "sub_goal", "title": "Gain IT Network Access", "description": "Establish initial foothold in the corporate IT network adjacent to OT", "logic_type": "OR", "position_x": 200, "position_y": 150, "likelihood": 6, "impact": 4, "status": "draft"},
+    {"id": "n1a", "parent_id": "n1", "node_type": "attack_step", "title": "Phishing Corporate Engineering Staff", "description": "Target control system engineers with tailored phishing for their domain credentials", "logic_type": "OR", "position_x": 200, "position_y": 300, "likelihood": 6, "effort": 4, "status": "draft"},
+    {"id": "n2", "parent_id": "root", "node_type": "sub_goal", "title": "Pivot from IT to OT Network", "description": "Cross the IT/OT boundary to reach industrial control system networks", "logic_type": "OR", "position_x": 500, "position_y": 150, "likelihood": 4, "impact": 8, "status": "draft"},
+    {"id": "n2a", "parent_id": "n2", "node_type": "attack_step", "title": "Exploit Dual-Homed Engineering Workstation", "description": "Compromise a workstation connected to both IT and OT networks", "logic_type": "OR", "position_x": 400, "position_y": 300, "likelihood": 5, "impact": 8, "effort": 5, "status": "draft"},
+    {"id": "n2b", "parent_id": "n2", "node_type": "attack_step", "title": "Abuse Firewall Rule Misconfiguration", "description": "Exploit overly permissive firewall rules between IT and OT zones", "logic_type": "OR", "position_x": 600, "position_y": 300, "likelihood": 4, "impact": 7, "effort": 4, "status": "draft"},
+    {"id": "n3", "parent_id": "root", "node_type": "sub_goal", "title": "Access and Manipulate PLC/RTU/DCS", "description": "Interact directly with programmable logic controllers or distributed control systems", "logic_type": "OR", "position_x": 800, "position_y": 150, "likelihood": 4, "impact": 10, "status": "draft"},
+    {"id": "n3a", "parent_id": "n3", "node_type": "attack_step", "title": "Send Malicious Commands via ICS Protocol", "description": "Use Modbus, DNP3, or OPC-UA to send unauthorized commands to field devices", "logic_type": "OR", "position_x": 700, "position_y": 300, "likelihood": 4, "impact": 10, "effort": 6, "status": "draft"},
+    {"id": "n3b", "parent_id": "n3", "node_type": "attack_step", "title": "Reprogram PLC Logic", "description": "Upload modified PLC program that alters setpoints or disables safety interlocks", "logic_type": "OR", "position_x": 900, "position_y": 300, "likelihood": 3, "impact": 10, "effort": 8, "status": "draft"},
+    {"id": "n4", "parent_id": "root", "node_type": "sub_goal", "title": "Disable Safety Systems", "description": "Neutralize safety instrumented systems to enable dangerous process states", "logic_type": "OR", "position_x": 500, "position_y": 450, "likelihood": 3, "impact": 10, "status": "draft"},
+    {"id": "n4a", "parent_id": "n4", "node_type": "attack_step", "title": "Disable SIS/Safety PLC", "description": "Modify or disable safety instrumented system to prevent automatic shutdown during dangerous conditions", "logic_type": "OR", "position_x": 500, "position_y": 600, "likelihood": 2, "impact": 10, "effort": 9, "status": "draft"}
+  ]
+}
