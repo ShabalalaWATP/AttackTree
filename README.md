@@ -1,25 +1,46 @@
-# AttackTree Builder
+# OCP — Offensive Cyber Planner
 
-A production-quality, offline-first web application for cyber security analysts to model, score, and communicate cyber attack trees.
+A comprehensive, offline-first cyber security platform for modelling, analysing, and documenting attack trees with AI-powered offensive planning tools.
 
-## What It Does
+---
 
-AttackTree Builder lets analysts decompose an attacker's objective into a hierarchy of sub-goals, attack steps, preconditions, and pivot points connected by AND/OR/SEQUENCE logic. Each node carries rich security metadata — likelihood, impact, effort, exploitability, detectability, ATT&CK/CAPEC/CWE/OWASP mappings, mitigations, detections, tags, and analyst comments.
+## What Is OCP?
 
-**Key capabilities:**
-- **Visual tree canvas** — drag-and-drop node placement, AND/OR/SEQUENCE indicators, risk colour coding, minimap, zoom/pan
-- **Rich metadata inspector** — scoring (simple + advanced), mitigations, detections, reference mappings, comments, analyst notes
-- **Risk engine** — transparent formula-based scoring with automatic roll-up through AND/OR logic
-- **Tags and filtering** — label nodes with custom tags, filter the tree by node type, tags, or search query
-- **Comments** — per-node analyst comments with author tracking and timestamps
-- **Audit trail** — full activity log tracking all node, mitigation, detection, comment, and mapping changes
-- **Dashboard** — top risks, unmitigated gaps, detection coverage, attacker effort analysis, recent activity feed
-- **Reporting** — JSON, CSV, Markdown, PDF export with technical and executive report modes
-- **Local LLM assistant** — branch suggestions, mitigation suggestions, mapping suggestions, report drafts via any OpenAI-compatible endpoint
-- **Reference browser** — bundled ATT&CK, CAPEC, CWE, OWASP data for offline lookup
-- **Starter templates** — 11 pre-built attack trees covering web apps, APIs, Android, enterprise, cloud, data centres, OT/ICS, AI systems, supply chain, and more
-- **Version snapshots** — save and restore tree states
-- **Undo/redo** — full undo history during editing sessions
+OCP lets cyber security analysts decompose an attacker's objective into a hierarchy of sub-goals, attack steps, preconditions, and pivot points connected by AND/OR/SEQUENCE logic. Each node carries rich security metadata — likelihood, impact, effort, exploitability, detectability, ATT&CK/CAPEC/CWE/OWASP mappings, mitigations, detections, tags, and analyst comments.
+
+Beyond tree building, OCP provides a full suite of AI-powered offensive analysis modules — scenario simulation, kill chain analysis, threat modelling, brainstorming, red team advisory, and risk score validation.
+
+---
+
+## Features
+
+### Core Platform
+- **Visual Tree Editor** — drag-and-drop canvas with AND/OR/SEQUENCE indicators, risk colour coding, minimap, zoom/pan
+- **Rich Node Inspector** — scoring (simple + advanced), mitigations, detections, reference mappings, comments, tags
+- **Risk Engine** — transparent formula-based scoring with automatic roll-up through AND/OR logic
+- **Project Home** — dedicated landing page when opening a project with tool launcher cards and a saved work table (scenarios, kill chains, threat models, snapshots) sorted newest-first
+- **Project Toolbar** — in-project sub-navigation bar for quick switching between Home, Attack Tree, Brainstorm, Scenarios, Kill Chain, Threat Model, and Dashboard
+- **Standalone Tools** — all AI modules (Brainstorm, Scenarios, Kill Chain, Threat Model, Dashboard) are fully accessible without an active project for exploratory use
+- **Dashboard** — risk posture grade (A–F), defence coverage bars, risk distribution histogram, top risks, unmitigated gaps, attacker effort analysis, node type/status breakdown, audit trail
+- **Reference Browser** — bundled MITRE ATT&CK, CAPEC, CWE, OWASP databases for offline lookup
+- **Reporting** — JSON, Markdown, PDF (technical + executive), PNG, SVG export
+- **Templates** — 11 pre-built attack trees (web apps, APIs, Android, enterprise, cloud, data centres, OT/ICS, AI, supply chain, and more)
+- **Version Snapshots** — save and restore tree states
+- **Undo/Redo** — full undo history during editing sessions
+- **Audit Trail** — full activity log tracking all changes
+- **Tags & Filtering** — custom tags, node type filters, and free-text search
+
+### AI-Powered Modules (require an LLM provider)
+- **AI Assist** — node-level suggestions for child branches, mitigations, detections, reference mappings, and report drafts
+- **AI Agent** — auto-generates an entire attack tree from a high-level objective with fully populated risk scores and metadata
+- **AI Brainstorming Session** — free-form conversational AI for exploring attack ideas and offensive scenarios
+- **Scenario Simulation** — model attacker profiles (Script Kiddie → Nation State), disable security controls, and simulate impact with AI-generated narrative analysis
+- **Kill Chain Analysis** — AI maps your tree's nodes to MITRE ATT&CK or Lockheed Martin kill chain phases with campaign summaries, detection windows, and recommendations
+- **Threat Modelling** — STRIDE/PASTA/LINDDUN methodology with AI-generated data flow diagrams, threat identification, and one-click link-to-tree conversion
+- **Red Team Advisor** — persistent AI advisor panel with full tree context for offensive tradecraft questions
+- **Risk Score Challenger** — AI that critically evaluates your risk scores per node and identifies scoring biases
+
+---
 
 ## Target Analysis Domains
 
@@ -30,69 +51,173 @@ AttackTree Builder lets analysts decompose an attacker's objective into a hierar
 - Enterprise / Active Directory
 - Cloud / IAM / Kubernetes
 - Data centres / facilities
-- OT / ICS
+- OT / ICS / SCADA
 - Hybrid IT/OT
 - AI / LLM / agentic systems
 - Supply chain / third party
 
+---
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│          React SPA (Vite + TypeScript)       │
-│  React Flow canvas │ Zustand │ TanStack Query│
-└───────────────────┬─────────────────────────┘
-                    │ REST API
-┌───────────────────┴─────────────────────────┐
-│           FastAPI (Python 3.12+)            │
-│  CRUD API │ Risk Engine │ LLM Proxy │ Export│
-└───────────────────┬─────────────────────────┘
-                    │
-              SQLite / PostgreSQL
+┌──────────────────────────────────────────────────────────┐
+│              React SPA (Vite + TypeScript)                │
+│  React Flow canvas │ Zustand │ TanStack Query │ Radix UI │
+└────────────────────────┬─────────────────────────────────┘
+                         │ REST API (90 endpoints)
+┌────────────────────────┴─────────────────────────────────┐
+│                FastAPI (Python 3.12+)                     │
+│  16 API Routers │ Risk Engine │ LLM Proxy │ PDF Export   │
+└────────────────────────┬─────────────────────────────────┘
+                         │
+                    SQLite (async)
 ```
 
-- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, React Flow, Zustand, TanStack Query, Radix UI
-- **Backend:** FastAPI, Pydantic v2, SQLAlchemy (async), SQLite (default), ReportLab for PDF
-- **LLM:** Server-side proxy to any OpenAI-compatible endpoint. API keys stay server-side.
-- **No CDN dependencies at runtime.** All assets bundled locally.
+### Frontend Stack
+| Technology | Purpose |
+|-----------|---------|
+| React 18 + TypeScript | UI framework |
+| Vite 6 | Build tool with HMR |
+| React Flow (@xyflow/react) | Interactive tree canvas |
+| Zustand | State management |
+| TanStack Query | Server state & caching |
+| Radix UI | Accessible UI primitives |
+| Tailwind CSS | Utility-first styling |
+| Lucide React | Icons |
+
+### Backend Stack
+| Technology | Purpose |
+|-----------|---------|
+| FastAPI | Async REST API framework |
+| Pydantic v2 | Request/response validation |
+| SQLAlchemy (async) | ORM with async support |
+| aiosqlite | Async SQLite driver |
+| httpx | Async HTTP client (LLM proxy) |
+| cryptography (Fernet) | API key encryption at rest |
+| ReportLab | PDF report generation |
+
+### Key Design Decisions
+- **No CDN dependencies at runtime** — all assets bundled locally for air-gapped/offline use
+- **Server-side LLM proxy** — API keys and secrets never reach the browser
+- **Single-container Docker deployment** — frontend built and served by the backend
+- **90 REST API endpoints** across 16 routers covering all platform features
+- **14 SQLAlchemy models** with full relationship mapping
 
 ---
 
-## Quick Start
+## Project Structure
+
+```
+OCP/
+├── backend/
+│   ├── app/
+│   │   ├── api/                # 16 FastAPI routers
+│   │   │   ├── projects.py     # Project CRUD
+│   │   │   ├── nodes.py        # Node CRUD + tree operations
+│   │   │   ├── mitigations.py  # Mitigation management
+│   │   │   ├── detections.py   # Detection management
+│   │   │   ├── references.py   # Reference mapping CRUD
+│   │   │   ├── snapshots.py    # Version snapshot management
+│   │   │   ├── comments.py     # Per-node comments
+│   │   │   ├── tags.py         # Tag management
+│   │   │   ├── audit.py        # Audit trail queries
+│   │   │   ├── llm.py          # LLM provider configuration
+│   │   │   ├── export.py       # JSON/PDF/Markdown/PNG/SVG export
+│   │   │   ├── templates.py    # Starter template loading
+│   │   │   ├── scenarios.py    # Scenario simulation
+│   │   │   ├── kill_chains.py  # Kill chain analysis
+│   │   │   ├── threat_models.py# Threat modelling (STRIDE/PASTA/LINDDUN)
+│   │   │   └── ai_chat.py      # AI Brainstorm, Red Team Advisor, Risk Challenger
+│   │   ├── models/             # 14 SQLAlchemy ORM models
+│   │   ├── schemas/            # Pydantic request/response schemas
+│   │   ├── services/           # Business logic
+│   │   │   ├── risk_engine.py  # Risk scoring formulas and roll-up
+│   │   │   ├── llm_service.py  # LLM proxy (OpenAI-compatible)
+│   │   │   ├── export_service.py # Report generation (PDF, Markdown)
+│   │   │   ├── crypto.py       # Fernet encryption for API keys
+│   │   │   └── audit.py        # Audit event logging
+│   │   ├── reference_data/     # Bundled ATT&CK, CAPEC, CWE, OWASP JSON
+│   │   ├── templates_data/     # 11 starter attack tree templates
+│   │   ├── config.py           # Application configuration
+│   │   ├── database.py         # Async database engine and sessions
+│   │   └── main.py             # FastAPI app entry point (mounts all routers)
+│   ├── tests/                  # Backend test suite (pytest)
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── components/         # React components
+│   │   │   ├── AttackTreeNode.tsx        # Custom React Flow node
+│   │   │   ├── NodeInspector.tsx         # Right-panel node editor
+│   │   │   ├── TopBar.tsx               # Main navigation bar
+│   │   │   ├── ProjectToolBar.tsx        # In-project tool switcher
+│   │   │   ├── MarkdownContent.tsx       # Shared markdown renderer
+│   │   │   ├── AISuggestionsPanel.tsx    # AI Assist panel
+│   │   │   ├── AIAgentDialog.tsx         # AI Agent dialog
+│   │   │   ├── RedTeamAdvisorPanel.tsx   # Red Team Advisor slide-out
+│   │   │   ├── RiskChallengerPanel.tsx   # Risk Score Challenger
+│   │   │   ├── AuditLogPanel.tsx         # Audit trail viewer
+│   │   │   ├── HelpDialog.tsx            # Comprehensive help guide
+│   │   │   ├── KeyboardShortcutsDialog.tsx
+│   │   │   ├── ConfirmDialog.tsx
+│   │   │   └── ErrorBoundary.tsx
+│   │   ├── views/              # Page-level views
+│   │   │   ├── ProjectsView.tsx          # Project listing and creation
+│   │   │   ├── ProjectHomeView.tsx       # Project landing page (tool cards + saved work)
+│   │   │   ├── TreeEditorView.tsx        # Main tree canvas
+│   │   │   ├── DashboardView.tsx         # Risk analytics dashboard
+│   │   │   ├── ReferencesView.tsx        # Framework browser
+│   │   │   ├── SettingsView.tsx          # LLM provider configuration
+│   │   │   ├── ScenarioSimulationView.tsx# Scenario simulation
+│   │   │   ├── KillChainView.tsx         # Kill chain analysis
+│   │   │   ├── ThreatModelView.tsx       # Threat modelling
+│   │   │   └── BrainstormView.tsx        # AI brainstorming chat
+│   │   ├── stores/useStore.ts  # Zustand state management
+│   │   ├── types/index.ts      # TypeScript type definitions
+│   │   └── utils/
+│   │       ├── api.ts          # REST API client (all 90 endpoints)
+│   │       └── cn.ts           # Tailwind class merge utility
+│   ├── package.json
+│   └── vite.config.ts
+├── Dockerfile                  # Multi-stage build (Node + Python)
+├── docker-compose.yml          # Single-command deployment
+└── README.md
+```
+
+---
+
+## Getting Started
 
 ### Prerequisites
-- Python 3.12+
-- Node.js 20+
-- npm
+- **Python 3.12+**
+- **Node.js 20+** and npm
+- **Git**
+
+### Download from GitHub
+
+```bash
+git clone https://github.com/ShabalalaWATP/AttackTree.git
+cd AttackTree
+```
 
 ### Option 1: Local Development (two terminals)
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/ShabalalaWATP/AttackTree.git
-cd AttackTree
-
-# 2. Install backend dependencies
+# Terminal 1 — Backend
 cd backend
 pip install -r requirements.txt
 cd ..
+python -m uvicorn backend.app.main:app --reload --port 8001
 
-# 3. Install frontend dependencies
+# Terminal 2 — Frontend
 cd frontend
 npm install
-cd ..
-
-# 4. Start backend (terminal 1)
-python -m uvicorn backend.app.main:app --reload --port 8000
-
-# 5. Start frontend dev server (terminal 2)
-cd frontend
 npm run dev
 ```
 
 Open **http://localhost:5173** in your browser.
 
-> The frontend dev server proxies API calls to `localhost:8000`. Both must be running.
+> The frontend dev server proxies API calls to `localhost:8001`. Both must be running.
 
 ### Option 2: Docker (single command)
 
@@ -102,7 +227,17 @@ cd AttackTree
 docker compose up --build
 ```
 
-Open **http://localhost:8000**. The Docker build bundles the frontend into the backend, so only one container is needed.
+Open **http://localhost:8001**. The Docker build bundles the frontend into the backend, so only one container is needed.
+
+#### Docker Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATB_DATABASE_URL` | `sqlite+aiosqlite:///./data/attacktree.db` | Database connection string |
+| `ATB_SECRET_KEY` | `change-me-in-production` | Secret key for Fernet encryption |
+| `ATB_LOG_LEVEL` | `INFO` | Logging level |
+
+Data is persisted to `./data/` and uploads to `./uploads/` via Docker volumes.
 
 ---
 
@@ -110,198 +245,189 @@ Open **http://localhost:8000**. The Docker build bundles the frontend into the b
 
 ### 1. Creating a Project
 
-When you first open the app, you'll see the **Projects** screen.
+1. Click **+ New Project** on the Projects page
+2. Enter a project name (e.g. "Corporate Network Assessment"), description, and root objective
+3. Choose a context preset (Web Application, Cloud, Enterprise Network, etc.)
+4. Click **Create** — this takes you to the **Project Home** page
 
-1. Click **New Project**
-2. Enter a project name (e.g., "Corporate Network Assessment") and optional description
-3. Click **Create** — this takes you to the **Tree Editor**
+You can also load a **starter template** by clicking the template button. 11 templates are available covering: Web App Compromise, API Auth Abuse, Ransomware Intrusion, Supply Chain Compromise, Cloud IAM Abuse, Enterprise Phishing, Android Reverse Engineering, OT Process Manipulation, Data Centre Disruption, Thick Client Tampering, and AI Pipeline Compromise.
 
-You can also load a **starter template** by clicking the template icon next to "New Project". Templates provide fully populated attack trees for common scenarios.
+### 2. Project Home
 
-### 2. Building an Attack Tree
+After opening a project, the **Project Home** page provides:
+
+- **Project overview** — name, root objective, and node count
+- **Tool launcher** — cards for each module (Attack Tree, Brainstorm, Scenarios, Kill Chain, Threat Model, Dashboard) with one-click navigation
+- **Saved work table** — all scenarios, kill chains, threat models, and snapshots sorted newest-first with relative timestamps
+
+The **Project Toolbar** appears below the main navigation whenever a project is open, providing tabs for Home, Attack Tree, Brainstorm, Scenarios, Kill Chain, Threat Model, and Dashboard.
+
+### 3. Building an Attack Tree
 
 The **Tree Editor** is the main workspace with a drag-and-drop canvas.
 
-- **Add a root node:** Click the **+ Add Node** button in the toolbar
-- **Add child nodes:** Right-click a node and select **Add Child**, or select a node and press **Ctrl+Enter**
+- **Add a root node:** Click the **+ Add Root Goal** button in the toolbar
+- **Add child nodes:** Select a node and press **Ctrl+Enter**, or click **Add Child**
 - **Move nodes:** Drag nodes to reposition them on the canvas
-- **Select a node:** Click on it — the **Inspector Panel** opens on the right
-- **Delete a node:** Select it and press **Delete**, or right-click and choose **Delete**
-- **Duplicate a node:** Right-click a node and select **Duplicate** to clone it with all metadata
+- **Re-parent nodes:** Drag from one node's handle to another
+- **Select a node:** Click on it — the **Node Inspector** opens on the right
+- **Delete a node:** Select it and press **Delete**
 
 **Node types:**
 | Type | Purpose |
 |------|---------|
 | Goal | The attacker's high-level objective |
-| Sub-goal | Intermediate objective |
+| Sub-Goal | Intermediate objective |
 | Attack Step | A concrete action the attacker takes |
 | Precondition | Something that must be true before proceeding |
+| Weakness | A vulnerability or weakness exploited |
 | Pivot Point | A lateral movement or privilege escalation point |
 
-**Gate types (AND/OR/SEQUENCE):**
-- **OR** — attacker needs to succeed at any one child path
-- **AND** — attacker must succeed at all child paths
-- **SEQUENCE** — same as AND, but in a specific order
+**Gate types:**
+| Gate | Logic |
+|------|-------|
+| OR | Attacker needs to succeed at any one child path |
+| AND | Attacker must succeed at all child paths |
+| SEQUENCE | Same as AND, but in a specific order |
 
-### 3. Scoring Nodes
+### 4. Node Inspector
 
-Select a node to open the **Inspector**, then go to the **Scoring** tab.
+Click any node to open the six-tab inspector on the right:
 
-**Simple mode (default)** — six sliders, each 1–10:
-| Metric | What it measures |
-|--------|-----------------|
-| Likelihood | How probable is this step? |
-| Impact | Business damage if successful |
-| Effort | Resources the attacker needs |
-| Exploitability | How easy to exploit |
-| Detectability | How likely defenders detect it |
-| Confidence | Analyst certainty in the scores |
+| Tab | Function |
+|-----|----------|
+| **Details** | Title, type, description, platform, access requirements, skill level, threat category |
+| **Scoring** | Likelihood, impact, effort, exploitability, detectability (1–10). Advanced mode: probability (0–1), impact (0–10), cost to attacker (1–10). **AI Challenge My Scores** button for AI validation. |
+| **Mitigations** | Security controls with effectiveness (0–100%), status, and control references |
+| **Detections** | Detection strategies with coverage (0–100%) and data sources |
+| **Mappings** | Link to MITRE ATT&CK techniques, CAPEC patterns, CWE weaknesses, OWASP categories |
+| **Comments** | Per-node discussion with author tracking and timestamps |
 
-**Advanced mode** — toggle at the top of the Scoring tab:
-- Probability (0–1)
-- Impact (0–10)
-- Cost to Attacker (1–10)
-- Computed risk displayed automatically
+### 5. AI Assist
 
-Scores are saved automatically. The tree canvas updates node colours based on risk level:
-- **Green** — low risk (0–3)
-- **Yellow/Orange** — medium risk (3–7)
-- **Red** — high risk (7–10)
+Select a node in the tree, then click the **AI Assist** sparkles icon in the toolbar:
 
-### 4. Adding Mitigations
+- **Branches** — suggests 3–6 child attack steps
+- **Mitigations** — suggests security controls and defences
+- **Detections** — suggests detection opportunities and data sources
+- **Mappings** — suggests framework references (ATT&CK, CAPEC, CWE, OWASP)
+- **Technical/Executive Summary** — generates report drafts
 
-In the **Mitigations** tab of the Inspector:
+Click the checkmark on any suggestion to accept it.
 
-1. Click **Add Mitigation**
-2. Enter a title (e.g., "Deploy WAF"), description, effectiveness (0–100%), status, and optional control reference (e.g., "NIST AC-3")
-3. Click **Save**
+### 6. AI Agent Mode
 
-Mitigations automatically reduce the node's **residual risk** based on the highest effectiveness value among all mitigations on that node.
+Auto-generate an **entire attack tree** from a high-level objective:
 
-### 5. Adding Detections
+1. Open a project and click the **AI Agent** button (robot icon) in the tree toolbar
+2. Pick a **Quick Preset** or write a custom objective
+3. Describe the target scope and adjust depth/breadth sliders
+4. Click **Generate Attack Tree**
+5. The agent creates all nodes with populated risk scores, platforms, access requirements, skill levels, and threat categories
 
-In the **Detections** tab:
+### 7. AI Brainstorming Session
 
-1. Click **Add Detection**
-2. Enter a title (e.g., "SIEM correlation rule"), description, coverage (0–100%), and data source
-3. Click **Save**
+Navigate to **Brainstorm** in the top bar for a free-form conversational AI session:
 
-Detection coverage feeds into the dashboard analytics.
+- Ask about attack vectors, TTPs, real-world breach patterns, or gap analysis
+- The AI has context of your current project and root objective
+- Use insights to inform what branches to add to your tree
 
-### 6. Reference Mappings (ATT&CK, CAPEC, CWE, OWASP)
+### 8. Scenario Simulation
 
-In the **Mappings** tab:
+Navigate to **Scenarios** to model what-if attacker scenarios:
 
-1. Click **Add Mapping**
-2. Choose a framework (MITRE ATT&CK, CAPEC, CWE, or OWASP)
-3. Browse or search the bundled reference data
-4. Select the relevant technique/pattern/weakness
-5. The mapping is linked to the node
+1. Create a scenario with an attacker profile (type, skill, resources, motivation)
+2. Toggle off specific security controls (mitigations) to simulate control failure
+3. Click **Simulate** to recalculate risk scores
+4. Click **AI Analyze** for a narrative impact assessment with recommendations
+5. Use **AI Generate Scenarios** to auto-create realistic scenarios from your tree
 
-You can also use the **References** view (sidebar navigation) to browse all reference frameworks independently.
+### 9. Kill Chain Analysis
 
-### 7. Tags
+Navigate to **Kill Chain** to map your tree to campaign phases:
 
-Tags let you categorize and filter nodes. In the **Details** tab of the Inspector:
+1. Create or AI-generate a kill chain (MITRE ATT&CK or Lockheed Martin framework)
+2. AI maps each tree node to the appropriate phase
+3. View detection windows, dwell times, and break opportunities per phase
+4. Review campaign summary, weakest links, and prioritised recommendations
 
-1. Scroll to the **Tags** section
-2. Type a tag name or select an existing one from the dropdown
-3. Press Enter or click to add it
-4. Remove tags by clicking the **x** on any tag chip
+### 10. Threat Modelling
 
-Use the **filter toolbar** above the canvas to filter nodes by tags, node type, or free-text search.
+Navigate to **Threat Model** for formal threat analysis:
 
-### 8. Comments
+1. Create a threat model with a system description and methodology (STRIDE, PASTA, or LINDDUN)
+2. **AI Generate DFD** — creates a Data Flow Diagram showing processes, data stores, external entities, and trust boundaries
+3. **AI Generate Threats** — identifies threats using the chosen methodology
+4. **Link to Tree** — converts threats into attack tree nodes
+5. **AI Full Analysis** — one-click end-to-end: DFD generation + threat identification
 
-In the **Comments** tab of the Inspector:
+### 11. Red Team Advisor
 
-1. Type your comment in the text area
-2. Click **Post**
-3. Comments show author name, timestamp, and text
-4. Delete comments with the trash icon
+Click the **Swords** icon in the top-right toolbar (available when a project is open):
 
-### 9. AI Assistant (Optional)
+- A slide-out AI panel with full context of your project and tree
+- Ask questions about offensive tradecraft, missing attack paths, detection gaps, or real-world breach parallels
+- Persistent conversation within the session
 
-If you have an OpenAI-compatible LLM endpoint (Ollama, LM Studio, etc.):
+### 12. Risk Score Challenger
 
-1. Go to **Settings** (gear icon in the sidebar)
-2. Enter your LLM endpoint URL (e.g., `http://localhost:11434/v1`)
-3. Select a model name
-4. Optionally enter an API key (encrypted at rest)
-5. Click **Save**
+In the **Scoring** tab of the Node Inspector, click **AI Challenge My Scores**:
 
-Then, select any node and click the **AI** button to get suggestions for:
-- Child attack branches
-- Mitigations and detections
-- Framework mappings (ATT&CK, CAPEC, CWE, OWASP)
-- Report drafts
+- The AI analyses your likelihood, impact, effort, exploitability, and detectability scores
+- Provides a critique with justifications for why scores might be too high or too low
+- Considers node type, mitigations, and tree context
 
-All suggestions are presented for review — nothing is auto-applied.
+### 13. Dashboard
 
-### 10. Dashboard
+Click **Dashboard** in the top bar to see project-level analytics:
 
-Click the **Dashboard** icon in the sidebar to see analytics for the current project:
+- **Risk Posture Grade** (A–F) with colour-coded badge
+- **Quick Stats** — total nodes, average risk, mitigation %, detection %, mapping %, exposed count
+- **Defence Coverage** — progress bars for mitigation, detection, and framework mapping
+- **Risk Distribution** — 5-band histogram (Low → Critical)
+- **Top 10 Risks** — highest-risk nodes with visual bars
+- **Unmitigated Risks** — nodes with no mitigations applied
+- **Lowest Attacker Effort** — cheapest attack paths
+- **Node Types & Status** — breakdowns with bar charts
+- **Highest Likelihood Vectors** — most probable attack paths
+- **Audit Log** — complete change history
 
-- **Top Risks** — highest-risk nodes in the tree
-- **Unmitigated Nodes** — nodes with no mitigations applied
-- **Detection Coverage** — percentage of nodes with detection strategies
-- **Attacker Effort Analysis** — effort distribution across the tree
-- **Recent Activity** — audit trail of all changes (node edits, mitigations added, comments posted, etc.)
+### 14. References Browser
 
-### 11. Exporting Reports
+Browse and search the four bundled security frameworks:
 
-From the tree editor toolbar, click the **Export** button:
+| Framework | Content | Filters |
+|-----------|---------|---------|
+| MITRE ATT&CK | Tactics, techniques, procedures | By tactic |
+| CAPEC | Attack patterns | By severity |
+| CWE | Weaknesses | By severity |
+| OWASP | Web/API/mobile security categories | By category |
+
+Click any reference to expand full details. Use "Add to Node" to map it to a selected node.
+
+### 15. Exporting Reports
+
+From the tree editor toolbar:
 
 | Format | Description |
 |--------|-------------|
 | JSON | Full tree data for integration with other tools |
-| CSV | Flat table of all nodes and scores |
 | Markdown | Human-readable report |
-| PDF (Technical) | Detailed report with all scoring data |
-| PDF (Executive) | High-level summary for management |
+| PDF | Detailed report with all scoring data |
 | PNG / SVG | Visual image of the tree canvas |
 
-### 12. Version Snapshots
+Use the **Import** button (upload icon) to load a previously exported JSON file.
 
-Save the current state of your tree as a named snapshot:
+### 16. Version Snapshots
 
-1. Click the **Snapshot** button in the toolbar
-2. Give it a name (e.g., "Before mitigation review")
-3. Restore any previous snapshot from the snapshots list
+Save the current state of your tree:
+
+1. Click the **Save** icon in the toolbar while in the tree editor
+2. Snapshots are timestamped automatically
+3. Restore any previous snapshot to roll back changes
 
 ---
-
-## Project Structure
-
-```
-AttackTree/
-├── backend/
-│   ├── app/
-│   │   ├── api/              # FastAPI route handlers
-│   │   ├── models/           # SQLAlchemy database models
-│   │   ├── schemas/          # Pydantic request/response schemas
-│   │   ├── services/         # Business logic (risk engine, LLM, export, audit)
-│   │   ├── reference_data/   # Bundled ATT&CK, CAPEC, CWE, OWASP JSON
-│   │   ├── templates_data/   # Starter attack tree templates
-│   │   ├── config.py         # Application configuration
-│   │   ├── database.py       # Database engine and session
-│   │   └── main.py           # FastAPI application entry point
-│   ├── tests/                # Backend test suite (pytest)
-│   └── requirements.txt
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # React components (tree node, inspector, AI panel, audit log)
-│   │   ├── views/            # Page-level views (projects, tree editor, dashboard, references)
-│   │   ├── stores/           # Zustand state management
-│   │   ├── types/            # TypeScript type definitions
-│   │   └── utils/            # API client, utilities
-│   ├── package.json
-│   └── vite.config.ts
-├── Dockerfile                # Multi-stage build (Node + Python)
-├── docker-compose.yml        # Single-command deployment
-├── .gitignore
-└── README.md
-```
 
 ## Scoring Model
 
@@ -327,44 +453,73 @@ risk = probability × impact × (10 / max(cost, 1))
 ```
 
 ### Roll-up Logic
-- **OR node:** Risk = max(child risks) — any path suffices for attacker
-- **AND node:** Risk = average(child risks) — all required
-- **SEQUENCE:** Same as AND with ordering constraint displayed
+- **OR node:** Risk = max(child risks) — any path suffices for the attacker
+- **AND node:** Risk = average(child risks) — all paths required
+- **SEQUENCE:** Same as AND with ordering constraint
 
-All formulas are visible and inspectable in the UI.
+Node colours on the canvas reflect risk level: **green** (0–3), **amber** (3–7), **red** (7–10).
+
+---
 
 ## LLM Integration
 
 The backend acts as a secure proxy to any OpenAI API-compatible endpoint.
 
-**Supported endpoints:** Ollama, LM Studio, vLLM, text-generation-webui, LocalAI, or any service implementing `/v1/chat/completions`.
+### Compatible Providers
+Any endpoint implementing `/v1/chat/completions`:
+- OpenAI (GPT-4o, GPT-4, etc.)
+- Ollama (local models)
+- LM Studio
+- vLLM, text-generation-webui, LocalAI
+- Azure OpenAI Service
 
-**Security model:**
-- API keys encrypted at rest (Fernet symmetric encryption)
-- Keys never sent to the browser
-- Custom CA bundles supported for internal PKI
-- Optional mutual TLS (client cert + key)
-- TLS verification enabled by default
-- All LLM requests made server-side
+### Configuration
 
-**The application remains fully functional without an LLM endpoint.**
+1. Navigate to **Settings** in the top bar
+2. Click **Add Provider**
+3. Enter the **Base URL** (e.g. `https://api.openai.com/v1` or `http://localhost:11434/v1`)
+4. Paste your **API Key** (optional for local models)
+5. Set the **Model** name (e.g. `gpt-4o`, `llama3`, `mistral`)
+6. Click **Test** to verify the connection
 
-## API Documentation
+### Security Model
+- API keys encrypted at rest using Fernet symmetric encryption
+- Keys never sent to the browser — all LLM calls are server-side
+- TLS certificate verification enabled by default
+- Custom CA bundles and client certificates supported for internal PKI
+- The application is **fully functional without an LLM provider** — AI features are optional
 
-When the backend is running, visit **http://localhost:8000/api/docs** for interactive Swagger/OpenAPI documentation of all endpoints.
+---
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| Ctrl+Z | Undo |
-| Ctrl+Y | Redo |
-| Ctrl+Enter | Add child node to selected |
-| Delete | Delete selected node |
+| `Ctrl + Z` | Undo |
+| `Ctrl + Y` | Redo |
+| `Ctrl + Enter` | Add child node |
+| `Delete` | Delete selected node |
+| `?` | Show keyboard shortcuts |
 
-## Environment Variables
+---
 
-All variables use the `ATB_` prefix.
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -m 'Add my feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Open a Pull Request
+
+---
+
+## License
+
+This project is provided as-is for security research and education purposes.
+
+## API Documentation
+
+When the backend is running, visit **http://localhost:8001/api/docs** for interactive Swagger/OpenAPI documentation of all endpoints.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

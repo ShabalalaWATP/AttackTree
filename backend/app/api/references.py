@@ -75,18 +75,47 @@ from pathlib import Path
 REFERENCE_DIR = Path(__file__).parent.parent / "reference_data"
 
 
-@router.get("/browse/{framework}")
-async def browse_reference_data(framework: str, q: str = ""):
-    """Browse local reference data by framework (attack, capec, cwe, owasp)."""
+FILTER_FIELDS = {
+    "attack": "tactic",
+    "capec": "severity",
+    "cwe": "severity",
+    "owasp": "category",
+}
+
+
+def _load_framework(framework: str) -> list[dict]:
     file_path = REFERENCE_DIR / f"{framework}.json"
     if not file_path.exists():
         raise HTTPException(404, f"Reference data for '{framework}' not found")
-
     with open(file_path) as f:
-        data = json.load(f)
+        return json.load(f)
+
+
+@router.get("/browse/{framework}")
+async def browse_reference_data(framework: str, q: str = "", filter: str = ""):
+    """Browse local reference data by framework (attack, capec, cwe, owasp)."""
+    data = _load_framework(framework)
+
+    # Collect filter options from the full dataset
+    filter_field = FILTER_FIELDS.get(framework)
+    filter_options: list[str] = []
+    if filter_field:
+        filter_options = sorted({item.get(filter_field, "") for item in data if item.get(filter_field)})
+
+    total = len(data)
 
     if q:
         q_lower = q.lower()
         data = [item for item in data if q_lower in json.dumps(item).lower()]
 
-    return {"framework": framework, "count": len(data), "items": data[:100]}
+    if filter and filter_field:
+        data = [item for item in data if item.get(filter_field) == filter]
+
+    return {
+        "framework": framework,
+        "total": total,
+        "count": len(data),
+        "items": data[:100],
+        "filter_field": filter_field,
+        "filter_options": filter_options,
+    }

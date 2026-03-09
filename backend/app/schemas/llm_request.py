@@ -36,3 +36,20 @@ class LLMSummaryResponse(BaseModel):
     summary: str
     prompt_used: str = ""
     model_used: str = ""
+
+
+class LLMAgentRequest(BaseModel):
+    project_id: str
+    objective: str
+    scope: str = ""
+    depth: int = 4
+    breadth: int = 5
+    mode: str = "generate"  # generate | from_template | expand
+    template_id: Optional[str] = None
+
+
+class LLMAgentResponse(BaseModel):
+    nodes_created: int
+    model_used: str = ""
+    elapsed_ms: int = 0
+    passes_completed: int = 1

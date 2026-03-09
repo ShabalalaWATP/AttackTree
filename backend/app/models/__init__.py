@@ -9,10 +9,14 @@ from .comment import Comment
 from .attachment import Attachment
 from .audit_event import AuditEvent
 from .llm_config import LLMProviderConfig, LLMJobHistory
+from .scenario import Scenario
+from .kill_chain import KillChain
+from .threat_model import ThreatModel
 
 __all__ = [
     "Project", "Node", "NodeTag", "Tag", "Edge",
     "Mitigation", "Detection", "ReferenceMapping",
     "Snapshot", "Comment", "Attachment", "AuditEvent",
     "LLMProviderConfig", "LLMJobHistory",
+    "Scenario", "KillChain", "ThreatModel",
 ]

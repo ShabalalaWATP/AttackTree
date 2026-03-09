@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import settings
 from .database import init_db
-from .api import projects, nodes, mitigations, detections, references, snapshots, comments, llm, export, templates, tags, audit
+from .api import projects, nodes, mitigations, detections, references, snapshots, comments, llm, export, templates, tags, audit, scenarios, kill_chains, threat_models, ai_chat
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -51,6 +51,10 @@ app.include_router(export.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(tags.router, prefix="/api")
 app.include_router(audit.router, prefix="/api")
+app.include_router(scenarios.router, prefix="/api")
+app.include_router(kill_chains.router, prefix="/api")
+app.include_router(threat_models.router, prefix="/api")
+app.include_router(ai_chat.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from ..database import get_db
 from ..models.project import Project
 from ..models.node import Node
@@ -101,3 +101,46 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Project not found")
     await db.delete(project)
     await db.commit()
+
+
+@router.get("/search/nodes")
+async def search_across_projects(q: str = Query(..., min_length=1), db: AsyncSession = Depends(get_db)):
+    """Search nodes across all projects by title, description, threat_category, or attack_surface."""
+    pattern = f"%{q}%"
+    result = await db.execute(
+        select(Node)
+        .where(
+            or_(
+                Node.title.ilike(pattern),
+                Node.description.ilike(pattern),
+                Node.threat_category.ilike(pattern),
+                Node.attack_surface.ilike(pattern),
+            )
+        )
+        .limit(50)
+    )
+    nodes = result.scalars().all()
+
+    # Gather project names for display
+    project_ids = {n.project_id for n in nodes}
+    projects_map: dict[str, str] = {}
+    if project_ids:
+        proj_result = await db.execute(select(Project).where(Project.id.in_(project_ids)))
+        for p in proj_result.scalars().all():
+            projects_map[p.id] = p.name
+
+    return {
+        "count": len(nodes),
+        "results": [
+            {
+                "node_id": n.id,
+                "project_id": n.project_id,
+                "project_name": projects_map.get(n.project_id, "Unknown"),
+                "title": n.title,
+                "node_type": n.node_type,
+                "description": (n.description or "")[:200],
+                "inherent_risk": n.inherent_risk,
+            }
+            for n in nodes
+        ],
+    }

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from pydantic import BaseModel
+from typing import Optional
 from ..database import get_db
 from ..models.node import Node
 from ..models.mitigation import Mitigation
@@ -183,3 +185,147 @@ async def duplicate_node(node_id: str, db: AsyncSession = Depends(get_db)):
     )
     new_node = result.scalar_one()
     return _node_to_response(new_node)
+
+
+# --- Bulk operations ---
+
+class BulkUpdateRequest(BaseModel):
+    node_ids: list[str]
+    updates: dict  # partial NodeUpdate fields
+
+
+class BulkDeleteRequest(BaseModel):
+    node_ids: list[str]
+
+
+@router.post("/bulk/update")
+async def bulk_update_nodes(data: BulkUpdateRequest, db: AsyncSession = Depends(get_db)):
+    """Apply the same partial update to multiple nodes."""
+    result = await db.execute(select(Node).where(Node.id.in_(data.node_ids)))
+    nodes = result.scalars().all()
+    if not nodes:
+        raise HTTPException(404, "No matching nodes found")
+
+    allowed_fields = {c.name for c in Node.__table__.columns} - {"id", "project_id", "created_at", "updated_at"}
+    for node in nodes:
+        for key, value in data.updates.items():
+            if key in allowed_fields:
+                setattr(node, key, value)
+        # Recompute risk if scoring fields changed
+        scoring_keys = {"likelihood", "impact", "effort", "exploitability", "detectability"}
+        if scoring_keys & data.updates.keys():
+            node.inherent_risk = compute_inherent_risk(node.likelihood, node.impact)
+
+    await db.commit()
+    return {"updated": len(nodes)}
+
+
+@router.post("/bulk/delete")
+async def bulk_delete_nodes(data: BulkDeleteRequest, db: AsyncSession = Depends(get_db)):
+    """Delete multiple nodes. Re-parents children to deleted node's parent."""
+    ids_set = set(data.node_ids)
+    result = await db.execute(select(Node).where(Node.id.in_(data.node_ids)))
+    nodes = result.scalars().all()
+    if not nodes:
+        raise HTTPException(404, "No matching nodes found")
+
+    for node in nodes:
+        # Re-parent children that are not also being deleted
+        children_result = await db.execute(select(Node).where(Node.parent_id == node.id))
+        for child in children_result.scalars().all():
+            if child.id not in ids_set:
+                child.parent_id = node.parent_id
+        await log_event(db, node.project_id, "node_deleted", "node", node.id, {"title": node.title, "bulk": True})
+        await db.delete(node)
+
+    await db.commit()
+    return {"deleted": len(nodes)}
+
+
+# --- Critical path analysis ---
+
+class CriticalPathResponse(BaseModel):
+    path: list[str]
+    cumulative_risk: float
+    path_details: list[dict]
+    all_paths: list[dict]
+
+
+@router.get("/project/{project_id}/critical-path", response_model=CriticalPathResponse)
+async def get_critical_path(project_id: str, db: AsyncSession = Depends(get_db)):
+    """Compute the highest-risk root-to-leaf path in the attack tree."""
+    result = await db.execute(
+        select(Node)
+        .where(Node.project_id == project_id)
+        .options(selectinload(Node.mitigations))
+    )
+    nodes = result.scalars().all()
+    if not nodes:
+        return CriticalPathResponse(path=[], cumulative_risk=0.0, path_details=[], all_paths=[])
+
+    # Build adjacency
+    node_map = {n.id: n for n in nodes}
+    children_map: dict[str, list[str]] = {}
+    roots: list[str] = []
+    for n in nodes:
+        if not n.parent_id or n.parent_id not in node_map:
+            roots.append(n.id)
+        else:
+            children_map.setdefault(n.parent_id, []).append(n.id)
+
+    def node_risk(n: Node) -> float:
+        return n.inherent_risk or n.rolled_up_risk or 0.0
+
+    # DFS to enumerate all root-to-leaf paths
+    all_paths: list[tuple[list[str], float]] = []
+
+    def dfs(nid: str, path: list[str], cum_risk: float):
+        node = node_map[nid]
+        risk = node_risk(node)
+        new_cum = cum_risk + risk
+        path.append(nid)
+        kids = children_map.get(nid, [])
+        if not kids:
+            all_paths.append((list(path), round(new_cum, 2)))
+        else:
+            for kid in kids:
+                dfs(kid, path, new_cum)
+        path.pop()
+
+    for root in roots:
+        dfs(root, [], 0.0)
+
+    if not all_paths:
+        return CriticalPathResponse(path=[], cumulative_risk=0.0, path_details=[], all_paths=[])
+
+    # Sort by cumulative risk descending
+    all_paths.sort(key=lambda x: x[1], reverse=True)
+    best_path, best_risk = all_paths[0]
+
+    path_details = []
+    for nid in best_path:
+        n = node_map[nid]
+        mit_count = len(n.mitigations) if n.mitigations else 0
+        max_eff = max((m.effectiveness for m in n.mitigations), default=0.0) if n.mitigations else 0.0
+        path_details.append({
+            "id": n.id,
+            "title": n.title,
+            "node_type": n.node_type,
+            "inherent_risk": n.inherent_risk,
+            "residual_risk": n.residual_risk,
+            "mitigation_count": mit_count,
+            "max_mitigation_effectiveness": round(max_eff, 2),
+        })
+
+    # Return top 5 paths summary
+    top_paths = [
+        {"path": p, "cumulative_risk": r}
+        for p, r in all_paths[:5]
+    ]
+
+    return CriticalPathResponse(
+        path=best_path,
+        cumulative_risk=best_risk,
+        path_details=path_details,
+        all_paths=top_paths,
+    )

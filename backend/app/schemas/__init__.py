@@ -8,3 +8,5 @@ from .comment import CommentCreate, CommentResponse
 from .llm_config import LLMProviderConfigCreate, LLMProviderConfigUpdate, LLMProviderConfigResponse
 from .llm_request import LLMSuggestRequest, LLMSuggestResponse, LLMSummaryRequest, LLMSummaryResponse
 from .export import ExportRequest
+from .tag import TagCreate, TagResponse
+from .audit_event import AuditEventResponse

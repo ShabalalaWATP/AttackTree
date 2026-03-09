@@ -311,3 +311,8 @@ input[type="range"] {
 .bar-fill {
   transition: width 0.5s ease-out;
 }
+
+/* ===== TopBar action buttons ===== */
+.topbar-btn {
+  @apply p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent;
+}

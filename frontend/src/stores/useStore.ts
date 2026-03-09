@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AttackNodeData, ProjectData } from '@/types';
 
-export type ViewMode = 'projects' | 'tree' | 'dashboard' | 'references' | 'settings';
+export type ViewMode = 'projects' | 'project_home' | 'tree' | 'dashboard' | 'references' | 'settings' | 'scenarios' | 'kill_chain' | 'threat_model' | 'brainstorm';
 
 interface UndoEntry {
   nodes: AttackNodeData[];
@@ -32,6 +32,9 @@ interface AppState {
   selectedNodeId: string | null;
   setSelectedNodeId: (id: string | null) => void;
   selectedNode: AttackNodeData | null;
+  selectedNodeIds: Set<string>;
+  toggleNodeSelection: (id: string) => void;
+  clearMultiSelect: () => void;
 
   // Inspector
   inspectorOpen: boolean;
@@ -117,8 +120,16 @@ export const useStore = create<AppState>((set, get) => ({
     selectedNodeId: id,
     selectedNode: id ? state.nodes.find(n => n.id === id) || null : null,
     inspectorOpen: id ? true : state.inspectorOpen,
+    selectedNodeIds: new Set<string>(),
   })),
   selectedNode: null,
+  selectedNodeIds: new Set<string>(),
+  toggleNodeSelection: (id) => set((state) => {
+    const next = new Set(state.selectedNodeIds);
+    if (next.has(id)) { next.delete(id); } else { next.add(id); }
+    return { selectedNodeIds: next };
+  }),
+  clearMultiSelect: () => set({ selectedNodeIds: new Set<string>() }),
 
   inspectorOpen: false,
   setInspectorOpen: (open) => set({ inspectorOpen: open }),

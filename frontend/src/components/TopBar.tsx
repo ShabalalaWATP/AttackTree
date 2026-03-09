@@ -3,28 +3,42 @@ import { useStore, type ViewMode } from '@/stores/useStore';
 import { cn } from '@/utils/cn';
 import { api } from '@/utils/api';
 import { KeyboardShortcutsDialog } from '@/components/KeyboardShortcutsDialog';
+import { HelpDialog } from '@/components/HelpDialog';
 import toast from 'react-hot-toast';
+import ocpLogo from '@/assets/ocp.png';
 import {
   FolderOpen, GitBranch, LayoutDashboard, BookOpen, Settings,
-  Undo2, Redo2, Save, Download, Upload, Shield, Sun, Moon, Keyboard
+  Undo2, Redo2, Save, Download, Upload, Sun, Moon, Keyboard, HelpCircle,
+  FlaskConical, Route, ShieldCheck, ChevronRight, Brain, Swords
 } from 'lucide-react';
+import { RedTeamAdvisorPanel } from '@/components/RedTeamAdvisorPanel';
 
-const NAV_ITEMS: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
-  { id: 'projects', label: 'Projects', icon: <FolderOpen size={16} /> },
-  { id: 'tree', label: 'Tree Editor', icon: <GitBranch size={16} /> },
-  { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={16} /> },
-  { id: 'references', label: 'References', icon: <BookOpen size={16} /> },
-  { id: 'settings', label: 'Settings', icon: <Settings size={16} /> },
+const NAV_HOME: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
+  { id: 'projects', label: 'Projects', icon: <FolderOpen size={15} /> },
+];
+
+const NAV_TOOLS: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
+  { id: 'tree', label: 'Attack Tree', icon: <GitBranch size={15} /> },
+  { id: 'brainstorm', label: 'Brainstorm', icon: <Brain size={15} /> },
+  { id: 'scenarios', label: 'Scenarios', icon: <FlaskConical size={15} /> },
+  { id: 'kill_chain', label: 'Kill Chain', icon: <Route size={15} /> },
+  { id: 'threat_model', label: 'Threat Model', icon: <ShieldCheck size={15} /> },
+  { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={15} /> },
+];
+
+const NAV_UTIL: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
+  { id: 'references', label: 'References', icon: <BookOpen size={15} /> },
+  { id: 'settings', label: 'Settings', icon: <Settings size={15} /> },
 ];
 
 export function TopBar() {
   const { viewMode, setViewMode, currentProject, canUndo, canRedo, undo, redo, darkMode, toggleDarkMode } = useStore();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [advisorOpen, setAdvisorOpen] = useState(false);
 
-  // Global ? key to show shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Don't trigger inside inputs/textareas
       if ((e.target as HTMLElement)?.closest?.('input,textarea,select')) return;
       if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
         e.preventDefault();
@@ -116,84 +130,115 @@ export function TopBar() {
     }
   };
 
+  const NavButton = ({ item }: { item: { id: ViewMode; label: string; icon: React.ReactNode } }) => (
+    <button
+      onClick={() => setViewMode(item.id)}
+      className={cn(
+        'flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-all duration-150',
+        viewMode === item.id
+          ? 'bg-gradient-to-r from-primary/20 to-primary/5 text-primary shadow-[inset_0_0_0_1px] shadow-primary/20'
+          : 'hover:bg-white/5 text-muted-foreground hover:text-foreground'
+      )}
+    >
+      {item.icon}
+      {item.label}
+    </button>
+  );
+
   return (
     <>
-      <header className="h-12 border-b bg-card flex items-center px-3 gap-1 shrink-0">
-        <div className="flex items-center gap-2 mr-4">
-          <Shield size={20} className="text-primary" />
-          <span className="font-semibold text-sm">AttackTree Builder</span>
+      <header className="h-13 border-b border-border/50 bg-card/80 backdrop-blur-md flex items-center px-4 gap-2 shrink-0">
+        {/* Logo + Brand */}
+        <div className="flex items-center gap-2.5 mr-3 cursor-pointer select-none" onClick={() => setViewMode('projects')}>
+          <img src={ocpLogo} alt="OCP" className="w-7 h-7 rounded-md" />
+          <div className="flex flex-col leading-none">
+            <span className="text-[13px] font-bold tracking-tight bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 bg-clip-text text-transparent">
+              OCP
+            </span>
+            <span className="text-[9px] text-muted-foreground font-medium tracking-widest uppercase">
+              Offensive Cyber Planner
+            </span>
+          </div>
         </div>
 
+        <div className="w-px h-6 bg-border/50 mx-1" />
+
+        {/* Home nav */}
         <nav className="flex items-center gap-0.5">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setViewMode(item.id)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
-                viewMode === item.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'hover:bg-accent text-muted-foreground hover:text-foreground'
-              )}
-            >
-              {item.icon}
-              {item.label}
-            </button>
-          ))}
+          {NAV_HOME.map((item) => <NavButton key={item.id} item={item} />)}
         </nav>
 
-        {currentProject && (
-          <div className="ml-4 text-xs text-muted-foreground truncate max-w-[300px]">
-            {currentProject.name}
-          </div>
-        )}
+        <div className="w-px h-4 bg-border/30 mx-0.5" />
 
-        <div className="ml-auto flex items-center gap-1">
+        {/* Tools nav group */}
+        <nav className="flex items-center gap-0.5">
+          {NAV_TOOLS.map((item) => <NavButton key={item.id} item={item} />)}
+        </nav>
+
+        <div className="w-px h-4 bg-border/30 mx-0.5" />
+
+        {/* Utility nav */}
+        <nav className="flex items-center gap-0.5">
+          {NAV_UTIL.map((item) => <NavButton key={item.id} item={item} />)}
+        </nav>
+
+        {/* Right side actions */}
+        <div className="ml-auto flex items-center gap-0.5">
           {viewMode === 'tree' && currentProject && (
             <>
-              <button onClick={undo} disabled={!canUndo} className="p-1.5 rounded hover:bg-accent disabled:opacity-30" title="Undo (Ctrl+Z)">
-                <Undo2 size={15} />
+              <button onClick={undo} disabled={!canUndo} className="topbar-btn" title="Undo (Ctrl+Z)">
+                <Undo2 size={14} />
               </button>
-              <button onClick={redo} disabled={!canRedo} className="p-1.5 rounded hover:bg-accent disabled:opacity-30" title="Redo (Ctrl+Y)">
-                <Redo2 size={15} />
+              <button onClick={redo} disabled={!canRedo} className="topbar-btn" title="Redo (Ctrl+Y)">
+                <Redo2 size={14} />
               </button>
-              <div className="w-px h-5 bg-border mx-1" />
-              <button onClick={handleSnapshot} className="p-1.5 rounded hover:bg-accent" title="Save Snapshot">
-                <Save size={15} />
+              <div className="w-px h-4 bg-border/40 mx-1" />
+              <button onClick={handleSnapshot} className="topbar-btn" title="Save Snapshot">
+                <Save size={14} />
               </button>
-              <button onClick={handleExportJson} className="p-1.5 rounded hover:bg-accent" title="Export JSON">
-                <Download size={15} />
+              <button onClick={handleExportJson} className="topbar-btn" title="Export JSON">
+                <Download size={14} />
               </button>
-              <button onClick={handleExportPdf} className="p-1.5 rounded hover:bg-accent text-xs font-medium" title="Export PDF Report">
+              <button onClick={handleExportPdf} className="topbar-btn text-[10px] font-bold" title="Export PDF Report">
                 PDF
               </button>
-              <button onClick={handleExportMarkdown} className="p-1.5 rounded hover:bg-accent text-xs font-medium" title="Export Markdown Report">
+              <button onClick={handleExportMarkdown} className="topbar-btn text-[10px] font-bold" title="Export Markdown Report">
                 MD
               </button>
             </>
           )}
-          <button onClick={handleImport} className="p-1.5 rounded hover:bg-accent" title="Import JSON">
-            <Upload size={15} />
+          <button onClick={handleImport} className="topbar-btn" title="Import JSON">
+            <Upload size={14} />
           </button>
-          <div className="w-px h-5 bg-border mx-1" />
-          <button
-            onClick={() => setShortcutsOpen(true)}
-            className="p-1.5 rounded hover:bg-accent transition-colors"
-            title="Keyboard shortcuts (?)"
-          >
-            <Keyboard size={15} />
+          <div className="w-px h-4 bg-border/40 mx-1" />
+          {currentProject && (
+            <button
+              onClick={() => setAdvisorOpen(o => !o)}
+              className={cn('topbar-btn', advisorOpen && 'text-orange-400')}
+              title="Red Team Advisor"
+            >
+              <Swords size={14} />
+            </button>
+          )}
+          <button onClick={() => setHelpOpen(true)} className="topbar-btn" title="Help & Guide">
+            <HelpCircle size={14} />
+          </button>
+          <button onClick={() => setShortcutsOpen(true)} className="topbar-btn" title="Keyboard shortcuts (?)">
+            <Keyboard size={14} />
           </button>
           <button
             onClick={toggleDarkMode}
-            className="p-1.5 rounded hover:bg-accent transition-colors"
+            className="topbar-btn"
             title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            {darkMode ? <Sun size={15} /> : <Moon size={15} />}
+            {darkMode ? <Sun size={14} /> : <Moon size={14} />}
           </button>
         </div>
       </header>
 
       <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      <RedTeamAdvisorPanel open={advisorOpen} onClose={() => setAdvisorOpen(false)} />
     </>
   );
 }

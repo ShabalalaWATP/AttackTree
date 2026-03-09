@@ -6,7 +6,8 @@ import { NODE_TYPE_CONFIG, type NodeType, type LogicType, type NodeStatus, type 
 import { cn } from '@/utils/cn';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import toast from 'react-hot-toast';
-import { X, Plus, Trash2, Save, HelpCircle, MessageSquare, Tag, Send } from 'lucide-react';
+import { X, Plus, Trash2, Save, HelpCircle, MessageSquare, Tag, Send, Scale } from 'lucide-react';
+import { RiskChallengerPanel } from '@/components/RiskChallengerPanel';
 
 function getRiskTextClass(risk: number | null | undefined): string {
   if (risk == null) return 'text-muted-foreground';
@@ -41,6 +42,7 @@ export function NodeInspector() {
   const [dirty, setDirty] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'mitigation' | 'detection' | 'mapping' | 'comment'; id: string; title: string } | null>(null);
   const [scoringMode, setScoringMode] = useState<'simple' | 'advanced'>(getInitialScoringMode);
+  const [challengerOpen, setChallengerOpen] = useState(false);
 
   useEffect(() => {
     if (node) {
@@ -348,6 +350,14 @@ export function NodeInspector() {
             <Field label="CVE References">
               <input value={localData.cve_references || ''} onChange={(e) => updateField('cve_references', e.target.value)} className="input-field" placeholder="CVE-2024-XXXX" />
             </Field>
+
+            {/* Challenge Scores button */}
+            <button
+              onClick={() => setChallengerOpen(true)}
+              className="w-full flex items-center justify-center gap-2 py-2 mt-2 rounded-lg bg-gradient-to-r from-amber-500/10 to-red-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium hover:border-amber-500/40 transition-colors"
+            >
+              <Scale size={13} /> AI Challenge My Scores
+            </button>
           </>
         )}
 
@@ -443,6 +453,10 @@ export function NodeInspector() {
         confirmLabel="Delete"
         destructive
       />
+
+      {node && (
+        <RiskChallengerPanel node={node} open={challengerOpen} onClose={() => setChallengerOpen(false)} />
+      )}
     </div>
   );
 }

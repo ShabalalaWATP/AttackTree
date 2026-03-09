@@ -29,19 +29,43 @@ function getLogicBadge(logic: string): string {
 }
 
 function AttackTreeNodeInner({ data, selected }: NodeProps) {
-  const nodeData = data as unknown as AttackNodeData;
+  const nodeData = data as unknown as AttackNodeData & { _heatmapMode?: boolean; _criticalPath?: boolean };
   const config = NODE_TYPE_CONFIG[nodeData.node_type as NodeType] || NODE_TYPE_CONFIG.attack_step;
   const risk = nodeData.inherent_risk ?? nodeData.rolled_up_risk;
   const hasMitigations = (nodeData.mitigations?.length || 0) > 0;
   const hasMappings = (nodeData.reference_mappings?.length || 0) > 0;
+
+  // Heatmap background color
+  let heatmapBg: string | undefined;
+  if (nodeData._heatmapMode) {
+    if (risk == null || risk === 0) {
+      heatmapBg = 'rgba(107,114,128,0.1)';
+    } else if (!hasMitigations) {
+      heatmapBg = 'rgba(239,68,68,0.25)';
+    } else {
+      const maxEff = Math.max(...(nodeData.mitigations?.map(m => m.effectiveness) || [0]));
+      if (maxEff >= 0.7) {
+        heatmapBg = 'rgba(34,197,94,0.25)';
+      } else {
+        heatmapBg = 'rgba(245,158,11,0.25)';
+      }
+    }
+  }
+
+  const isCritical = nodeData._criticalPath;
 
   return (
     <div
       className={cn(
         'rounded-lg border-2 shadow-sm bg-card min-w-[180px] max-w-[260px] transition-all',
         selected ? 'border-primary ring-2 ring-primary/20' : 'border-border hover:border-primary/40',
+        isCritical && 'ring-2 ring-red-500/40 border-red-500',
       )}
-      style={{ borderLeftColor: config.color, borderLeftWidth: 4 }}
+      style={{
+        borderLeftColor: config.color,
+        borderLeftWidth: 4,
+        backgroundColor: heatmapBg,
+      }}
     >
       <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-muted-foreground !border-background" />
 
