@@ -14,9 +14,10 @@ import { AISuggestionsPanel } from '@/components/AISuggestionsPanel';
 import { AIAgentDialog } from '@/components/AIAgentDialog';
 import { AttackTreeNode } from '@/components/AttackTreeNode';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { StandaloneLanding } from '@/components/StandaloneLanding';
 import toast from 'react-hot-toast';
 import { cn } from '@/utils/cn';
-import { Search, Filter, Plus, Sparkles, Bot, ChevronRight, RefreshCw, Tag, X, LayoutGrid, Palette, CheckSquare, Trash2, Flame, Route, Group } from 'lucide-react';
+import { Search, Filter, Plus, Sparkles, Bot, ChevronRight, RefreshCw, Tag, X, LayoutGrid, Palette, CheckSquare, Trash2, Flame, Route, Group, GitBranch } from 'lucide-react';
 import { toPng, toSvg } from 'html-to-image';
 import { useQuery } from '@tanstack/react-query';
 import type { TagData } from '@/types';
@@ -222,7 +223,7 @@ export function TreeEditorView() {
 
   const addNode = useCallback(async (parentId: string | null, nodeType: NodeType = 'attack_step') => {
     const project = useStore.getState().currentProject;
-    if (!project) { toast('Open a project to add nodes', { icon: '📂' }); return; }
+    if (!project) { toast('Open a standalone scan or project scan workspace to add nodes', { icon: '📂' }); return; }
     const parent = useStore.getState().nodes.find(n => n.id === parentId);
     try {
       pushUndo('Add node');
@@ -244,7 +245,7 @@ export function TreeEditorView() {
   const addRootNode = () => addNode(null, 'goal');
 
   const handleRecalculate = async () => {
-    if (!currentProject) { toast('Open a project to recalculate risk', { icon: '📂' }); return; }
+    if (!currentProject) { toast('Open a standalone scan or project scan workspace to recalculate risk', { icon: '📂' }); return; }
     try {
       await api.recalculateRisk(currentProject.id);
       const nodes = await api.listNodes(currentProject.id);
@@ -263,7 +264,7 @@ export function TreeEditorView() {
       setCriticalPathRisk(0);
       return;
     }
-    if (!currentProject) { toast('Open a project to find critical paths', { icon: '📂' }); return; }
+    if (!currentProject) { toast('Open a standalone scan or project scan workspace to find critical paths', { icon: '📂' }); return; }
     try {
       const data = await api.getCriticalPath(currentProject.id);
       if (data.path.length === 0) {
@@ -432,6 +433,21 @@ export function TreeEditorView() {
       toast.success(`Deleted ${bulkCount} nodes`);
     } catch (e: any) { toast.error(e.message); }
   };
+
+  if (!currentProject) {
+    return (
+      <StandaloneLanding
+        icon={<GitBranch size={28} className="text-primary" />}
+        title="Attack Tree Workspace"
+        description="Build attack trees inside either a standalone scan workspace or a project scan workspace. The same tree editor, AI assist, AI agent, and risk tooling work in both modes."
+        features={[
+          { icon: <Plus size={15} className="text-primary" />, title: 'Tree Building', desc: 'Model objectives, branches, preconditions, pivots, detections, and mitigations.' },
+          { icon: <Sparkles size={15} className="text-primary" />, title: 'AI Expansion', desc: 'Generate missing attack paths, reference mappings, mitigations, and detections.' },
+          { icon: <LayoutGrid size={15} className="text-primary" />, title: 'Operational Layout', desc: 'Arrange, filter, group, and export the tree from the same workspace canvas.' },
+        ]}
+      />
+    );
+  }
 
   return (
     <div className="h-full flex">

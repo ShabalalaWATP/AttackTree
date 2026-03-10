@@ -1,14 +1,19 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, Float, Integer, ForeignKey, Table, JSON
+from sqlalchemy import Column, String, Text, DateTime, Float, Integer, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from ..database import Base
 
 
 class Tag(Base):
     __tablename__ = "tags"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_tags_user_name"),)
+
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    name = Column(String(100), nullable=False, unique=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    name = Column(String(100), nullable=False)
+
+    user = relationship("User", back_populates="tags")
 
 
 class NodeTag(Base):

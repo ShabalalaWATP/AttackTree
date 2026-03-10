@@ -5,7 +5,7 @@ import { cn } from '@/utils/cn';
 
 const SECTIONS = [
   { id: 'overview', label: 'Overview', icon: <Shield size={14} /> },
-  { id: 'projects', label: 'Projects', icon: <FolderOpen size={14} /> },
+  { id: 'projects', label: 'Workspaces', icon: <FolderOpen size={14} /> },
   { id: 'tree-editor', label: 'Tree Editor', icon: <GitBranch size={14} /> },
   { id: 'ai-assist', label: 'AI Assist', icon: <Sparkles size={14} /> },
   { id: 'ai-agent', label: 'AI Agent', icon: <Bot size={14} /> },
@@ -48,7 +48,7 @@ const CONTENT: Record<SectionId, { title: string; content: React.ReactNode }> = 
         </ul>
         <h4 className="font-semibold mt-4">Typical Workflow</h4>
         <ol className="list-decimal pl-5 space-y-1.5">
-          <li>Create a project (or use a template / AI Agent)</li>
+          <li>Create a workspace (or use a template / AI Agent)</li>
           <li>Build the attack tree in the Tree Editor</li>
           <li>Score nodes and add mitigations/detections</li>
           <li>Use AI tools: Brainstorm, Scenarios, Kill Chain, Threat Model</li>
@@ -60,21 +60,22 @@ const CONTENT: Record<SectionId, { title: string; content: React.ReactNode }> = 
     ),
   },
   projects: {
-    title: 'Projects',
+    title: 'Workspaces',
     content: (
       <div className="space-y-3 text-sm">
-        <p>Projects are the top-level containers for your attack trees.</p>
-        <h4 className="font-semibold">Creating a Project</h4>
+        <p>Workspaces are the top-level containers for your attack trees and analysis runs. Each workspace can be either a standalone scan or a project scan.</p>
+        <h4 className="font-semibold">Creating a Workspace</h4>
         <ul className="list-disc pl-5 space-y-1.5">
-          <li>Click <strong>+ New Project</strong> on the Projects page</li>
+          <li>Click <strong>+ New Workspace</strong> on the Workspaces page</li>
           <li>Enter a name, description, and root objective (attacker's goal)</li>
           <li>Choose a context preset (e.g. Web Application, Cloud, Enterprise Network)</li>
+          <li>Select whether the workspace should run as a standalone scan or a project scan</li>
         </ul>
         <h4 className="font-semibold mt-3">Templates</h4>
         <ul className="list-disc pl-5 space-y-1.5">
           <li>Click <strong>Templates</strong> to start from a pre-built attack tree</li>
           <li>11 templates available: Web App Compromise, Ransomware Intrusion, Supply Chain, Cloud IAM Abuse, API Auth Abuse, Android Reverse Engineering, Enterprise Phishing, OT Process Manipulation, Data Centre Disruption, Thick Client Tampering, AI Pipeline Compromise</li>
-          <li>The template creates a full project with pre-populated nodes, scores, and references</li>
+          <li>The template creates a full workspace with pre-populated nodes, scores, and references</li>
         </ul>
         <h4 className="font-semibold mt-3">Import / Export</h4>
         <ul className="list-disc pl-5 space-y-1.5">
@@ -168,7 +169,7 @@ const CONTENT: Record<SectionId, { title: string; content: React.ReactNode }> = 
         <p>AI Agent auto-generates an <strong>entire attack tree</strong> from a high-level objective — no manual node creation needed.</p>
         <h4 className="font-semibold">How to Use</h4>
         <ol className="list-decimal pl-5 space-y-1.5">
-          <li>Open a project in the Tree Editor</li>
+          <li>Open a standalone scan or project scan workspace in the Tree Editor</li>
           <li>Click the <strong>AI Agent</strong> button (robot icon) in the toolbar</li>
           <li>Either pick a <strong>Quick Preset</strong> or write your own objective</li>
           <li>Optionally describe the target scope and adjust depth/breadth sliders</li>

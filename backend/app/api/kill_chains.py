@@ -14,6 +14,11 @@ from ..models.kill_chain import KillChain
 from ..models.node import Node
 from ..models.project import Project
 from ..models.llm_config import LLMProviderConfig
+from ..services.access_control import (
+    get_active_provider_for_user,
+    require_kill_chain_access,
+    require_project_access,
+)
 from ..services import llm_service
 
 router = APIRouter(prefix="/kill-chains", tags=["kill_chains"])
@@ -28,6 +33,14 @@ MITRE_TACTICS = [
 CKC_PHASES = [
     "Reconnaissance", "Weaponization", "Delivery", "Exploitation",
     "Installation", "Command & Control", "Actions on Objectives"
+]
+
+UNIFIED_PHASES = [
+    "Reconnaissance", "Weaponization", "Social Engineering", "Exploitation",
+    "Persistence", "Defense Evasion", "Command & Control", "Pivoting",
+    "Discovery", "Privilege Escalation", "Execution", "Credential Access",
+    "Lateral Movement", "Collection", "Exfiltration", "Impact",
+    "Objectives", "Anti-Forensics"
 ]
 
 
@@ -51,10 +64,16 @@ class AIMapRequest(BaseModel):
     user_guidance: str = ""
 
 
+class AIGenerateKillChainRequest(BaseModel):
+    framework: str = "mitre_attck"
+    user_guidance: str = ""
+
+
 # --- Endpoints ---
 
 @router.get("/project/{project_id}")
 async def list_kill_chains(project_id: str, db: AsyncSession = Depends(get_db)):
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(KillChain).where(KillChain.project_id == project_id).order_by(KillChain.created_at.desc())
     )
@@ -63,6 +82,7 @@ async def list_kill_chains(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create_kill_chain(data: KillChainCreate, db: AsyncSession = Depends(get_db)):
+    await require_project_access(data.project_id, db)
     kc = KillChain(**data.model_dump())
     db.add(kc)
     await db.commit()
@@ -95,14 +115,13 @@ async def delete_kill_chain(kc_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{kc_id}/ai-map")
 async def ai_map_to_kill_chain(kc_id: str, data: AIMapRequest, db: AsyncSession = Depends(get_db)):
-    """AI maps attack tree nodes to kill chain phases, estimates dwell times and detection windows."""
+    """AI maps attack tree nodes to kill chain phases with rich operational detail."""
     kc = await _get_or_404(kc_id, db)
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
-    proj = await db.execute(select(Project).where(Project.id == kc.project_id))
-    project = proj.scalar_one_or_none()
+    project = await require_project_access(kc.project_id, db)
 
     nodes_result = await db.execute(
         select(Node).where(Node.project_id == kc.project_id)
@@ -110,103 +129,148 @@ async def ai_map_to_kill_chain(kc_id: str, data: AIMapRequest, db: AsyncSession 
     )
     nodes = nodes_result.scalars().all()
 
+    # Build rich node descriptions with mitigations/detections context
     if nodes:
-        nodes_text = "\n".join(
-            f"- id={n.id} [{n.node_type}] \"{n.title}\" threat_category=\"{n.threat_category}\" "
-            f"attack_surface=\"{n.attack_surface}\" risk={n.inherent_risk or '?'} "
-            f"mitigations={len(n.mitigations or [])} detections={len(n.detections or [])}"
-            for n in nodes[:60]
+        node_lines = []
+        for n in nodes[:80]:
+            mit_names = ", ".join(m.title for m in (n.mitigations or [])[:5]) or "none"
+            det_names = ", ".join(d.title for d in (n.detections or [])[:5]) or "none"
+            node_lines.append(
+                f"  - id=\"{n.id}\" type={n.node_type} title=\"{n.title}\"\n"
+                f"    description: {(n.description or '')[:200]}\n"
+                f"    threat_category=\"{n.threat_category}\" attack_surface=\"{n.attack_surface}\" "
+                f"platform=\"{n.platform or ''}\" required_access=\"{n.required_access or ''}\"\n"
+                f"    inherent_risk={n.inherent_risk or '?'} residual_risk={n.residual_risk or '?'} "
+                f"likelihood={n.likelihood or '?'} impact={n.impact or '?'}\n"
+                f"    mitigations=[{mit_names}] detections=[{det_names}]"
+            )
+        nodes_text = "\n".join(node_lines)
+        node_instruction = (
+            "Map each attack tree node to its most appropriate kill chain phase. "
+            "A node may appear in multiple phases if it spans multiple stages of the campaign. "
+            "Evaluate each node's mitigations and detections to assess defensive coverage per phase."
         )
-        node_instruction = "Map each node to the appropriate kill chain phase."
     else:
         nodes_text = "(No attack tree nodes exist yet)"
         node_instruction = (
-            "No attack tree nodes exist yet. Generate a realistic kill chain based on the project objective alone. "
-            "For each phase, describe the likely attacker activities, techniques, and tools instead of mapping node IDs. "
-            "Leave node_ids as empty arrays."
+            "No attack tree nodes exist yet. Generate a fully realistic kill chain based on the project "
+            "objective alone — as if you were writing an actual red team operation plan. For each phase, "
+            "describe specific attacker tradecraft, tools, and techniques. Leave mapped_nodes as empty arrays."
         )
 
-    phases = MITRE_TACTICS if kc.framework == "mitre_attck" else CKC_PHASES
+    if kc.framework == "mitre_attck":
+        phases = MITRE_TACTICS
+    elif kc.framework == "unified":
+        phases = UNIFIED_PHASES
+    else:
+        phases = CKC_PHASES
     phases_text = ", ".join(f'"{p}"' for p in phases)
 
-    prompt = f"""You are an expert red team operator and campaign planner. Map the following attack tree nodes to a kill chain timeline.
+    prompt = f"""You are a senior red team lead writing an operational campaign analysis. You have extensive experience conducting adversary simulations, purple team exercises, and breach assessments for Fortune 500 companies and government agencies.
 
-**Project:** {project.name if project else 'Unknown'}
-**Root Objective:** {project.root_objective if project else ''}
-**Framework:** {kc.framework}
-**Available Phases:** [{phases_text}]
-{f'**User Guidance:** {data.user_guidance}' if data.user_guidance else ''}
+**Campaign Context:**
+- **Target / Project:** {project.name if project else 'Unknown'}
+- **Root Objective:** {project.root_objective if project else 'Not specified'}
+- **Project Description:** {(project.description or '')[:300] if project else ''}
+- **Kill Chain Framework:** {kc.framework} — Phases: [{phases_text}]
+{f"- **Operator Guidance:** {data.user_guidance}" if data.user_guidance else ""}
 
-**Attack Tree Nodes:**
+**Attack Tree Nodes (your intelligence feed):**
 {nodes_text}
 
-{node_instruction} For each phase, estimate:
-- Detection window (how long defenders have to detect activity in this phase)
-- Estimated dwell time (how long the attacker spends here)
-- Break-the-chain opportunities (where defenders can disrupt the attack)
+**Your Mission:** {node_instruction}
 
-Return JSON:
+Produce a detailed operational kill chain analysis. For EVERY phase of the framework, provide:
+1. A specific description of attacker activity grounded in real-world tradecraft
+2. Named tools (e.g. Cobalt Strike, Impacket, BloodHound, Mimikatz, Burp Suite, Nuclei, subfinder, ffuf, Certipy, Rubeus)
+3. Specific MITRE ATT&CK technique IDs (e.g. T1566.001, T1059.001, T1078.002)
+4. Indicators of Compromise (IOCs) defenders should hunt for
+5. Log sources where this activity would be visible
+6. Actionable break-the-chain defensive opportunities
+
+Return the following JSON structure:
 {{
   "phases": [
     {{
-      "phase": "Phase name",
+      "phase": "Exact phase name from the framework",
       "phase_index": 1,
-      "description": "2-3 sentences describing what the attacker does in this phase for this specific campaign, including specific tools, techniques, or tradecraft",
+      "description": "3-5 sentences describing what the attacker does in this specific phase. Be concrete: name the tools, techniques, targets, and tradecraft. Write as operational notes, not generic descriptions.",
       "mapped_nodes": [
         {{
-          "node_id": "the node id from the attack tree, or empty string if no tree nodes",
+          "node_id": "exact node id from the list above",
           "node_title": "the node title",
-          "technique": "MITRE ATT&CK technique or specific attack technique used",
+          "technique_id": "MITRE ATT&CK ID e.g. T1566.001",
+          "technique_name": "Technique name e.g. Spearphishing Attachment",
           "confidence": 0.85
         }}
       ],
-      "detection_window": "e.g. 1-4 hours",
-      "dwell_time": "e.g. 2-8 hours",
-      "break_opportunities": ["opportunity 1", "opportunity 2"],
-      "difficulty": "trivial|easy|moderate|hard|very hard"
+      "tools": ["Specific tool names used in this phase"],
+      "iocs": ["Specific IOC descriptions: suspicious process names, file hashes patterns, C2 domains, registry keys, etc."],
+      "log_sources": ["Windows Security Event Log", "Sysmon", "EDR telemetry", "proxy logs", etc.],
+      "detection_window": "Realistic time range e.g. '15 min - 2 hours'",
+      "dwell_time": "How long the attacker operates in this phase e.g. '4-12 hours'",
+      "break_opportunities": ["Specific, actionable defensive opportunity with what to do"],
+      "difficulty": "trivial|easy|moderate|hard|very_hard",
+      "defensive_coverage": "none|minimal|partial|good|strong",
+      "coverage_notes": "Brief assessment of how well existing mitigations/detections cover this phase based on the attack tree data"
     }}
   ],
-  "campaign_summary": "Overall campaign narrative (3-5 paragraphs) describing the end-to-end operation from initial recon through objectives, written as a red team operation report",
-  "total_estimated_time": "e.g. 3-7 days",
-  "weakest_links": ["Description of weakest defensive points in this campaign"],
+  "campaign_summary": "Write a 4-6 paragraph red team operation report. Paragraph 1: Executive overview of the campaign and the threat actor profile. Paragraph 2: The initial compromise path and how the attacker establishes a foothold. Paragraph 3: Post-exploitation, lateral movement, and how the attacker reaches the objective. Paragraph 4: The defensive landscape — where security controls are strong and where they are weak. Paragraph 5: Overall risk assessment and what would happen if this campaign succeeds. Paragraph 6 (optional): Comparison to known real-world campaigns or APT groups that use similar TTPs.",
+  "total_estimated_time": "e.g. '5-14 days' with brief rationale",
+  "overall_risk_rating": "critical|high|medium|low",
+  "attack_complexity": "low|medium|high|very_high",
+  "coverage_score": 0.45,
+  "weakest_links": [
+    "Specific defensive gap with explanation of why it matters and what an attacker gains by exploiting it"
+  ],
+  "critical_path": "Describe the single most likely path from initial access to objective — the path of least resistance for a motivated attacker",
   "recommendations": [
-    {{"priority": "critical|high|medium|low", "title": "...", "description": "..."}}
+    {{
+      "priority": "critical|high|medium|low",
+      "title": "Specific, actionable recommendation title",
+      "description": "2-3 sentences: what to implement, how it disrupts the kill chain, and which phase(s) it addresses. Reference specific products, configurations, or detection rules where possible.",
+      "addresses_phases": ["Phase name 1", "Phase name 2"],
+      "effort": "low|medium|high"
+    }}
   ]
 }}
 
-Rules:
-1. Include ALL relevant phases for the framework, even if no tree nodes map directly — describe likely attacker activity anyway
-2. Phase names MUST match the framework phases exactly
-3. node_id must be the exact id from the attack tree nodes listed, or omit mapped_nodes for phases with no matching nodes
-4. Descriptions should be specific to this campaign, not generic
-5. Include at least 3 recommendations
+**Critical Rules:**
+1. Include ALL phases of the selected framework — even phases with no mapped nodes should have detailed descriptions of likely attacker activity for this campaign
+2. Phase names MUST exactly match: [{phases_text}]
+3. node_id values MUST exactly match IDs from the attack tree nodes listed above
+4. Every tool name must be a real, well-known offensive security tool
+5. Every technique_id must be a valid MITRE ATT&CK technique ID
+6. IOCs must be specific enough to be operationally useful (not generic like "suspicious activity")
+7. coverage_score is 0.0-1.0 representing how much of the kill chain has existing defensive coverage based on the mitigations/detections in the attack tree
+8. Provide at least 5 recommendations, with at least 2 rated critical or high
+9. Break opportunities should be specific enough that a SOC analyst could act on them immediately
+10. Write as a practitioner — avoid filler phrases, be direct and technical
 
-Return ONLY valid JSON."""
+Return ONLY valid JSON, no markdown fences."""
 
     config = _provider_to_config(provider)
     messages = [
-        {"role": "system", "content": "You are an expert red team operator and cyber security analyst. Respond only with valid JSON."},
+        {"role": "system", "content": "You are a senior red team lead and adversary simulation expert. You produce detailed, operationally accurate kill chain analyses grounded in real-world tradecraft. Respond only with valid JSON."},
         {"role": "user", "content": prompt},
     ]
 
-    response = await llm_service.chat_completion(config, messages, temperature=0.5)
+    response = await llm_service.chat_completion(config, messages, temperature=0.4, max_tokens=16000, timeout_override=300)
     if response["status"] != "success":
         raise HTTPException(502, f"LLM request failed: {response.get('message', '')}")
 
     parsed = llm_service.parse_json_object_response(response["content"])
 
-    # Normalize phases: ensure mapped_nodes format and phase_index exist
+    # Normalize phases robustly
     raw_phases = parsed.get("phases", [])
-    # Build a node lookup for enriching node_ids → mapped_nodes
     node_lookup = {n.id: n for n in nodes} if nodes else {}
     normalized_phases = []
     for i, phase in enumerate(raw_phases):
         if not isinstance(phase, dict):
             continue
-        # Normalize phase_index (AI might return "order" instead)
         if "phase_index" not in phase:
             phase["phase_index"] = phase.pop("order", i + 1)
-        # Normalize mapped_nodes: AI might return "node_ids" (flat string list) instead
+        # Normalize mapped_nodes from various AI output formats
         if "mapped_nodes" not in phase and "node_ids" in phase:
             node_ids = phase.pop("node_ids", [])
             phase["mapped_nodes"] = []
@@ -215,12 +279,23 @@ Return ONLY valid JSON."""
                 phase["mapped_nodes"].append({
                     "node_id": nid,
                     "node_title": node.title if node else nid,
-                    "technique": node.threat_category or "" if node else "",
+                    "technique_id": node.threat_category or "" if node else "",
+                    "technique_name": "",
                     "confidence": 0.8,
                 })
-        # Ensure mapped_nodes is at least an empty list
         if "mapped_nodes" not in phase:
             phase["mapped_nodes"] = []
+        # Ensure all expected fields exist with defaults
+        phase.setdefault("tools", [])
+        phase.setdefault("iocs", [])
+        phase.setdefault("log_sources", [])
+        phase.setdefault("break_opportunities", [])
+        phase.setdefault("detection_window", "")
+        phase.setdefault("dwell_time", "")
+        phase.setdefault("difficulty", "moderate")
+        phase.setdefault("defensive_coverage", "none")
+        phase.setdefault("coverage_notes", "")
+        phase.setdefault("description", "")
         normalized_phases.append(phase)
 
     kc.phases = normalized_phases
@@ -233,26 +308,22 @@ Return ONLY valid JSON."""
         **_to_dict(kc),
         "total_estimated_time": parsed.get("total_estimated_time", ""),
         "weakest_links": parsed.get("weakest_links", []),
+        "overall_risk_rating": parsed.get("overall_risk_rating", ""),
+        "attack_complexity": parsed.get("attack_complexity", ""),
+        "coverage_score": parsed.get("coverage_score", 0),
+        "critical_path": parsed.get("critical_path", ""),
     }
-
-
-class AIGenerateKillChainRequest(BaseModel):
-    framework: str = "mitre_attck"
 
 
 @router.post("/project/{project_id}/ai-generate")
 async def ai_generate_kill_chain(project_id: str, data: AIGenerateKillChainRequest = AIGenerateKillChainRequest(), db: AsyncSession = Depends(get_db)):
     """AI auto-generates a complete kill chain from the attack tree."""
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
-    proj = await db.execute(select(Project).where(Project.id == project_id))
-    project = proj.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    project = await require_project_access(project_id, db)
 
-    # Create the kill chain and immediately map
     kc = KillChain(
         project_id=project_id,
         name=f"Kill Chain — {project.name}",
@@ -263,25 +334,13 @@ async def ai_generate_kill_chain(project_id: str, data: AIGenerateKillChainReque
     await db.commit()
     await db.refresh(kc)
 
-    # Now map via AI
-    return await ai_map_to_kill_chain(kc.id, AIMapRequest(), db)
+    return await ai_map_to_kill_chain(kc.id, AIMapRequest(user_guidance=data.user_guidance), db)
 
 
 # --- Helpers ---
 
 async def _get_or_404(kc_id: str, db: AsyncSession) -> KillChain:
-    result = await db.execute(select(KillChain).where(KillChain.id == kc_id))
-    kc = result.scalar_one_or_none()
-    if not kc:
-        raise HTTPException(404, "Kill chain not found")
-    return kc
-
-
-async def _get_active_provider(db: AsyncSession):
-    result = await db.execute(
-        select(LLMProviderConfig).where(LLMProviderConfig.is_active == True).limit(1)
-    )
-    return result.scalar_one_or_none()
+    return await require_kill_chain_access(kc_id, db)
 
 
 def _provider_to_config(provider) -> dict:

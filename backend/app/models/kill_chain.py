@@ -22,4 +22,4 @@ class KillChain(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
 
-    project = relationship("Project", backref="kill_chains")
+    project = relationship("Project", back_populates="kill_chains")

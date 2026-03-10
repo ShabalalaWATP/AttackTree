@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/utils/api';
+import { useAuthStore } from '@/stores/useAuthStore';
 import toast from 'react-hot-toast';
 import { cn } from '@/utils/cn';
 import { Plus, Trash2, TestTube, Loader2, CheckCircle, XCircle, Server, Shield, Key } from 'lucide-react';
 
 export function SettingsView() {
   const queryClient = useQueryClient();
+  const user = useAuthStore((state) => state.user);
   const { data: providers, isLoading } = useQuery({ queryKey: ['llm-providers'], queryFn: api.listProviders });
 
   const [editing, setEditing] = useState<any>(null);
@@ -112,10 +114,13 @@ export function SettingsView() {
           <h3 className="font-semibold text-sm mb-3">Application Info</h3>
           <div className="space-y-1 text-xs text-muted-foreground">
             <p><strong>Version:</strong> 1.0.0</p>
-            <p><strong>Mode:</strong> Local / Single-user</p>
+            <p><strong>Mode:</strong> Authenticated multi-user workspace</p>
+            <p><strong>Signed in as:</strong> {user?.username || 'Unknown user'}</p>
+            <p><strong>Email:</strong> {user?.email || 'Unknown email'}</p>
             <p><strong>Storage:</strong> SQLite</p>
+            <p><strong>Providers:</strong> Per-user encrypted provider settings</p>
             <p><strong>Telemetry:</strong> Disabled</p>
-            <p><strong>Network:</strong> Offline-capable (LLM features require configured endpoint)</p>
+            <p><strong>Network:</strong> Offline-capable (LLM features require a configured endpoint for the current user)</p>
           </div>
         </div>
       </div>

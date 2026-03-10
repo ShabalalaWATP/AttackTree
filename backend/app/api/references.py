@@ -5,6 +5,8 @@ from ..database import get_db
 from ..models.reference_mapping import ReferenceMapping
 from ..models.node import Node
 from ..schemas.reference_mapping import ReferenceMappingCreate, ReferenceMappingUpdate, ReferenceMappingResponse
+from ..services.access_control import require_node_access
+from ..services.auth import get_current_user_id
 from ..services.audit import log_event
 
 router = APIRouter(prefix="/references", tags=["references"])
@@ -12,17 +14,18 @@ router = APIRouter(prefix="/references", tags=["references"])
 
 @router.get("/node/{node_id}", response_model=list[ReferenceMappingResponse])
 async def list_mappings(node_id: str, db: AsyncSession = Depends(get_db)):
+    await require_node_access(node_id, db)
     result = await db.execute(select(ReferenceMapping).where(ReferenceMapping.node_id == node_id))
     return [ReferenceMappingResponse.model_validate(r) for r in result.scalars().all()]
 
 
 @router.post("", response_model=ReferenceMappingResponse, status_code=201)
 async def create_mapping(data: ReferenceMappingCreate, db: AsyncSession = Depends(get_db)):
+    node = await require_node_access(data.node_id, db)
     ref = ReferenceMapping(**data.model_dump())
     db.add(ref)
 
     # Log audit event
-    node = await db.get(Node, data.node_id)
     if node:
         await log_event(db, node.project_id, "mapping_added", "reference", "", {"node_id": data.node_id, "ref_id": data.ref_id, "framework": data.framework})
 
@@ -33,7 +36,14 @@ async def create_mapping(data: ReferenceMappingCreate, db: AsyncSession = Depend
 
 @router.patch("/{mapping_id}", response_model=ReferenceMappingResponse)
 async def update_mapping(mapping_id: str, data: ReferenceMappingUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(ReferenceMapping).where(ReferenceMapping.id == mapping_id))
+    result = await db.execute(
+        select(ReferenceMapping)
+        .join(Node, ReferenceMapping.node_id == Node.id)
+        .where(
+            ReferenceMapping.id == mapping_id,
+            Node.project.has(user_id=get_current_user_id()),
+        )
+    )
     ref = result.scalar_one_or_none()
     if not ref:
         raise HTTPException(404, "Mapping not found")
@@ -43,7 +53,7 @@ async def update_mapping(mapping_id: str, data: ReferenceMappingUpdate, db: Asyn
         setattr(ref, key, value)
 
     # Log audit event
-    node = await db.get(Node, ref.node_id)
+    node = await require_node_access(ref.node_id, db)
     if node:
         await log_event(db, node.project_id, "mapping_updated", "reference", mapping_id, {"ref_id": ref.ref_id, "framework": ref.framework})
 
@@ -54,13 +64,20 @@ async def update_mapping(mapping_id: str, data: ReferenceMappingUpdate, db: Asyn
 
 @router.delete("/{mapping_id}", status_code=204)
 async def delete_mapping(mapping_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(ReferenceMapping).where(ReferenceMapping.id == mapping_id))
+    result = await db.execute(
+        select(ReferenceMapping)
+        .join(Node, ReferenceMapping.node_id == Node.id)
+        .where(
+            ReferenceMapping.id == mapping_id,
+            Node.project.has(user_id=get_current_user_id()),
+        )
+    )
     ref = result.scalar_one_or_none()
     if not ref:
         raise HTTPException(404, "Mapping not found")
 
     # Log audit event
-    node = await db.get(Node, ref.node_id)
+    node = await require_node_access(ref.node_id, db)
     if node:
         await log_event(db, node.project_id, "mapping_removed", "reference", mapping_id, {"node_id": ref.node_id, "ref_id": ref.ref_id})
 

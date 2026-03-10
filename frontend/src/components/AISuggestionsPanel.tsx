@@ -1,26 +1,121 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
-import { NODE_TYPE_CONFIG, type NodeType } from '@/types';
+import {
+  NODE_TYPE_CONFIG,
+  type NodeType,
+  type AttackNodeData,
+  type SuggestedNode,
+  type NodeExtendedMetadata,
+  type VulnerabilityCard,
+} from '@/types';
 import toast from 'react-hot-toast';
-import { Sparkles, Check, X, Loader2, Brain, FileText, Shield, MapPin } from 'lucide-react';
+import { Sparkles, Check, X, Loader2, Brain, FileText, Shield, MapPin, FlaskConical } from 'lucide-react';
 import { cn } from '@/utils/cn';
+
+function getNodeMetadata(node?: AttackNodeData): NodeExtendedMetadata {
+  if (!node?.extended_metadata || typeof node.extended_metadata !== 'object' || Array.isArray(node.extended_metadata)) {
+    return {};
+  }
+  return node.extended_metadata;
+}
+
+function getVulnerabilityCards(node?: AttackNodeData): VulnerabilityCard[] {
+  const metadata = getNodeMetadata(node);
+  if (!Array.isArray(metadata.vulnerability_cards)) {
+    return [];
+  }
+  return metadata.vulnerability_cards.filter((card): card is VulnerabilityCard => !!card && typeof card === 'object');
+}
+
+function inferPromptProfile(node: AttackNodeData | undefined, contextPreset: string | undefined): string {
+  const metadata = getNodeMetadata(node);
+  const explicitProfile = String(metadata.prompt_profile || '').trim();
+  if (explicitProfile) {
+    return explicitProfile;
+  }
+
+  const preset = String(contextPreset || '').trim().toLowerCase();
+  if (preset === 'software_reverse_engineering') {
+    return 'reverse_engineering';
+  }
+  if (preset === 'vulnerability_research') {
+    return 'vulnerability_research';
+  }
+  if (preset === 'embedded_firmware_research') {
+    return 'reverse_engineering';
+  }
+
+  if (getVulnerabilityCards(node).length > 0) {
+    return 'vulnerability_research';
+  }
+
+  const combinedText = [
+    node?.title,
+    node?.description,
+    node?.platform,
+    node?.attack_surface,
+    metadata.research_domain,
+    metadata.investigation_summary,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]/g, ' ');
+
+  if (
+    combinedText.includes('reverse engineering')
+    || combinedText.includes('patch diff')
+    || combinedText.includes('memory corruption')
+    || combinedText.includes('firmware')
+    || combinedText.includes('frida')
+    || combinedText.includes('ghidra')
+  ) {
+    return 'reverse_engineering';
+  }
+  if (
+    combinedText.includes('vulnerability research')
+    || combinedText.includes('exploit primitive')
+    || combinedText.includes('crash triage')
+    || combinedText.includes('fuzzing')
+  ) {
+    return 'vulnerability_research';
+  }
+
+  return 'standard';
+}
 
 export function AISuggestionsPanel() {
   const { selectedNodeId, nodes, currentProject, setAiSuggestionsOpen, pushUndo, addNodeLocal } = useStore();
   const selectedNode = nodes.find(n => n.id === selectedNodeId);
-  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const selectedNodeMetadata = getNodeMetadata(selectedNode);
+  const vulnerabilityCards = getVulnerabilityCards(selectedNode);
+  const inferredPromptProfile = inferPromptProfile(selectedNode, currentProject?.context_preset);
+  const [suggestions, setSuggestions] = useState<SuggestedNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [summaryText, setSummaryText] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [promptUsed, setPromptUsed] = useState('');
   const [suggestionType, setSuggestionType] = useState('branches');
+  const [technicalDepth, setTechnicalDepth] = useState<'standard' | 'deep'>('standard');
+  const [promptProfile, setPromptProfile] = useState('auto');
+  const [analystContext, setAnalystContext] = useState('');
+
+  useEffect(() => {
+    const nextProfile = inferPromptProfile(selectedNode, currentProject?.context_preset);
+    setPromptProfile('auto');
+    setTechnicalDepth(nextProfile === 'standard' ? 'standard' : 'deep');
+    setAnalystContext('');
+  }, [selectedNodeId, selectedNode?.updated_at, currentProject?.id]);
 
   const handleSuggest = async () => {
     if (!selectedNodeId || !currentProject) {
       toast.error('Select a node first');
       return;
     }
+
+    const resolvedPromptProfile = promptProfile === 'auto' ? inferredPromptProfile : promptProfile;
+
     setLoading(true);
     setSuggestions([]);
     try {
@@ -28,6 +123,9 @@ export function AISuggestionsPanel() {
         node_id: selectedNodeId,
         project_id: currentProject.id,
         suggestion_type: suggestionType,
+        additional_context: analystContext.trim(),
+        technical_depth: technicalDepth,
+        prompt_profile: resolvedPromptProfile === 'standard' ? '' : resolvedPromptProfile,
       });
       setSuggestions(result.suggestions);
       setPromptUsed(result.prompt_used || '');
@@ -119,6 +217,82 @@ export function AISuggestionsPanel() {
                 {st.icon} {st.label}
               </button>
             ))}
+          </div>
+
+          <div className="space-y-2 rounded-lg border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Answer Depth
+              </div>
+              {vulnerabilityCards.length > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+                  <FlaskConical size={10} /> {vulnerabilityCards.length} card{vulnerabilityCards.length === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+
+            <div className="flex rounded-lg border overflow-hidden">
+              <button
+                onClick={() => setTechnicalDepth('standard')}
+                className={cn(
+                  'flex-1 px-3 py-1.5 text-xs font-medium transition-colors',
+                  technicalDepth === 'standard' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+                )}
+              >
+                Standard
+              </button>
+              <button
+                onClick={() => setTechnicalDepth('deep')}
+                className={cn(
+                  'flex-1 px-3 py-1.5 text-xs font-medium transition-colors',
+                  technicalDepth === 'deep' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+                )}
+              >
+                Deep Technical
+              </button>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Prompt Profile</label>
+              <select
+                value={promptProfile}
+                onChange={(e) => setPromptProfile(e.target.value)}
+                className="input-field mt-1"
+              >
+                <option value="auto">Auto ({inferredPromptProfile})</option>
+                <option value="standard">Standard</option>
+                <option value="deep_technical">Deep Technical</option>
+                <option value="reverse_engineering">Reverse Engineering</option>
+                <option value="vulnerability_research">Vulnerability Research</option>
+                <option value="exploit_development">Exploit Development</option>
+              </select>
+            </div>
+
+            {(selectedNodeMetadata.investigation_summary || vulnerabilityCards.length > 0) && (
+              <div className="rounded-md bg-muted/60 p-2 text-[11px] text-muted-foreground space-y-1">
+                {selectedNodeMetadata.investigation_summary && (
+                  <div>
+                    <span className="font-medium text-foreground">Investigation summary:</span> {String(selectedNodeMetadata.investigation_summary)}
+                  </div>
+                )}
+                {vulnerabilityCards.length > 0 && (
+                  <div>
+                    AI will include the node's vulnerability cards automatically when generating suggestions.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div>
+              <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Analyst Guidance</label>
+              <textarea
+                value={analystContext}
+                onChange={(e) => setAnalystContext(e.target.value)}
+                rows={3}
+                className="input-field mt-1"
+                placeholder="Add immediate direction for this suggestion pass, such as trust boundaries, bug-class hypotheses, or tools the AI should focus on."
+              />
+            </div>
           </div>
 
           <button

@@ -10,7 +10,9 @@ from ..models.mitigation import Mitigation
 from ..models.detection import Detection
 from ..models.reference_mapping import ReferenceMapping
 from ..schemas.node import NodeCreate, NodeUpdate, NodeResponse
+from ..services.auth import get_current_user_id
 from ..services.risk_engine import compute_inherent_risk, compute_residual_risk, compute_advanced_risk
+from ..services.access_control import require_node_access, require_project_access
 from ..services.audit import log_event
 
 router = APIRouter(prefix="/nodes", tags=["nodes"])
@@ -22,6 +24,7 @@ def _node_to_response(node: Node) -> NodeResponse:
 
 @router.get("/project/{project_id}", response_model=list[NodeResponse])
 async def list_nodes(project_id: str, db: AsyncSession = Depends(get_db)):
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(Node)
         .where(Node.project_id == project_id)
@@ -39,6 +42,7 @@ async def list_nodes(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=NodeResponse, status_code=201)
 async def create_node(data: NodeCreate, db: AsyncSession = Depends(get_db)):
+    await require_project_access(data.project_id, db)
     node = Node(**data.model_dump())
 
     # Compute initial scores
@@ -63,25 +67,31 @@ async def create_node(data: NodeCreate, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{node_id}", response_model=NodeResponse)
 async def get_node(node_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Node).where(Node.id == node_id)
-        .options(selectinload(Node.mitigations), selectinload(Node.detections), selectinload(Node.reference_mappings), selectinload(Node.tags))
+    node = await require_node_access(
+        node_id,
+        db,
+        options=(
+            selectinload(Node.mitigations),
+            selectinload(Node.detections),
+            selectinload(Node.reference_mappings),
+            selectinload(Node.tags),
+        ),
     )
-    node = result.scalar_one_or_none()
-    if not node:
-        raise HTTPException(404, "Node not found")
     return _node_to_response(node)
 
 
 @router.patch("/{node_id}", response_model=NodeResponse)
 async def update_node(node_id: str, data: NodeUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Node).where(Node.id == node_id)
-        .options(selectinload(Node.mitigations), selectinload(Node.detections), selectinload(Node.reference_mappings), selectinload(Node.tags))
+    node = await require_node_access(
+        node_id,
+        db,
+        options=(
+            selectinload(Node.mitigations),
+            selectinload(Node.detections),
+            selectinload(Node.reference_mappings),
+            selectinload(Node.tags),
+        ),
     )
-    node = result.scalar_one_or_none()
-    if not node:
-        raise HTTPException(404, "Node not found")
 
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
@@ -113,13 +123,12 @@ async def update_node(node_id: str, data: NodeUpdate, db: AsyncSession = Depends
 
 @router.delete("/{node_id}", status_code=204)
 async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Node).where(Node.id == node_id))
-    node = result.scalar_one_or_none()
-    if not node:
-        raise HTTPException(404, "Node not found")
+    node = await require_node_access(node_id, db)
 
     # Re-parent children to this node's parent
-    children_result = await db.execute(select(Node).where(Node.parent_id == node_id))
+    children_result = await db.execute(
+        select(Node).where(Node.parent_id == node_id, Node.project_id == node.project_id)
+    )
     children = children_result.scalars().all()
     for child in children:
         child.parent_id = node.parent_id
@@ -131,13 +140,16 @@ async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{node_id}/duplicate", response_model=NodeResponse, status_code=201)
 async def duplicate_node(node_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Node).where(Node.id == node_id)
-        .options(selectinload(Node.mitigations), selectinload(Node.detections), selectinload(Node.reference_mappings), selectinload(Node.tags))
+    original = await require_node_access(
+        node_id,
+        db,
+        options=(
+            selectinload(Node.mitigations),
+            selectinload(Node.detections),
+            selectinload(Node.reference_mappings),
+            selectinload(Node.tags),
+        ),
     )
-    original = result.scalar_one_or_none()
-    if not original:
-        raise HTTPException(404, "Node not found")
 
     import uuid
     new_node = Node(
@@ -201,7 +213,13 @@ class BulkDeleteRequest(BaseModel):
 @router.post("/bulk/update")
 async def bulk_update_nodes(data: BulkUpdateRequest, db: AsyncSession = Depends(get_db)):
     """Apply the same partial update to multiple nodes."""
-    result = await db.execute(select(Node).where(Node.id.in_(data.node_ids)))
+    result = await db.execute(
+        select(Node)
+        .where(
+            Node.id.in_(data.node_ids),
+            Node.project.has(user_id=get_current_user_id()),
+        )
+    )
     nodes = result.scalars().all()
     if not nodes:
         raise HTTPException(404, "No matching nodes found")
@@ -214,7 +232,13 @@ async def bulk_update_nodes(data: BulkUpdateRequest, db: AsyncSession = Depends(
         # Recompute risk if scoring fields changed
         scoring_keys = {"likelihood", "impact", "effort", "exploitability", "detectability"}
         if scoring_keys & data.updates.keys():
-            node.inherent_risk = compute_inherent_risk(node.likelihood, node.impact)
+            node.inherent_risk = compute_inherent_risk(
+                node.likelihood,
+                node.impact,
+                node.effort,
+                node.exploitability,
+                node.detectability,
+            )
 
     await db.commit()
     return {"updated": len(nodes)}
@@ -224,14 +248,22 @@ async def bulk_update_nodes(data: BulkUpdateRequest, db: AsyncSession = Depends(
 async def bulk_delete_nodes(data: BulkDeleteRequest, db: AsyncSession = Depends(get_db)):
     """Delete multiple nodes. Re-parents children to deleted node's parent."""
     ids_set = set(data.node_ids)
-    result = await db.execute(select(Node).where(Node.id.in_(data.node_ids)))
+    result = await db.execute(
+        select(Node)
+        .where(
+            Node.id.in_(data.node_ids),
+            Node.project.has(user_id=get_current_user_id()),
+        )
+    )
     nodes = result.scalars().all()
     if not nodes:
         raise HTTPException(404, "No matching nodes found")
 
     for node in nodes:
         # Re-parent children that are not also being deleted
-        children_result = await db.execute(select(Node).where(Node.parent_id == node.id))
+        children_result = await db.execute(
+            select(Node).where(Node.parent_id == node.id, Node.project_id == node.project_id)
+        )
         for child in children_result.scalars().all():
             if child.id not in ids_set:
                 child.parent_id = node.parent_id
@@ -254,6 +286,7 @@ class CriticalPathResponse(BaseModel):
 @router.get("/project/{project_id}/critical-path", response_model=CriticalPathResponse)
 async def get_critical_path(project_id: str, db: AsyncSession = Depends(get_db)):
     """Compute the highest-risk root-to-leaf path in the attack tree."""
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(Node)
         .where(Node.project_id == project_id)

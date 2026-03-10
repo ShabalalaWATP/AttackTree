@@ -26,4 +26,4 @@ class ThreatModel(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
 
-    project = relationship("Project", backref="threat_models")
+    project = relationship("Project", back_populates="threat_models")

@@ -4,6 +4,7 @@ from sqlalchemy import select
 from ..database import get_db
 from ..models.audit_event import AuditEvent
 from ..schemas.audit_event import AuditEventResponse
+from ..services.access_control import require_project_access
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -15,6 +16,7 @@ async def list_audit_events(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(AuditEvent)
         .where(AuditEvent.project_id == project_id)

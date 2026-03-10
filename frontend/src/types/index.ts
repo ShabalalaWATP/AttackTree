@@ -51,6 +51,32 @@ export interface TagData {
   name: string;
 }
 
+export interface VulnerabilityCard {
+  id: string;
+  title: string;
+  software_family: string;
+  software_version: string;
+  affected_component: string;
+  vulnerability_type: string;
+  attack_surface: string;
+  entry_point: string;
+  root_cause: string;
+  primitive: string;
+  reproduction_steps: string;
+  exploitation_notes: string;
+  references: string;
+  severity: string;
+  observed_impact: string;
+}
+
+export interface NodeExtendedMetadata {
+  prompt_profile?: string;
+  research_domain?: string;
+  investigation_summary?: string;
+  vulnerability_cards?: VulnerabilityCard[];
+  [key: string]: unknown;
+}
+
 export interface AuditEventData {
   id: string;
   project_id: string;
@@ -98,7 +124,7 @@ export interface AttackNodeData {
   assumptions: string;
   analyst: string;
   cve_references: string;
-  extended_metadata: Record<string, unknown>;
+  extended_metadata: NodeExtendedMetadata;
   created_at: string;
   updated_at: string;
   mitigations: MitigationData[];
@@ -114,9 +140,28 @@ export interface ProjectData {
   context_preset: string;
   root_objective: string;
   owner: string;
+  workspace_mode: 'project_scan' | 'standalone_scan';
   created_at: string;
   updated_at: string;
   node_count: number;
+}
+
+export interface AuthUserData {
+  id: string;
+  name: string;
+  username: string;
+  email: string;
+  role: 'admin' | 'user';
+  is_active: boolean;
+  password_reset_required: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuthLoginResponseData {
+  access_token: string;
+  token_type: string;
+  user: AuthUserData;
 }
 
 export interface TemplateInfo {
@@ -125,12 +170,20 @@ export interface TemplateInfo {
   description: string;
   context_preset: string;
   node_count: number;
+  template_family: string;
+  technical_profile: string;
+  focus_areas: string[];
+  prompt_hints: string[];
 }
 
 export interface TemplateData {
   name: string;
   description: string;
   context_preset: string;
+  template_family?: string;
+  technical_profile?: string;
+  focus_areas?: string[];
+  prompt_hints?: string[];
   root_objective: string;
   nodes: Partial<AttackNodeData>[];
 }
@@ -174,6 +227,22 @@ export interface SuggestedNode {
   impact: number | null;
 }
 
+export interface LLMSuggestRequestData {
+  node_id: string;
+  project_id: string;
+  suggestion_type: string;
+  additional_context?: string;
+  technical_depth?: string;
+  prompt_profile?: string;
+}
+
+export interface LLMSuggestResponseData {
+  suggestions: SuggestedNode[];
+  prompt_used: string;
+  model_used: string;
+  raw_response: string;
+}
+
 export interface ReferenceItem {
   id: string;
   name: string;
@@ -207,6 +276,9 @@ export const CONTEXT_PRESETS = [
   { id: 'api_microservice', name: 'API / Microservice' },
   { id: 'android_application', name: 'Android Application' },
   { id: 'thick_client', name: 'Thick Client / Desktop' },
+  { id: 'software_reverse_engineering', name: 'Software Reverse Engineering' },
+  { id: 'vulnerability_research', name: 'Vulnerability Research' },
+  { id: 'embedded_firmware_research', name: 'Embedded Firmware Research' },
   { id: 'enterprise', name: 'Enterprise / Active Directory' },
   { id: 'cloud_iam', name: 'Cloud / IAM / Kubernetes' },
   { id: 'data_centre', name: 'Data Centre / Facilities' },

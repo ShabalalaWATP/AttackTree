@@ -9,6 +9,13 @@ from ..models.node import Node
 from ..models.project import Project
 from ..schemas.llm_config import LLMProviderConfigCreate, LLMProviderConfigUpdate, LLMProviderConfigResponse
 from ..schemas.llm_request import LLMSuggestRequest, LLMSuggestResponse, LLMSummaryRequest, LLMSummaryResponse, SuggestedNode, LLMAgentRequest, LLMAgentResponse
+from ..services.access_control import (
+    get_active_provider_for_user,
+    require_node_access,
+    require_project_access,
+    require_provider_access,
+)
+from ..services.auth import get_current_user_id
 from ..services.crypto import encrypt_value
 from ..services import llm_service
 from ..services.risk_engine import compute_inherent_risk
@@ -18,7 +25,11 @@ router = APIRouter(prefix="/llm", tags=["llm"])
 
 @router.get("/providers", response_model=list[LLMProviderConfigResponse])
 async def list_providers(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMProviderConfig).order_by(LLMProviderConfig.created_at))
+    result = await db.execute(
+        select(LLMProviderConfig)
+        .where(LLMProviderConfig.user_id == get_current_user_id())
+        .order_by(LLMProviderConfig.created_at)
+    )
     providers = result.scalars().all()
     return [_provider_response(p) for p in providers]
 
@@ -26,6 +37,7 @@ async def list_providers(db: AsyncSession = Depends(get_db)):
 @router.post("/providers", response_model=LLMProviderConfigResponse, status_code=201)
 async def create_provider(data: LLMProviderConfigCreate, db: AsyncSession = Depends(get_db)):
     provider = LLMProviderConfig(
+        user_id=get_current_user_id(),
         name=data.name,
         base_url=data.base_url,
         api_key_encrypted=encrypt_value(data.api_key) if data.api_key else "",
@@ -38,6 +50,8 @@ async def create_provider(data: LLMProviderConfigCreate, db: AsyncSession = Depe
         client_cert_path=data.client_cert_path,
         client_key_path=data.client_key_path,
     )
+    if provider.is_active:
+        await _deactivate_other_providers(db)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -46,16 +60,15 @@ async def create_provider(data: LLMProviderConfigCreate, db: AsyncSession = Depe
 
 @router.patch("/providers/{provider_id}", response_model=LLMProviderConfigResponse)
 async def update_provider(provider_id: str, data: LLMProviderConfigUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMProviderConfig).where(LLMProviderConfig.id == provider_id))
-    provider = result.scalar_one_or_none()
-    if not provider:
-        raise HTTPException(404, "Provider not found")
+    provider = await require_provider_access(provider_id, db)
 
     update_data = data.model_dump(exclude_unset=True)
     if "api_key" in update_data:
         api_key = update_data.pop("api_key")
         if api_key:
             provider.api_key_encrypted = encrypt_value(api_key)
+    if update_data.get("is_active"):
+        await _deactivate_other_providers(db, exclude_provider_id=provider.id)
     for key, value in update_data.items():
         setattr(provider, key, value)
 
@@ -66,20 +79,14 @@ async def update_provider(provider_id: str, data: LLMProviderConfigUpdate, db: A
 
 @router.delete("/providers/{provider_id}", status_code=204)
 async def delete_provider(provider_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMProviderConfig).where(LLMProviderConfig.id == provider_id))
-    provider = result.scalar_one_or_none()
-    if not provider:
-        raise HTTPException(404, "Provider not found")
+    provider = await require_provider_access(provider_id, db)
     await db.delete(provider)
     await db.commit()
 
 
 @router.post("/providers/{provider_id}/test")
 async def test_provider(provider_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMProviderConfig).where(LLMProviderConfig.id == provider_id))
-    provider = result.scalar_one_or_none()
-    if not provider:
-        raise HTTPException(404, "Provider not found")
+    provider = await require_provider_access(provider_id, db)
 
     config = _provider_to_config_dict(provider)
     test_result = await llm_service.test_connection(config)
@@ -95,32 +102,59 @@ async def test_provider(provider_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/suggest", response_model=LLMSuggestResponse)
 async def suggest_branches(data: LLMSuggestRequest, db: AsyncSession = Depends(get_db)):
     # Get active provider
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured. Configure one in Settings.")
 
     # Get node and tree context
-    node_result = await db.execute(select(Node).where(Node.id == data.node_id))
-    node = node_result.scalar_one_or_none()
-    if not node:
-        raise HTTPException(404, "Node not found")
+    node = await require_node_access(data.node_id, db)
+    project = await require_project_access(data.project_id, db)
+    if node.project_id != project.id:
+        raise HTTPException(400, "Node does not belong to the supplied project")
 
     # Get tree context (ancestors + siblings for context)
     all_nodes = await db.execute(select(Node).where(Node.project_id == data.project_id))
     nodes_list = all_nodes.scalars().all()
-    tree_context = "\n".join(f"- [{n.node_type}] {n.title}" for n in nodes_list[:30])
+    tree_context = "\n".join(
+        f"- [{n.node_type}] {n.title} | surface={n.attack_surface or 'n/a'} | "
+        f"platform={n.platform or 'n/a'} | category={n.threat_category or 'n/a'}"
+        for n in nodes_list[:40]
+    )
 
     node_data = {
-        "title": node.title, "node_type": node.node_type,
-        "description": node.description, "platform": node.platform,
+        "title": node.title,
+        "node_type": node.node_type,
+        "description": node.description,
+        "platform": node.platform,
+        "attack_surface": node.attack_surface,
+        "threat_category": node.threat_category,
+        "required_access": node.required_access,
+        "required_privileges": node.required_privileges,
+        "required_tools": node.required_tools,
+        "required_skill": node.required_skill,
+        "notes": node.notes,
+        "cve_references": node.cve_references,
+        "extended_metadata": node.extended_metadata or {},
+        "project_context": {
+            "name": project.name,
+            "context_preset": project.context_preset,
+            "root_objective": project.root_objective,
+            "workspace_mode": (project.metadata_json or {}).get("workspace_mode", "project_scan"),
+        },
     }
 
     config = _provider_to_config_dict(provider)
     messages = llm_service.build_branch_suggestion_prompt(
-        node_data, tree_context, data.suggestion_type
+        node_data,
+        tree_context,
+        data.suggestion_type,
+        additional_context=data.additional_context,
+        technical_depth=data.technical_depth,
+        prompt_profile=data.prompt_profile,
     )
 
-    response = await llm_service.chat_completion(config, messages, temperature=0.7)
+    response = await llm_service.chat_completion(config, messages, temperature=0.7,
+                                                  max_tokens=8192, timeout_override=120)
 
     if response["status"] != "success":
         raise HTTPException(502, f"LLM request failed: {response.get('message', 'Unknown error')}")
@@ -141,6 +175,7 @@ async def suggest_branches(data: LLMSuggestRequest, db: AsyncSession = Depends(g
     # Record job history
     job = LLMJobHistory(
         provider_id=provider.id,
+        user_id=get_current_user_id(),
         project_id=data.project_id,
         node_id=data.node_id,
         job_type=f"suggest_{data.suggestion_type}",
@@ -163,15 +198,12 @@ async def suggest_branches(data: LLMSuggestRequest, db: AsyncSession = Depends(g
 
 @router.post("/summarize", response_model=LLMSummaryResponse)
 async def generate_summary(data: LLMSummaryRequest, db: AsyncSession = Depends(get_db)):
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
     # Get project and nodes
-    proj_result = await db.execute(select(Project).where(Project.id == data.project_id))
-    project = proj_result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    project = await require_project_access(data.project_id, db)
 
     nodes_result = await db.execute(
         select(Node).where(Node.project_id == data.project_id)
@@ -212,14 +244,11 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     import json as _json
     from pathlib import Path as _Path
 
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured. Configure one in Settings.")
 
-    proj_result = await db.execute(select(Project).where(Project.id == data.project_id))
-    project = proj_result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    project = await require_project_access(data.project_id, db)
 
     config = _provider_to_config_dict(provider)
     total_tokens = 0
@@ -245,7 +274,7 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     elif data.mode == "expand":
         # Load existing tree for gap analysis
         existing_result = await db.execute(
-            select(Node).where(Node.project_id == data.project_id)
+        select(Node).where(Node.project_id == data.project_id)
         )
         existing_nodes = existing_result.scalars().all()
         existing_summary = [
@@ -341,7 +370,7 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
             enrich_messages = llm_service.build_enrich_nodes_prompt(batch)
             enrich_resp = await llm_service.chat_completion(
                 config, enrich_messages, temperature=0.4,
-                max_tokens=8192, timeout_override=180,
+                max_tokens=16384, timeout_override=240,
             )
             total_tokens += enrich_resp.get("tokens", 0)
             total_elapsed += enrich_resp.get("elapsed_ms", 0)
@@ -397,7 +426,7 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
         )
         mitdet_resp = await llm_service.chat_completion(
             config, mitdet_messages, temperature=0.4,
-            max_tokens=8192, timeout_override=180,
+            max_tokens=16384, timeout_override=240,
         )
         total_tokens += mitdet_resp.get("tokens", 0)
         total_elapsed += mitdet_resp.get("elapsed_ms", 0)
@@ -481,6 +510,7 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     # Record job history
     job = LLMJobHistory(
         provider_id=provider.id,
+        user_id=get_current_user_id(),
         project_id=data.project_id,
         job_type="agent_generate_tree",
         prompt_summary=messages[-1]["content"][:500],
@@ -500,11 +530,14 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     )
 
 
-async def _get_active_provider(db: AsyncSession) -> LLMProviderConfig | None:
+async def _deactivate_other_providers(db: AsyncSession, exclude_provider_id: str | None = None) -> None:
     result = await db.execute(
-        select(LLMProviderConfig).where(LLMProviderConfig.is_active == True).limit(1)
+        select(LLMProviderConfig).where(LLMProviderConfig.user_id == get_current_user_id())
     )
-    return result.scalar_one_or_none()
+    for provider in result.scalars().all():
+        if exclude_provider_id and provider.id == exclude_provider_id:
+            continue
+        provider.is_active = False
 
 
 def _provider_to_config_dict(provider: LLMProviderConfig) -> dict:

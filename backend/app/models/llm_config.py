@@ -1,6 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, Integer, Boolean, JSON
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy.orm import relationship
+
 from ..database import Base
 
 
@@ -8,6 +11,7 @@ class LLMProviderConfig(Base):
     __tablename__ = "llm_provider_configs"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     name = Column(String(255), nullable=False, default="Local LLM")
     base_url = Column(String(1000), nullable=False, default="http://localhost:11434/v1")
     api_key_encrypted = Column(Text, default="")
@@ -26,11 +30,14 @@ class LLMProviderConfig(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+    user = relationship("User", back_populates="llm_provider_configs")
+
 
 class LLMJobHistory(Base):
     __tablename__ = "llm_job_history"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     provider_id = Column(String(36), nullable=True)
     project_id = Column(String(36), nullable=True)
     node_id = Column(String(36), nullable=True)

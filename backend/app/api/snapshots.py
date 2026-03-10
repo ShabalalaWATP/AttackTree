@@ -7,6 +7,8 @@ from ..models.snapshot import Snapshot
 from ..models.project import Project
 from ..models.node import Node
 from ..schemas.snapshot import SnapshotCreate, SnapshotResponse, SnapshotDetailResponse
+from ..services.access_control import require_project_access, require_snapshot_access
+from ..services.auth import get_current_user_name
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
@@ -26,8 +28,7 @@ async def _capture_tree_data(project_id: str, db: AsyncSession) -> dict:
     from ..schemas.node import NodeResponse
     nodes_data = [NodeResponse.model_validate(n).model_dump(mode="json") for n in nodes]
 
-    proj_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = proj_result.scalar_one_or_none()
+    project = await require_project_access(project_id, db)
 
     return {
         "project": {
@@ -40,6 +41,7 @@ async def _capture_tree_data(project_id: str, db: AsyncSession) -> dict:
 
 @router.get("/project/{project_id}", response_model=list[SnapshotResponse])
 async def list_snapshots(project_id: str, db: AsyncSession = Depends(get_db)):
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(Snapshot).where(Snapshot.project_id == project_id).order_by(Snapshot.created_at.desc())
     )
@@ -48,11 +50,13 @@ async def list_snapshots(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=SnapshotResponse, status_code=201)
 async def create_snapshot(data: SnapshotCreate, db: AsyncSession = Depends(get_db)):
+    await require_project_access(data.project_id, db)
     tree_data = await _capture_tree_data(data.project_id, db)
     snapshot = Snapshot(
         project_id=data.project_id,
         label=data.label or f"Snapshot",
         tree_data=tree_data,
+        created_by=get_current_user_name(),
     )
     db.add(snapshot)
     await db.commit()
@@ -62,18 +66,12 @@ async def create_snapshot(data: SnapshotCreate, db: AsyncSession = Depends(get_d
 
 @router.get("/{snapshot_id}", response_model=SnapshotDetailResponse)
 async def get_snapshot(snapshot_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Snapshot).where(Snapshot.id == snapshot_id))
-    snapshot = result.scalar_one_or_none()
-    if not snapshot:
-        raise HTTPException(404, "Snapshot not found")
+    snapshot = await require_snapshot_access(snapshot_id, db)
     return SnapshotDetailResponse.model_validate(snapshot)
 
 
 @router.delete("/{snapshot_id}", status_code=204)
 async def delete_snapshot(snapshot_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Snapshot).where(Snapshot.id == snapshot_id))
-    snapshot = result.scalar_one_or_none()
-    if not snapshot:
-        raise HTTPException(404, "Snapshot not found")
+    snapshot = await require_snapshot_access(snapshot_id, db)
     await db.delete(snapshot)
     await db.commit()

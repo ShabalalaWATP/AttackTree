@@ -7,6 +7,8 @@ class LLMSuggestRequest(BaseModel):
     project_id: str
     suggestion_type: str = "branches"  # branches, mitigations, detections, mappings, prerequisites
     additional_context: str = ""
+    technical_depth: str = "standard"
+    prompt_profile: str = ""
 
 
 class SuggestedNode(BaseModel):

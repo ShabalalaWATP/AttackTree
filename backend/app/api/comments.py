@@ -5,6 +5,8 @@ from ..database import get_db
 from ..models.comment import Comment
 from ..models.node import Node
 from ..schemas.comment import CommentCreate, CommentResponse
+from ..services.access_control import require_comment_access, require_node_access
+from ..services.auth import get_current_user_name
 from ..services.audit import log_event
 
 router = APIRouter(prefix="/comments", tags=["comments"])
@@ -12,6 +14,7 @@ router = APIRouter(prefix="/comments", tags=["comments"])
 
 @router.get("/node/{node_id}", response_model=list[CommentResponse])
 async def list_comments(node_id: str, db: AsyncSession = Depends(get_db)):
+    await require_node_access(node_id, db)
     result = await db.execute(
         select(Comment).where(Comment.node_id == node_id).order_by(Comment.created_at)
     )
@@ -20,14 +23,14 @@ async def list_comments(node_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=CommentResponse, status_code=201)
 async def create_comment(data: CommentCreate, db: AsyncSession = Depends(get_db)):
-    comment = Comment(**data.model_dump())
+    node = await require_node_access(data.node_id, db)
+    comment = Comment(**{**data.model_dump(), "author": get_current_user_name()})
     db.add(comment)
 
     # Log audit event
-    node_result = await db.execute(select(Node.project_id).where(Node.id == data.node_id))
-    project_id = node_result.scalar_one_or_none()
+    project_id = node.project_id
     if project_id:
-        await log_event(db, project_id, "comment_added", "comment", "", {"node_id": data.node_id, "author": data.author})
+        await log_event(db, project_id, "comment_added", "comment", "", {"node_id": data.node_id, "author": comment.author})
 
     await db.commit()
     await db.refresh(comment)
@@ -36,14 +39,11 @@ async def create_comment(data: CommentCreate, db: AsyncSession = Depends(get_db)
 
 @router.delete("/{comment_id}", status_code=204)
 async def delete_comment(comment_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Comment).where(Comment.id == comment_id))
-    comment = result.scalar_one_or_none()
-    if not comment:
-        raise HTTPException(404, "Comment not found")
+    comment = await require_comment_access(comment_id, db)
 
     # Log audit event
-    node_result = await db.execute(select(Node.project_id).where(Node.id == comment.node_id))
-    project_id = node_result.scalar_one_or_none()
+    node = await require_node_access(comment.node_id, db)
+    project_id = node.project_id
     if project_id:
         await log_event(db, project_id, "comment_deleted", "comment", comment_id, {"node_id": comment.node_id})
 

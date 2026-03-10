@@ -2,6 +2,18 @@
   "name": "Thick Client Tampering and Backend Abuse",
   "description": "Attack tree modelling compromise of a desktop thick client application and abuse of its backend services",
   "context_preset": "thick_client",
+  "template_family": "software_research",
+  "technical_profile": "reverse_engineering",
+  "focus_areas": [
+    "Desktop client disassembly and protocol tracing",
+    "Client-side business logic bypass",
+    "Local secret extraction and updater abuse",
+    "Privileged helper and backend trust boundary abuse"
+  ],
+  "prompt_hints": [
+    "Offer disassembly, debugger, IPC, and patching workflows instead of generic client compromise steps.",
+    "Call out hidden functionality, signed update logic, local caches, and privileged helpers where relevant."
+  ],
   "root_objective": "Tamper with thick client application to abuse backend services and access unauthorized data",
   "nodes": [
     {"id": "root", "parent_id": null, "node_type": "goal", "title": "Abuse Backend via Thick Client Tampering", "description": "Compromise thick client application to bypass client-side controls and abuse backend services", "logic_type": "OR", "position_x": 500, "position_y": 0, "impact": 8, "status": "draft"},

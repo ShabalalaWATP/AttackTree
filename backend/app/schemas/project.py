@@ -9,6 +9,7 @@ class ProjectCreate(BaseModel):
     context_preset: str = "general"
     root_objective: str = ""
     owner: str = "analyst"
+    workspace_mode: str = "project_scan"
 
 
 class ProjectUpdate(BaseModel):
@@ -17,6 +18,7 @@ class ProjectUpdate(BaseModel):
     context_preset: Optional[str] = None
     root_objective: Optional[str] = None
     owner: Optional[str] = None
+    workspace_mode: Optional[str] = None
 
 
 class ProjectResponse(BaseModel):
@@ -26,6 +28,7 @@ class ProjectResponse(BaseModel):
     context_preset: str
     root_objective: str
     owner: str
+    workspace_mode: str = "project_scan"
     created_at: datetime
     updated_at: datetime
     node_count: int = 0

@@ -15,6 +15,11 @@ from ..models.threat_model import ThreatModel
 from ..models.node import Node
 from ..models.project import Project
 from ..models.llm_config import LLMProviderConfig
+from ..services.access_control import (
+    get_active_provider_for_user,
+    require_project_access,
+    require_threat_model_access,
+)
 from ..services import llm_service
 from ..services.risk_engine import compute_inherent_risk
 
@@ -45,6 +50,8 @@ class ThreatModelUpdate(BaseModel):
 class AIGenerateDFDRequest(BaseModel):
     system_description: str
     user_guidance: str = ""
+    methodology: str = "stride"
+    name: str = ""
 
 
 class AIGenerateThreatsRequest(BaseModel):
@@ -63,6 +70,7 @@ class AILinkToTreeRequest(BaseModel):
 
 @router.get("/project/{project_id}")
 async def list_threat_models(project_id: str, db: AsyncSession = Depends(get_db)):
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(ThreatModel).where(ThreatModel.project_id == project_id).order_by(ThreatModel.created_at.desc())
     )
@@ -71,6 +79,7 @@ async def list_threat_models(project_id: str, db: AsyncSession = Depends(get_db)
 
 @router.post("", status_code=201)
 async def create_threat_model(data: ThreatModelCreate, db: AsyncSession = Depends(get_db)):
+    await require_project_access(data.project_id, db)
     tm = ThreatModel(**data.model_dump())
     db.add(tm)
     await db.commit()
@@ -105,12 +114,11 @@ async def delete_threat_model(tm_id: str, db: AsyncSession = Depends(get_db)):
 async def ai_generate_dfd(tm_id: str, data: AIGenerateDFDRequest, db: AsyncSession = Depends(get_db)):
     """AI generates a Data Flow Diagram from a system description."""
     tm = await _get_or_404(tm_id, db)
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
-    proj = await db.execute(select(Project).where(Project.id == tm.project_id))
-    project = proj.scalar_one_or_none()
+    project = await require_project_access(tm.project_id, db)
 
     # Also get existing attack tree nodes for context
     nodes_result = await db.execute(
@@ -185,11 +193,14 @@ Return ONLY valid JSON."""
         {"role": "user", "content": prompt},
     ]
 
-    response = await llm_service.chat_completion(config, messages, temperature=0.6)
+    response = await llm_service.chat_completion(config, messages, temperature=0.6,
+                                                    max_tokens=8192, timeout_override=180)
     if response["status"] != "success":
         raise HTTPException(502, f"LLM request failed: {response.get('message', '')}")
 
     parsed = llm_service.parse_json_object_response(response["content"])
+    if not parsed.get("components"):
+        raise HTTPException(502, "AI returned an empty or malformed DFD — try again or simplify the description")
 
     tm.components = parsed.get("components", [])
     tm.data_flows = parsed.get("data_flows", [])
@@ -204,15 +215,14 @@ Return ONLY valid JSON."""
 async def ai_generate_threats(tm_id: str, data: AIGenerateThreatsRequest, db: AsyncSession = Depends(get_db)):
     """AI analyzes the DFD and generates STRIDE/PASTA threats."""
     tm = await _get_or_404(tm_id, db)
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
     if not tm.components:
         raise HTTPException(400, "Generate a DFD first before generating threats")
 
-    proj = await db.execute(select(Project).where(Project.id == tm.project_id))
-    project = proj.scalar_one_or_none()
+    project = await require_project_access(tm.project_id, db)
 
     comp_text = json.dumps(tm.components, indent=2)
     flow_text = json.dumps(tm.data_flows, indent=2)
@@ -289,11 +299,14 @@ Return ONLY valid JSON."""
         {"role": "user", "content": prompt},
     ]
 
-    response = await llm_service.chat_completion(config, messages, temperature=0.5)
+    response = await llm_service.chat_completion(config, messages, temperature=0.5,
+                                                    max_tokens=16384, timeout_override=240)
     if response["status"] != "success":
         raise HTTPException(502, f"LLM request failed: {response.get('message', '')}")
 
     parsed = llm_service.parse_json_object_response(response["content"])
+    if not parsed.get("threats"):
+        raise HTTPException(502, "AI returned empty or malformed threats — try again or simplify the scope")
 
     tm.threats = parsed.get("threats", [])
     tm.ai_summary = parsed.get("summary", "")
@@ -314,10 +327,7 @@ async def link_threats_to_tree(tm_id: str, data: AILinkToTreeRequest, db: AsyncS
     if not tm.threats:
         raise HTTPException(400, "No threats generated yet")
 
-    proj = await db.execute(select(Project).where(Project.id == tm.project_id))
-    project = proj.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    project = await require_project_access(tm.project_id, db)
 
     # Get existing root node if any
     root_result = await db.execute(
@@ -361,7 +371,9 @@ async def link_threats_to_tree(tm_id: str, data: AILinkToTreeRequest, db: AsyncS
         # Update threat with linked node id
         threat["linked_node_id"] = node.id
 
-    tm.threats = list(tm.threats)  # force update
+    # Deep copy to reliably trigger SQLAlchemy JSON dirty detection
+    import copy
+    tm.threats = copy.deepcopy(tm.threats)
     await db.commit()
     return {"created": len(created_ids), "node_ids": created_ids}
 
@@ -370,7 +382,7 @@ async def link_threats_to_tree(tm_id: str, data: AILinkToTreeRequest, db: AsyncS
 async def ai_deep_dive_threat(tm_id: str, data: AIDeepDiveRequest, db: AsyncSession = Depends(get_db)):
     """AI provides a detailed offensive exploitation analysis of a specific threat."""
     tm = await _get_or_404(tm_id, db)
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
@@ -378,8 +390,7 @@ async def ai_deep_dive_threat(tm_id: str, data: AIDeepDiveRequest, db: AsyncSess
     if not threat:
         raise HTTPException(404, "Threat not found in this threat model")
 
-    proj = await db.execute(select(Project).where(Project.id == tm.project_id))
-    project = proj.scalar_one_or_none()
+    project = await require_project_access(tm.project_id, db)
 
     component = next((c for c in (tm.components or []) if c.get("id") == threat.get("component_id")), None)
 
@@ -427,7 +438,8 @@ Return ONLY valid JSON."""
         {"role": "user", "content": prompt},
     ]
 
-    response = await llm_service.chat_completion(config, messages, temperature=0.5)
+    response = await llm_service.chat_completion(config, messages, temperature=0.5,
+                                                    max_tokens=8192, timeout_override=180)
     if response["status"] != "success":
         raise HTTPException(502, f"LLM request failed: {response.get('message', '')}")
 
@@ -437,31 +449,38 @@ Return ONLY valid JSON."""
 @router.post("/project/{project_id}/ai-full-analysis")
 async def ai_full_threat_model(project_id: str, data: AIGenerateDFDRequest, db: AsyncSession = Depends(get_db)):
     """One-shot: AI generates DFD + threats from a system description."""
-    provider = await _get_active_provider(db)
+    provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
 
-    proj = await db.execute(select(Project).where(Project.id == project_id))
-    project = proj.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    project = await require_project_access(project_id, db)
+
+    methodology = data.methodology if data.methodology in ("stride", "pasta", "linddun") else "stride"
 
     # Create threat model
     tm = ThreatModel(
         project_id=project_id,
-        name=f"Threat Model — {project.name}",
+        name=data.name or f"Threat Model — {project.name}",
         description=data.system_description[:200],
-        methodology="stride",
+        methodology=methodology,
         scope=data.system_description,
     )
     db.add(tm)
     await db.commit()
     await db.refresh(tm)
 
-    # Step 1: Generate DFD
-    await ai_generate_dfd(tm.id, data, db)
-    # Step 2: Generate threats
-    await ai_generate_threats(tm.id, AIGenerateThreatsRequest(user_guidance=data.user_guidance), db)
+    try:
+        # Step 1: Generate DFD
+        await ai_generate_dfd(tm.id, data, db)
+        # Step 2: Generate threats
+        await ai_generate_threats(tm.id, AIGenerateThreatsRequest(user_guidance=data.user_guidance), db)
+    except HTTPException:
+        # Clean up the half-created model on failure
+        await db.refresh(tm)
+        if not tm.components and not tm.threats:
+            await db.delete(tm)
+            await db.commit()
+        raise
 
     await db.refresh(tm)
     return _to_dict(tm)
@@ -470,18 +489,7 @@ async def ai_full_threat_model(project_id: str, data: AIGenerateDFDRequest, db: 
 # --- Helpers ---
 
 async def _get_or_404(tm_id: str, db: AsyncSession) -> ThreatModel:
-    result = await db.execute(select(ThreatModel).where(ThreatModel.id == tm_id))
-    tm = result.scalar_one_or_none()
-    if not tm:
-        raise HTTPException(404, "Threat model not found")
-    return tm
-
-
-async def _get_active_provider(db: AsyncSession):
-    result = await db.execute(
-        select(LLMProviderConfig).where(LLMProviderConfig.is_active == True).limit(1)
-    )
-    return result.scalar_one_or_none()
+    return await require_threat_model_access(tm_id, db)
 
 
 def _provider_to_config(provider) -> dict:

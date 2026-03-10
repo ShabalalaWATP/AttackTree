@@ -12,11 +12,12 @@ from .llm_config import LLMProviderConfig, LLMJobHistory
 from .scenario import Scenario
 from .kill_chain import KillChain
 from .threat_model import ThreatModel
+from .infra_map import InfraMap
 
 __all__ = [
     "Project", "Node", "NodeTag", "Tag", "Edge",
     "Mitigation", "Detection", "ReferenceMapping",
     "Snapshot", "Comment", "Attachment", "AuditEvent",
     "LLMProviderConfig", "LLMJobHistory",
-    "Scenario", "KillChain", "ThreatModel",
+    "Scenario", "KillChain", "ThreatModel", "InfraMap",
 ]

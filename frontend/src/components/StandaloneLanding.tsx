@@ -1,4 +1,6 @@
+import { useStore } from '@/stores/useStore';
 import { cn } from '@/utils/cn';
+import { ArrowRight, FolderOpen } from 'lucide-react';
 
 interface Feature {
   icon: React.ReactNode;
@@ -14,6 +16,8 @@ interface Props {
 }
 
 export function StandaloneLanding({ icon, title, description, features }: Props) {
+  const { setViewMode } = useStore();
+
   return (
     <div className="h-full flex items-center justify-center overflow-auto">
       <div className="max-w-2xl w-full px-6 py-12">
@@ -43,9 +47,19 @@ export function StandaloneLanding({ icon, title, description, features }: Props)
           </div>
         )}
 
-        {/* Hint */}
-        <p className="text-center text-[11px] text-muted-foreground">
-          Open a project from <strong>Projects</strong> to use this tool with project-specific data, or use the in-project toolbar to switch tools.
+        <div className="flex justify-center">
+          <button
+            onClick={() => setViewMode('projects')}
+            className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-card/70 px-4 py-2 text-sm font-medium hover:bg-card transition-colors"
+          >
+            <FolderOpen size={14} />
+            Open Workspaces
+            <ArrowRight size={14} className="text-muted-foreground" />
+          </button>
+        </div>
+
+        <p className="mt-4 text-center text-[11px] text-muted-foreground">
+          Create or open a <strong>Standalone Scan</strong> or <strong>Project Scan</strong> workspace from <strong>Workspaces</strong>, then switch tools from the workspace toolbar.
         </p>
       </div>
     </div>

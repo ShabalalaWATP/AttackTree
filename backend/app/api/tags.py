@@ -4,25 +4,36 @@ from sqlalchemy import select
 from ..database import get_db
 from ..models.node import Tag, NodeTag, Node
 from ..schemas.tag import TagCreate, TagResponse
+from ..services.access_control import require_node_access, require_tag_access
+from ..services.auth import get_current_user_id
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
 
 @router.get("", response_model=list[TagResponse])
 async def list_tags(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Tag).order_by(Tag.name))
+    result = await db.execute(
+        select(Tag)
+        .where(Tag.user_id == get_current_user_id())
+        .order_by(Tag.name)
+    )
     return [TagResponse.model_validate(t) for t in result.scalars().all()]
 
 
 @router.post("", response_model=TagResponse, status_code=201)
 async def create_tag(data: TagCreate, db: AsyncSession = Depends(get_db)):
     # Return existing tag if name matches (case-insensitive)
-    result = await db.execute(select(Tag).where(Tag.name == data.name.strip()))
+    result = await db.execute(
+        select(Tag).where(
+            Tag.user_id == get_current_user_id(),
+            Tag.name == data.name.strip(),
+        )
+    )
     existing = result.scalar_one_or_none()
     if existing:
         return TagResponse.model_validate(existing)
 
-    tag = Tag(name=data.name.strip())
+    tag = Tag(name=data.name.strip(), user_id=get_current_user_id())
     db.add(tag)
     await db.commit()
     await db.refresh(tag)
@@ -32,14 +43,10 @@ async def create_tag(data: TagCreate, db: AsyncSession = Depends(get_db)):
 @router.post("/node/{node_id}/{tag_id}", status_code=204)
 async def add_tag_to_node(node_id: str, tag_id: str, db: AsyncSession = Depends(get_db)):
     # Verify node exists
-    node = await db.execute(select(Node).where(Node.id == node_id))
-    if not node.scalar_one_or_none():
-        raise HTTPException(404, "Node not found")
+    await require_node_access(node_id, db)
 
     # Verify tag exists
-    tag = await db.execute(select(Tag).where(Tag.id == tag_id))
-    if not tag.scalar_one_or_none():
-        raise HTTPException(404, "Tag not found")
+    await require_tag_access(tag_id, db)
 
     # Check if already attached
     existing = await db.execute(
@@ -55,6 +62,8 @@ async def add_tag_to_node(node_id: str, tag_id: str, db: AsyncSession = Depends(
 
 @router.delete("/node/{node_id}/{tag_id}", status_code=204)
 async def remove_tag_from_node(node_id: str, tag_id: str, db: AsyncSession = Depends(get_db)):
+    await require_node_access(node_id, db)
+    await require_tag_access(tag_id, db)
     result = await db.execute(
         select(NodeTag).where(NodeTag.node_id == node_id, NodeTag.tag_id == tag_id)
     )
@@ -67,9 +76,6 @@ async def remove_tag_from_node(node_id: str, tag_id: str, db: AsyncSession = Dep
 
 @router.delete("/{tag_id}", status_code=204)
 async def delete_tag(tag_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Tag).where(Tag.id == tag_id))
-    tag = result.scalar_one_or_none()
-    if not tag:
-        raise HTTPException(404, "Tag not found")
+    tag = await require_tag_access(tag_id, db)
     await db.delete(tag)
     await db.commit()

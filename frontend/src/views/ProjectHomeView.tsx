@@ -4,7 +4,7 @@ import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
 import {
   GitBranch, Brain, FlaskConical, Route, ShieldCheck, LayoutDashboard,
-  Target, Clock, ChevronRight, Layers
+  Target, Clock, ChevronRight, Layers, Network
 } from 'lucide-react';
 
 interface ToolCard {
@@ -18,9 +18,10 @@ interface ToolCard {
 const TOOLS: ToolCard[] = [
   { id: 'tree', label: 'Attack Tree', icon: <GitBranch size={22} />, description: 'Build and visualise attack trees with risk scoring', gradient: 'from-cyan-500/20 to-blue-500/20' },
   { id: 'brainstorm', label: 'Brainstorm', icon: <Brain size={22} />, description: 'AI-powered offensive brainstorming chat', gradient: 'from-purple-500/20 to-fuchsia-500/20' },
-  { id: 'scenarios', label: 'Scenarios', icon: <FlaskConical size={22} />, description: 'Simulate adversary campaigns and what-if analysis', gradient: 'from-violet-500/20 to-purple-500/20' },
+  { id: 'scenarios', label: 'Scenarios', icon: <FlaskConical size={22} />, description: 'Plan cyber operations, stress controls, and build scenario libraries', gradient: 'from-violet-500/20 to-purple-500/20' },
   { id: 'kill_chain', label: 'Kill Chain', icon: <Route size={22} />, description: 'Map attacks to kill chain frameworks', gradient: 'from-cyan-500/20 to-teal-500/20' },
   { id: 'threat_model', label: 'Threat Model', icon: <ShieldCheck size={22} />, description: 'DFD generation, STRIDE analysis and threat matrices', gradient: 'from-emerald-500/20 to-green-500/20' },
+  { id: 'infra_map', label: 'Infra Map', icon: <Network size={22} />, description: 'Map infrastructure, dependencies, and trust boundaries in depth', gradient: 'from-sky-500/20 to-cyan-500/20' },
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={22} />, description: 'Risk analytics, coverage metrics and audit trail', gradient: 'from-amber-500/20 to-orange-500/20' },
 ];
 
@@ -48,10 +49,11 @@ export function ProjectHomeView() {
       const items: SavedItem[] = [];
 
       try {
-        const [scenarios, killChains, threatModels, snapshots] = await Promise.all([
+        const [scenarios, killChains, threatModels, infraMaps, snapshots] = await Promise.all([
           api.listScenarios(currentProject.id).catch(() => []),
           api.listKillChains(currentProject.id).catch(() => []),
           api.listThreatModels(currentProject.id).catch(() => []),
+          api.listInfraMaps(currentProject.id).catch(() => []),
           api.listSnapshots(currentProject.id).catch(() => []),
         ]);
 
@@ -60,7 +62,7 @@ export function ProjectHomeView() {
             id: s.id, name: s.name, tool: 'Scenario', toolView: 'scenarios',
             icon: <FlaskConical size={13} className="text-purple-500" />,
             created_at: s.created_at,
-            meta: s.attacker_type ? `${s.attacker_type} · ${s.status}` : s.status || '',
+            meta: [s.scenario_type, s.attacker_type, s.status].filter(Boolean).join(' · '),
           });
         }
         for (const kc of killChains) {
@@ -77,6 +79,14 @@ export function ProjectHomeView() {
             icon: <ShieldCheck size={13} className="text-emerald-500" />,
             created_at: tm.created_at,
             meta: `${tm.methodology?.toUpperCase() || ''} · ${tm.threats?.length || 0} threats`,
+          });
+        }
+        for (const im of infraMaps) {
+          items.push({
+            id: im.id, name: im.name, tool: 'Infra Map', toolView: 'infra_map',
+            icon: <Network size={13} className="text-sky-500" />,
+            created_at: im.updated_at || im.created_at,
+            meta: `${im.nodes?.length || 0} nodes`,
           });
         }
         for (const snap of snapshots) {
@@ -105,12 +115,13 @@ export function ProjectHomeView() {
   if (!currentProject) {
     return (
       <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
-        No project open.
+        No workspace open.
       </div>
     );
   }
 
   const nodeCount = nodes.length;
+  const workspaceLabel = currentProject.workspace_mode === 'standalone_scan' ? 'Standalone Scan' : 'Project Scan';
 
   return (
     <div className="h-full overflow-auto">
@@ -125,6 +136,7 @@ export function ProjectHomeView() {
               <p className="text-sm text-muted-foreground mt-1">{currentProject.root_objective}</p>
             )}
             <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+              <span className="px-2 py-1 rounded-full bg-primary/10 text-primary font-medium">{workspaceLabel}</span>
               <span className="flex items-center gap-1"><Layers size={12} /> {nodeCount} nodes</span>
               <span className="flex items-center gap-1"><Target size={12} /> {savedItems.filter(i => i.tool !== 'Snapshot').length} saved analyses</span>
             </div>
@@ -157,7 +169,7 @@ export function ProjectHomeView() {
         {/* Saved work table */}
         <div>
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            Saved Work in This Project
+            Saved Work in This Workspace
           </h2>
 
           {loading ? (

@@ -2,11 +2,20 @@ import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
-import { NODE_TYPE_CONFIG, type NodeType, type LogicType, type NodeStatus, type AttackNodeData, type CommentData, type TagData } from '@/types';
+import {
+  NODE_TYPE_CONFIG,
+  type NodeType,
+  type LogicType,
+  type AttackNodeData,
+  type CommentData,
+  type TagData,
+  type NodeExtendedMetadata,
+  type VulnerabilityCard,
+} from '@/types';
 import { cn } from '@/utils/cn';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import toast from 'react-hot-toast';
-import { X, Plus, Trash2, Save, HelpCircle, MessageSquare, Tag, Send, Scale } from 'lucide-react';
+import { X, Plus, Trash2, Save, HelpCircle, Tag, Scale, FlaskConical, MessageSquare, Send } from 'lucide-react';
 import { RiskChallengerPanel } from '@/components/RiskChallengerPanel';
 
 function getRiskTextClass(risk: number | null | undefined): string {
@@ -29,15 +38,103 @@ function getInitialScoringMode(): 'simple' | 'advanced' {
   try {
     const stored = localStorage.getItem('atb-scoring-mode');
     if (stored === 'advanced') return 'advanced';
-  } catch {}
+  } catch {
+    /* localStorage may be unavailable */
+  }
   return 'simple';
+}
+
+function createVulnerabilityCard(): VulnerabilityCard {
+  const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    title: '',
+    software_family: '',
+    software_version: '',
+    affected_component: '',
+    vulnerability_type: '',
+    attack_surface: '',
+    entry_point: '',
+    root_cause: '',
+    primitive: '',
+    reproduction_steps: '',
+    exploitation_notes: '',
+    references: '',
+    severity: '',
+    observed_impact: '',
+  };
+}
+
+function getExtendedMetadata(value: unknown): NodeExtendedMetadata {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return { ...(value as NodeExtendedMetadata) };
+}
+
+function getVulnerabilityCards(value: unknown): VulnerabilityCard[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+    .map((card, index) => ({
+      id: typeof card.id === 'string' && card.id ? card.id : `card-${index + 1}`,
+      title: String(card.title ?? ''),
+      software_family: String(card.software_family ?? ''),
+      software_version: String(card.software_version ?? ''),
+      affected_component: String(card.affected_component ?? ''),
+      vulnerability_type: String(card.vulnerability_type ?? ''),
+      attack_surface: String(card.attack_surface ?? ''),
+      entry_point: String(card.entry_point ?? ''),
+      root_cause: String(card.root_cause ?? ''),
+      primitive: String(card.primitive ?? ''),
+      reproduction_steps: String(card.reproduction_steps ?? ''),
+      exploitation_notes: String(card.exploitation_notes ?? ''),
+      references: String(card.references ?? ''),
+      severity: String(card.severity ?? ''),
+      observed_impact: String(card.observed_impact ?? ''),
+    }));
+}
+
+function getEditableNodeDraft(node: AttackNodeData): Partial<AttackNodeData> {
+  return {
+    id: node.id,
+    title: node.title,
+    node_type: node.node_type,
+    logic_type: node.logic_type,
+    status: node.status,
+    description: node.description,
+    platform: node.platform,
+    attack_surface: node.attack_surface,
+    threat_category: node.threat_category,
+    required_access: node.required_access,
+    required_privileges: node.required_privileges,
+    required_skill: node.required_skill,
+    required_tools: node.required_tools,
+    likelihood: node.likelihood,
+    impact: node.impact,
+    effort: node.effort,
+    exploitability: node.exploitability,
+    detectability: node.detectability,
+    confidence: node.confidence,
+    probability: node.probability,
+    cost_to_attacker: node.cost_to_attacker,
+    cve_references: node.cve_references,
+    notes: node.notes,
+    assumptions: node.assumptions,
+    analyst: node.analyst,
+    extended_metadata: getExtendedMetadata(node.extended_metadata),
+  };
 }
 
 export function NodeInspector() {
   const queryClient = useQueryClient();
   const { selectedNodeId, nodes, setInspectorOpen, pushUndo, updateNodeLocal } = useStore();
   const node = nodes.find(n => n.id === selectedNodeId);
-  const [activeTab, setActiveTab] = useState<'details' | 'scoring' | 'mitigations' | 'mappings' | 'comments' | 'notes'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'scoring' | 'research' | 'mitigations' | 'mappings' | 'comments' | 'notes'>('details');
   const [localData, setLocalData] = useState<Partial<AttackNodeData>>({});
   const [dirty, setDirty] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ type: 'mitigation' | 'detection' | 'mapping' | 'comment'; id: string; title: string } | null>(null);
@@ -46,7 +143,7 @@ export function NodeInspector() {
 
   useEffect(() => {
     if (node) {
-      setLocalData({ ...node });
+      setLocalData(getEditableNodeDraft(node));
       setDirty(false);
     }
   }, [node?.id, node?.updated_at]);
@@ -54,6 +151,13 @@ export function NodeInspector() {
   const updateField = (field: string, value: any) => {
     setLocalData(prev => ({ ...prev, [field]: value }));
     setDirty(true);
+  };
+
+  const updateMetadata = (updates: Partial<NodeExtendedMetadata>) => {
+    updateField('extended_metadata', {
+      ...getExtendedMetadata(localData.extended_metadata),
+      ...updates,
+    });
   };
 
   const save = useCallback(async () => {
@@ -131,14 +235,22 @@ export function NodeInspector() {
 
   const toggleScoringMode = (mode: 'simple' | 'advanced') => {
     setScoringMode(mode);
-    try { localStorage.setItem('atb-scoring-mode', mode); } catch {}
+    try {
+      localStorage.setItem('atb-scoring-mode', mode);
+    } catch {
+      /* localStorage may be unavailable */
+    }
   };
 
   if (!node) return null;
 
+  const metadata = getExtendedMetadata(localData.extended_metadata);
+  const vulnerabilityCards = getVulnerabilityCards(metadata.vulnerability_cards);
+
   const TABS = [
     { id: 'details' as const, label: 'Details' },
     { id: 'scoring' as const, label: 'Scoring' },
+    { id: 'research' as const, label: `Research (${vulnerabilityCards.length})` },
     { id: 'mitigations' as const, label: `Mitigations (${node.mitigations?.length || 0})` },
     { id: 'mappings' as const, label: `Mappings (${node.reference_mappings?.length || 0})` },
     { id: 'comments' as const, label: 'Comments' },
@@ -232,6 +344,15 @@ export function NodeInspector() {
                 <option value="high">High</option>
                 <option value="expert">Expert</option>
               </select>
+            </Field>
+            <Field label="Required Tools / Artifacts">
+              <textarea
+                value={localData.required_tools || ''}
+                onChange={(e) => updateField('required_tools', e.target.value)}
+                rows={3}
+                className="input-field"
+                placeholder="e.g., Ghidra, Frida, BinDiff, crash dumps, protocol traces"
+              />
             </Field>
 
             {/* Tags Section */}
@@ -361,6 +482,52 @@ export function NodeInspector() {
           </>
         )}
 
+        {activeTab === 'research' && (
+          <>
+            <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
+              <FlaskConical size={14} className="mt-0.5 text-primary" />
+              <div>
+                Keep reverse-engineering notes and vulnerability evidence here. The AI suggestion flow uses this metadata to ask for deeper, code-level answers.
+              </div>
+            </div>
+            <Field label="Prompt Profile">
+              <select
+                value={String(metadata.prompt_profile || '')}
+                onChange={(e) => updateMetadata({ prompt_profile: e.target.value || undefined })}
+                className="input-field"
+              >
+                <option value="">Auto / inherit from workspace</option>
+                <option value="standard">Standard</option>
+                <option value="deep_technical">Deep Technical</option>
+                <option value="reverse_engineering">Reverse Engineering</option>
+                <option value="vulnerability_research">Vulnerability Research</option>
+                <option value="exploit_development">Exploit Development</option>
+              </select>
+            </Field>
+            <Field label="Research Domain">
+              <input
+                value={String(metadata.research_domain || '')}
+                onChange={(e) => updateMetadata({ research_domain: e.target.value })}
+                className="input-field"
+                placeholder="e.g., Windows client trust abuse, parser reversing, firmware OTA validation"
+              />
+            </Field>
+            <Field label="Investigation Summary">
+              <textarea
+                value={String(metadata.investigation_summary || '')}
+                onChange={(e) => updateMetadata({ investigation_summary: e.target.value })}
+                rows={4}
+                className="input-field"
+                placeholder="Summarize the observed bug class, reachability, trust boundary, relevant tooling, and operator hypotheses."
+              />
+            </Field>
+            <VulnerabilityCardsEditor
+              cards={vulnerabilityCards}
+              onChange={(cards) => updateMetadata({ vulnerability_cards: cards })}
+            />
+          </>
+        )}
+
         {activeTab === 'mitigations' && (
           <>
             <button onClick={addMitigation} className="flex items-center gap-1 text-xs text-primary hover:underline">
@@ -467,6 +634,189 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{label}</label>
       <div className="mt-1">{children}</div>
     </div>
+  );
+}
+
+function VulnerabilityCardsEditor({
+  cards,
+  onChange,
+}: {
+  cards: VulnerabilityCard[];
+  onChange: (cards: VulnerabilityCard[]) => void;
+}) {
+  const updateCard = (cardId: string, field: keyof VulnerabilityCard, value: string) => {
+    onChange(cards.map((card) => (card.id === cardId ? { ...card, [field]: value } : card)));
+  };
+
+  const addCard = () => {
+    onChange([...cards, createVulnerabilityCard()]);
+  };
+
+  const removeCard = (cardId: string) => {
+    onChange(cards.filter((card) => card.id !== cardId));
+  };
+
+  return (
+    <Field label="Vulnerability Cards">
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            Capture the specific bug, component, primitive, and reproduction path from your team's investigation.
+          </p>
+          <button onClick={addCard} className="flex items-center gap-1 text-xs text-primary hover:underline">
+            <Plus size={13} /> Add Card
+          </button>
+        </div>
+
+        {!cards.length && (
+          <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+            No vulnerability cards yet. Add one to steer AI suggestions toward exploit-development and reverse-engineering depth.
+          </div>
+        )}
+
+        {cards.map((card, index) => (
+          <div key={card.id} className="space-y-3 rounded-lg border p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-semibold">Card {index + 1}</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {card.title || 'Untitled vulnerability finding'}
+                </div>
+              </div>
+              <button
+                onClick={() => removeCard(card.id)}
+                className="p-1 rounded hover:bg-destructive/10 text-destructive"
+                title="Remove card"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+
+            <Field label="Title">
+              <input
+                value={card.title}
+                onChange={(e) => updateCard(card.id, 'title', e.target.value)}
+                className="input-field"
+                placeholder="e.g., Heap overflow in thumbnail metadata parser"
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Software">
+                <input
+                  value={card.software_family}
+                  onChange={(e) => updateCard(card.id, 'software_family', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., Windows desktop sync client"
+                />
+              </Field>
+              <Field label="Version">
+                <input
+                  value={card.software_version}
+                  onChange={(e) => updateCard(card.id, 'software_version', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., 5.4.17"
+                />
+              </Field>
+              <Field label="Component">
+                <input
+                  value={card.affected_component}
+                  onChange={(e) => updateCard(card.id, 'affected_component', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., OTA manifest parser"
+                />
+              </Field>
+              <Field label="Bug Class">
+                <input
+                  value={card.vulnerability_type}
+                  onChange={(e) => updateCard(card.id, 'vulnerability_type', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., use-after-free, auth bypass"
+                />
+              </Field>
+              <Field label="Attack Surface">
+                <input
+                  value={card.attack_surface}
+                  onChange={(e) => updateCard(card.id, 'attack_surface', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., imported project file"
+                />
+              </Field>
+              <Field label="Entry Point">
+                <input
+                  value={card.entry_point}
+                  onChange={(e) => updateCard(card.id, 'entry_point', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., preview handler before sandboxing"
+                />
+              </Field>
+              <Field label="Severity">
+                <input
+                  value={card.severity}
+                  onChange={(e) => updateCard(card.id, 'severity', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., Critical"
+                />
+              </Field>
+              <Field label="Observed Impact">
+                <input
+                  value={card.observed_impact}
+                  onChange={(e) => updateCard(card.id, 'observed_impact', e.target.value)}
+                  className="input-field"
+                  placeholder="e.g., controlled crash with stale vtable"
+                />
+              </Field>
+            </div>
+
+            <Field label="Root Cause">
+              <textarea
+                value={card.root_cause}
+                onChange={(e) => updateCard(card.id, 'root_cause', e.target.value)}
+                rows={3}
+                className="input-field"
+                placeholder="Describe the trust-boundary failure, ownership bug, or validation mistake."
+              />
+            </Field>
+            <Field label="Primitive">
+              <textarea
+                value={card.primitive}
+                onChange={(e) => updateCard(card.id, 'primitive', e.target.value)}
+                rows={2}
+                className="input-field"
+                placeholder="e.g., 8-byte controlled write after heap grooming"
+              />
+            </Field>
+            <Field label="Reproduction Steps">
+              <textarea
+                value={card.reproduction_steps}
+                onChange={(e) => updateCard(card.id, 'reproduction_steps', e.target.value)}
+                rows={3}
+                className="input-field"
+                placeholder="Include trigger conditions, sample inputs, and instrumentation notes."
+              />
+            </Field>
+            <Field label="Exploitation Notes">
+              <textarea
+                value={card.exploitation_notes}
+                onChange={(e) => updateCard(card.id, 'exploitation_notes', e.target.value)}
+                rows={3}
+                className="input-field"
+                placeholder="Record exploitability constraints, mitigation bypass ideas, and likely operator next steps."
+              />
+            </Field>
+            <Field label="References">
+              <textarea
+                value={card.references}
+                onChange={(e) => updateCard(card.id, 'references', e.target.value)}
+                rows={2}
+                className="input-field"
+                placeholder="Advisories, internal tickets, crash IDs, commit hashes, or PoC references."
+              />
+            </Field>
+          </div>
+        ))}
+      </div>
+    </Field>
   );
 }
 

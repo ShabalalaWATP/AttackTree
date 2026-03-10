@@ -2,6 +2,18 @@
   "name": "Android App Reverse Engineering to API Abuse",
   "description": "Attack tree modelling reverse engineering of an Android application to discover and abuse trusted backend APIs",
   "context_preset": "android_application",
+  "template_family": "software_research",
+  "technical_profile": "reverse_engineering",
+  "focus_areas": [
+    "APK decompilation and mobile protocol reversing",
+    "Certificate pinning and integrity bypass",
+    "Client-side trust abuse against backend APIs",
+    "Token extraction and hidden endpoint discovery"
+  ],
+  "prompt_hints": [
+    "Offer mobile reverse-engineering, Frida, jadx, apktool, and runtime-hooking detail.",
+    "Prefer concrete auth flows, trust boundaries, hidden admin functionality, and telemetry evasion."
+  ],
   "root_objective": "Reverse engineer Android app and abuse trusted backend APIs to access unauthorized data",
   "nodes": [
     {"id": "root", "parent_id": null, "node_type": "goal", "title": "Abuse Trusted Backend APIs via Reversed Android App", "description": "Gain unauthorized access to backend data and functionality by reverse engineering the Android application", "logic_type": "AND", "position_x": 600, "position_y": 0, "impact": 9, "status": "draft"},

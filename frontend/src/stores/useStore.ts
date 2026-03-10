@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AttackNodeData, ProjectData } from '@/types';
 
-export type ViewMode = 'projects' | 'project_home' | 'tree' | 'dashboard' | 'references' | 'settings' | 'scenarios' | 'kill_chain' | 'threat_model' | 'brainstorm';
+export type ViewMode = 'projects' | 'project_home' | 'tree' | 'dashboard' | 'references' | 'settings' | 'scenarios' | 'kill_chain' | 'threat_model' | 'brainstorm' | 'infra_map';
 
 interface UndoEntry {
   nodes: AttackNodeData[];
@@ -64,13 +64,17 @@ interface AppState {
   setAiSuggestionsOpen: (open: boolean) => void;
   aiSuggestions: any[];
   setAiSuggestions: (suggestions: any[]) => void;
+
+  resetWorkspaceState: () => void;
 }
 
 function getInitialDarkMode(): boolean {
   try {
     const stored = localStorage.getItem('atb-dark-mode');
     if (stored !== null) return stored !== 'false';
-  } catch {}
+  } catch {
+    /* localStorage may be unavailable */
+  }
   return true; // default dark
 }
 
@@ -79,7 +83,11 @@ export const useStore = create<AppState>((set, get) => ({
   toggleDarkMode: () => {
     const next = !get().darkMode;
     set({ darkMode: next });
-    try { localStorage.setItem('atb-dark-mode', String(next)); } catch {}
+    try {
+      localStorage.setItem('atb-dark-mode', String(next));
+    } catch {
+      /* localStorage may be unavailable */
+    }
     if (next) {
       document.documentElement.classList.add('dark');
     } else {
@@ -189,4 +197,24 @@ export const useStore = create<AppState>((set, get) => ({
   setAiSuggestionsOpen: (open) => set({ aiSuggestionsOpen: open }),
   aiSuggestions: [],
   setAiSuggestions: (suggestions) => set({ aiSuggestions: suggestions }),
+
+  resetWorkspaceState: () => set({
+    viewMode: 'projects',
+    currentProject: null,
+    nodes: [],
+    selectedNodeId: null,
+    selectedNode: null,
+    selectedNodeIds: new Set<string>(),
+    inspectorOpen: false,
+    searchQuery: '',
+    filterNodeType: '',
+    filterStatus: '',
+    filterTags: [],
+    undoStack: [],
+    redoStack: [],
+    canUndo: false,
+    canRedo: false,
+    aiSuggestionsOpen: false,
+    aiSuggestions: [],
+  }),
 }));

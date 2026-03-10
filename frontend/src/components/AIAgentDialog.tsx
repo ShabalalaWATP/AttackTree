@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/utils/api';
+import type { TemplateInfo } from '@/types';
 import toast from 'react-hot-toast';
-import { Bot, Loader2, X, Wand2, Layers, FileText, GitBranch } from 'lucide-react';
+import { Bot, Loader2, X, Wand2, FileText, GitBranch } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
 interface AIAgentDialogProps {
@@ -58,6 +59,16 @@ const PRESET_CATEGORIES = [
       { label: 'EV Charging Network', objective: 'Compromise EV charging infrastructure to disrupt services or destabilize the local grid', scope: 'EV charging network with OCPP 1.6/2.0 chargers, cloud CSMS, cellular/WiFi connectivity, and payment terminals' },
     ],
   },
+  {
+    category: 'Software Research / Reverse Engineering',
+    presets: [
+      { label: 'Windows Client RE', objective: 'Reverse engineer a Windows desktop client to abuse trusted backend or helper functionality', scope: 'Electron, .NET, or native Windows client with updater, helper service, local cache, and authenticated backend APIs' },
+      { label: 'Patch Diff N-Day', objective: 'Turn a freshly patched software issue into a reproducible n-day exploit path', scope: 'Old and new builds, vendor advisory, reachable parser or RPC surface, and a controlled analysis lab' },
+      { label: 'File Parser Bug', objective: 'Develop an exploit path from a reachable file parser weakness', scope: 'Desktop or server-side parser handling attacker-controlled documents, archives, or media files with production mitigations enabled' },
+      { label: 'Secure Updater Abuse', objective: 'Subvert a software updater trust chain to deliver malicious code or persistence', scope: 'Signed updater, manifest endpoint, privileged install helper, rollback logic, and local staging directories' },
+      { label: 'Firmware Research', objective: 'Reverse engineer embedded firmware to find exploitable trust boundaries and persistent device-control paths', scope: 'Embedded Linux or RTOS device with OTA update workflow, bootloader trust checks, local management protocols, and physical debug interfaces' },
+    ],
+  },
 ];
 
 export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentDialogProps) {
@@ -67,10 +78,11 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   const [breadth, setBreadth] = useState(5);
   const [mode, setMode] = useState<AgentMode>('generate');
   const [templateId, setTemplateId] = useState<string>('');
-  const [templates, setTemplates] = useState<{ id: string; name: string; description: string }[]>([]);
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [result, setResult] = useState<{ nodes_created: number; model_used: string; elapsed_ms: number; passes_completed?: number } | null>(null);
+  const selectedTemplate = templates.find((template) => template.id === templateId);
 
   // Load templates for "from_template" mode
   useEffect(() => {
@@ -210,10 +222,33 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </select>
-              {templateId && templates.find(t => t.id === templateId) && (
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  {templates.find(t => t.id === templateId)?.description}
-                </p>
+              {selectedTemplate && (
+                <div className="mt-2 rounded-lg border p-3 space-y-2">
+                  <div className="flex flex-wrap gap-1">
+                    <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium">
+                      {selectedTemplate.node_count} nodes
+                    </span>
+                    <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium">
+                      {selectedTemplate.context_preset}
+                    </span>
+                    <span className={cn(
+                      'inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium',
+                      selectedTemplate.technical_profile === 'standard'
+                        ? 'bg-muted text-muted-foreground'
+                        : 'bg-primary/10 text-primary'
+                    )}>
+                      {selectedTemplate.technical_profile === 'standard' ? 'Standard' : 'Deep Technical'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {selectedTemplate.description}
+                  </p>
+                  {selectedTemplate.focus_areas.length > 0 && (
+                    <div className="text-[11px] text-muted-foreground">
+                      Focus: {selectedTemplate.focus_areas.slice(0, 3).join(' • ')}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -316,7 +351,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
               enriched descriptions, and risk scores tailored to your specific objective.</>
             )}
             {mode === 'expand' && (
-              <>The AI agent analyses the existing attack tree in this project and identifies missing attack paths,
+              <>The AI agent analyses the existing attack tree in this workspace and identifies missing attack paths,
               uncovered vectors, and gaps in coverage, then generates nodes to fill them.</>
             )}
           </div>

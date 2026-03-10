@@ -1,27 +1,740 @@
 [
-  {"id": "CWE-79", "name": "Improper Neutralization of Input During Web Page Generation (XSS)", "description": "Software does not neutralize or incorrectly neutralizes user-controllable input before it is placed in output used as a web page", "severity": "High"},
-  {"id": "CWE-89", "name": "SQL Injection", "description": "Software constructs SQL commands from user input without proper neutralization, allowing attacker-controlled queries", "severity": "High"},
-  {"id": "CWE-78", "name": "OS Command Injection", "description": "Software constructs OS commands from user input without proper neutralization", "severity": "Critical"},
-  {"id": "CWE-22", "name": "Path Traversal", "description": "Software uses external input to construct a pathname intended to identify a file or directory under a restricted parent, but does not properly neutralize special elements", "severity": "High"},
-  {"id": "CWE-352", "name": "Cross-Site Request Forgery (CSRF)", "description": "Web application does not sufficiently verify that a well-formed, valid, consistent request was intentionally provided by the user", "severity": "Medium"},
-  {"id": "CWE-287", "name": "Improper Authentication", "description": "Software does not sufficiently authenticate the claimed identity of an actor", "severity": "High"},
-  {"id": "CWE-862", "name": "Missing Authorization", "description": "Software does not perform authorization checks when an actor attempts to access a resource or perform an action", "severity": "High"},
-  {"id": "CWE-863", "name": "Incorrect Authorization", "description": "Software performs authorization checks incorrectly, allowing bypass of intended access restrictions", "severity": "High"},
-  {"id": "CWE-200", "name": "Exposure of Sensitive Information", "description": "Software exposes sensitive information to an actor not authorized to have access to that information", "severity": "Medium"},
-  {"id": "CWE-502", "name": "Deserialization of Untrusted Data", "description": "Software deserializes untrusted data without verifying that the resulting data will be valid", "severity": "Critical"},
-  {"id": "CWE-918", "name": "Server-Side Request Forgery (SSRF)", "description": "Web server receives a URL from upstream and retrieves contents without ensuring the request is being sent to the expected destination", "severity": "High"},
-  {"id": "CWE-306", "name": "Missing Authentication for Critical Function", "description": "Software does not perform authentication for functionality that requires a provable user identity", "severity": "Critical"},
-  {"id": "CWE-798", "name": "Use of Hard-coded Credentials", "description": "Software contains hard-coded credentials for inbound or outbound authentication", "severity": "Critical"},
-  {"id": "CWE-522", "name": "Insufficiently Protected Credentials", "description": "Software transmits or stores authentication credentials in a manner that allows interception or retrieval", "severity": "High"},
-  {"id": "CWE-611", "name": "Improper Restriction of XML External Entity Reference (XXE)", "description": "Software processes XML input with external entity references that can be abused to disclose files or perform SSRF", "severity": "High"},
-  {"id": "CWE-434", "name": "Unrestricted Upload of File with Dangerous Type", "description": "Software allows the attacker to upload or transfer files of dangerous types that can be automatically processed", "severity": "High"},
-  {"id": "CWE-269", "name": "Improper Privilege Management", "description": "Software does not properly assign, modify, track, or check privileges for an actor", "severity": "High"},
-  {"id": "CWE-732", "name": "Incorrect Permission Assignment for Critical Resource", "description": "Software specifies permissions for a security-critical resource in a way that allows unintended actors to access it", "severity": "High"},
-  {"id": "CWE-327", "name": "Use of a Broken or Risky Cryptographic Algorithm", "description": "Software uses a broken or risky cryptographic algorithm or protocol", "severity": "High"},
-  {"id": "CWE-319", "name": "Cleartext Transmission of Sensitive Information", "description": "Software transmits sensitive data in cleartext over a communication channel that can be sniffed", "severity": "High"},
-  {"id": "CWE-312", "name": "Cleartext Storage of Sensitive Information", "description": "Software stores sensitive information in cleartext within a resource that might be accessible to another control sphere", "severity": "High"},
-  {"id": "CWE-416", "name": "Use After Free", "description": "Software references memory after it has been freed, which can cause a program crash or execution of arbitrary code", "severity": "Critical"},
-  {"id": "CWE-120", "name": "Buffer Copy without Checking Size of Input (Buffer Overflow)", "description": "Software copies input to a buffer without checking that the size of the input does not exceed the buffer capacity", "severity": "Critical"},
-  {"id": "CWE-94", "name": "Improper Control of Generation of Code (Code Injection)", "description": "Software constructs code segments using externally-influenced input without proper neutralization", "severity": "Critical"},
-  {"id": "CWE-1321", "name": "Improperly Controlled Modification of Object Prototype Attributes (Prototype Pollution)", "description": "Software modifies or allows modification of properties on object prototypes, affecting all objects of that type", "severity": "High"}
+  {
+    "id": "CWE-79",
+    "name": "Improper Neutralization of Input During Web Page Generation (XSS)",
+    "description": "Cross-Site Scripting (XSS) occurs when software does not neutralize or incorrectly neutralizes user-controllable input before it is placed in output that is served as a web page to other users. Attackers inject malicious scripts (typically JavaScript) into web pages viewed by other users. There are three main variants: Reflected XSS where the malicious script is reflected off a web server in error messages or search results; Stored XSS where the injected script is permanently stored on target servers in databases, message forums, or comment fields; and DOM-based XSS where the vulnerability exists in client-side scripts that modify the DOM. Successful exploitation can lead to session hijacking via cookie theft, website defacement, redirection to malicious sites, keylogging, and complete account takeover. XSS is one of the most prevalent web application vulnerabilities and underpins numerous attack chains.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-89",
+    "name": "Improper Neutralization of Special Elements used in an SQL Command (SQL Injection)",
+    "description": "SQL Injection occurs when software constructs all or part of an SQL command using externally-influenced input from an upstream component without properly neutralizing special elements that could modify the intended SQL command. Attackers craft input containing SQL syntax that alters query logic, allowing them to read, modify, or delete database contents, execute administrative operations, and in some cases execute operating system commands. Attack variants include classic in-band injection where results appear directly in the application response, blind injection where attackers infer information from application behavior or timing differences, and out-of-band injection where data is exfiltrated through DNS or HTTP requests. SQLi enables full database compromise, authentication bypass, data exfiltration, and can serve as a pivot point to compromise the underlying server through techniques like xp_cmdshell on MSSQL or LOAD_FILE on MySQL.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-78",
+    "name": "Improper Neutralization of Special Elements used in an OS Command (OS Command Injection)",
+    "description": "OS Command Injection occurs when software constructs operating system commands using externally-influenced input without neutralizing special elements such as semicolons, pipes, backticks, or command substitution characters. Attackers inject arbitrary OS commands that execute with the privileges of the vulnerable application, potentially achieving remote code execution on the underlying server. Common injection points include web application parameters passed to system(), exec(), or popen() functions, file processing utilities, network diagnostic tools, and any functionality that shells out to the operating system. Successful exploitation gives attackers the ability to read and write arbitrary files, establish reverse shells, install backdoors, pivot to internal networks, and exfiltrate sensitive data. This is particularly dangerous when the application runs with elevated privileges such as root or SYSTEM.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-77",
+    "name": "Improper Neutralization of Special Elements used in a Command (Command Injection)",
+    "description": "Command Injection is a broader category encompassing situations where software constructs a command string using externally-influenced input and passes it to an interpreter without proper neutralization. Unlike OS Command Injection (CWE-78), this applies to any command interpreter including database shells, scripting engines, mail servers (SMTP injection), and LDAP interpreters. Attackers manipulate the command structure by injecting delimiter characters, escape sequences, or additional commands. The impact depends on the target interpreter but generally includes unauthorized data access, data modification, and potentially arbitrary code execution within the interpreter context. Prevention requires parameterized APIs, input validation against strict allowlists, and avoiding string concatenation when building commands.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-94",
+    "name": "Improper Control of Generation of Code (Code Injection)",
+    "description": "Code Injection occurs when software allows externally-influenced input to be used in the generation or modification of code that is subsequently executed by the application. This includes eval() injection in languages like Python, JavaScript, Ruby, and PHP; template injection in template engines (Jinja2, Twig, Freemarker); and expression language injection in frameworks like Spring EL or OGNL. Attackers can execute arbitrary code within the application context, gaining full control over the application logic, accessing sensitive data, reading files from the server filesystem, and potentially achieving remote code execution on the host system. This weakness is distinct from OS Command Injection as the injected code runs within the application runtime rather than through a system shell, but the impact can be equally severe.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-22",
+    "name": "Improper Limitation of a Pathname to a Restricted Directory (Path Traversal)",
+    "description": "Path Traversal (also known as Directory Traversal) occurs when software uses external input to construct a pathname intended to identify a file or directory within a restricted parent directory, but fails to properly neutralize special elements like ../ sequences that can resolve to a location outside that directory. Attackers traverse the directory structure to read sensitive files such as /etc/passwd, /etc/shadow, application configuration files containing database credentials, private keys, or source code. In write scenarios, attackers can overwrite critical system files, plant web shells, or modify application configuration. Variants include absolute path traversal, relative path traversal, and null-byte injection to truncate file extensions. Both Unix-style (../) and Windows-style (..\\) traversal sequences must be considered, along with URL-encoded and double-encoded variants.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-434",
+    "name": "Unrestricted Upload of File with Dangerous Type",
+    "description": "This weakness occurs when software allows users to upload files without sufficient restrictions on file type, content, or storage location. Attackers upload malicious files such as web shells (PHP, JSP, ASPX), executable binaries, HTML files containing scripts, SVG files with embedded JavaScript, or polyglot files that pass type validation but execute as code. Even with extension validation, attackers bypass controls using double extensions (shell.php.jpg), null bytes (shell.php%00.jpg), MIME type manipulation, or by exploiting inconsistencies between validation and execution. Successful exploitation typically leads to remote code execution on the server, especially when uploaded files are stored in web-accessible directories. The impact ranges from website defacement and data theft to complete server compromise and use as a staging point for further attacks.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-918",
+    "name": "Server-Side Request Forgery (SSRF)",
+    "description": "SSRF occurs when a web application fetches a remote resource using a URL that is wholly or partially supplied by an attacker, without validating that the URL points to an expected destination. Attackers exploit this to make the server send requests to internal services, cloud metadata endpoints (169.254.169.254), internal APIs, databases, and other infrastructure that is not directly accessible from the internet. Common attack scenarios include reading cloud instance credentials from metadata services (leading to full cloud account compromise), port scanning internal networks, accessing internal admin panels, exploiting trust relationships between internal services, and bypassing network-level access controls. SSRF payloads often leverage protocol handlers (file://, gopher://, dict://), DNS rebinding, or IP address obfuscation techniques (decimal, hex, IPv6) to bypass allowlist/blocklist filters.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-611",
+    "name": "Improper Restriction of XML External Entity Reference (XXE)",
+    "description": "XXE (XML External Entity) injection occurs when software processes XML input containing a reference to an external entity, and the XML parser is configured to resolve external entities. Attackers craft malicious XML documents with DTD declarations that reference local files (file:///etc/passwd), internal network resources (http://internal-server/), or trigger denial of service through recursive entity expansion (Billion Laughs attack). XXE can lead to disclosure of confidential data, server-side request forgery, port scanning of internal networks, remote code execution in some configurations (via expect:// protocol handler in PHP), and denial of service. Blind XXE variants use out-of-band techniques where data is exfiltrated via DNS lookups or HTTP requests to attacker-controlled servers. Prevention requires disabling external entity resolution and DTD processing in XML parsers.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-502",
+    "name": "Deserialization of Untrusted Data",
+    "description": "Insecure deserialization occurs when software deserializes data from untrusted sources without sufficient validation, allowing attackers to manipulate serialized objects to achieve malicious outcomes. In languages like Java, PHP, Python, Ruby, and .NET, attackers craft serialized payloads that exploit gadget chains (sequences of method calls triggered during deserialization) to achieve remote code execution. Java deserialization attacks using Apache Commons Collections, Spring, or other library gadgets are particularly devastating and have led to major breaches. Beyond RCE, insecure deserialization can enable authentication bypass, privilege escalation, injection attacks, and denial of service. The vulnerability is especially dangerous because exploitation often requires no authentication and can be fully automated. Known exploitation frameworks like ysoserial (Java) and phpggc (PHP) provide ready-made payloads for common library gadget chains.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-120",
+    "name": "Buffer Copy without Checking Size of Input (Classic Buffer Overflow)",
+    "description": "Classic buffer overflow occurs when software copies data into a buffer without first checking that the size of the data does not exceed the size of the buffer, causing data to overflow into adjacent memory. In stack-based overflows, attackers overwrite the return address to redirect execution to injected shellcode or ROP gadgets. Heap-based overflows corrupt heap metadata or adjacent heap objects to achieve arbitrary write primitives. Buffer overflows have historically been among the most exploited vulnerabilities, enabling remote code execution in applications written in memory-unsafe languages like C and C++. Modern protections like ASLR, DEP/NX, stack canaries, and CFI raise the exploitation bar but do not eliminate the risk, as techniques like information leaks, partial overwrites, and JIT spraying continue to evolve.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-787",
+    "name": "Out-of-bounds Write",
+    "description": "Out-of-bounds write occurs when software writes data past the end, or before the beginning, of the intended buffer. This is a generalization of buffer overflow that includes writes at arbitrary offsets rather than just sequential overwrites. Exploitation can corrupt adjacent data structures, modify program control flow, or overwrite security-critical values like function pointers, vtable entries, or authentication flags. Out-of-bounds writes frequently appear in image parsers, media codecs, font rendering engines, and file format handlers where complex data structures are processed. This weakness consistently ranks at or near the top of the CWE Top 25 Most Dangerous Software Weaknesses due to its prevalence and the severity of exploitation outcomes, which typically include remote code execution with the privileges of the vulnerable application.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-125",
+    "name": "Out-of-bounds Read",
+    "description": "Out-of-bounds read occurs when software reads data past the end or before the beginning of the intended buffer, potentially exposing sensitive information from adjacent memory. While typically less severe than out-of-bounds writes, these vulnerabilities can leak stack or heap contents including cryptographic keys, authentication tokens, private data, and memory layout information that defeats ASLR. The infamous Heartbleed vulnerability (CVE-2014-0160) in OpenSSL was an out-of-bounds read that exposed private keys and session data from server memory. Out-of-bounds reads can also cause crashes (denial of service) if they access unmapped memory pages, and the leaked information often serves as a prerequisite for more complex exploitation chains.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-416",
+    "name": "Use After Free",
+    "description": "Use-after-free occurs when software continues to reference memory after it has been freed, allowing an attacker who controls the freed memory contents to influence program behavior. When the freed memory is reallocated for a different purpose, the dangling reference may read attacker-controlled data or allow corruption of the new allocation. Exploitation typically involves heap spraying or targeted allocation to place controlled data at the freed memory location, then triggering the dangling reference to achieve code execution. Use-after-free vulnerabilities are particularly common in browsers (JavaScript engine object handling), PDF readers, and other complex applications with intricate object lifecycle management. They are a primary target for modern exploit development and frequently appear in exploit chains used by advanced threat actors.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-190",
+    "name": "Integer Overflow or Wraparound",
+    "description": "Integer overflow occurs when an arithmetic operation produces a value that exceeds the maximum (or falls below the minimum) value for the data type, causing the value to wrap around. Attackers exploit integer overflows to bypass size checks that guard buffer allocations (leading to heap buffer overflows), corrupt loop counters (causing infinite loops or denial of service), or manipulate financial calculations. A classic pattern involves overflowing a size calculation so a small buffer is allocated, followed by a copy operation using the original (large) size, resulting in a heap buffer overflow. Integer overflows in signed arithmetic can also produce negative values from positive operands, subverting comparisons and control flow. These vulnerabilities are particularly insidious because the overflow occurs silently in most languages without runtime errors.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-476",
+    "name": "NULL Pointer Dereference",
+    "description": "NULL pointer dereference occurs when software attempts to use a pointer that is expected to be valid but is NULL, typically causing an application crash (denial of service). While traditionally considered a reliability rather than security issue, NULL pointer dereferences can be security-relevant in certain contexts: on systems without memory protection at address zero, attackers may map memory at the NULL page and achieve code execution; in multi-threaded applications, a controlled crash may corrupt shared state; and in kernel code, NULL dereferences have historically been exploitable for privilege escalation. The vulnerability commonly arises from missing return value checks, error handling omissions, and race conditions that clear pointers unexpectedly.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-119",
+    "name": "Improper Restriction of Operations within the Bounds of a Memory Buffer",
+    "description": "This is the parent category for all buffer-related vulnerabilities where software performs read or write operations without ensuring they stay within the boundaries of the allocated memory buffer. It encompasses buffer overflows (CWE-120), out-of-bounds reads (CWE-125), out-of-bounds writes (CWE-787), and related memory safety issues. These weaknesses are the foundation of memory corruption exploitation in languages lacking automatic bounds checking (primarily C and C++). Exploitation consequences range from information disclosure and denial of service to arbitrary code execution. Memory safety vulnerabilities remain the single largest class of critical security bugs in major software projects including operating systems, browsers, and network infrastructure, driving industry adoption of memory-safe languages like Rust and Go.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-20",
+    "name": "Improper Input Validation",
+    "description": "Improper input validation is a broad weakness category where software receives input but does not validate (or incorrectly validates) that the input conforms to expected properties before using it in security-sensitive operations. This encompasses failures to validate data type, length, range, format, permitted characters, and business logic constraints. It is the root cause enabling numerous more specific vulnerabilities including injection attacks, buffer overflows, path traversals, and denial of service. Effective input validation requires defining strict allowlists of acceptable input, validating all input at trust boundaries (user input, API parameters, file uploads, environment variables), using appropriate validation for the context (encoding for HTML output, parameterization for SQL), and implementing defense in depth with validation at multiple layers.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-200",
+    "name": "Exposure of Sensitive Information to an Unauthorized Actor",
+    "description": "This weakness occurs when software exposes sensitive information to an actor who is not explicitly authorized to have access to that information. Information exposure can occur through many channels: error messages revealing stack traces, database schemas, or internal paths; API responses returning more data than necessary (over-fetching); debug endpoints left active in production; logs containing credentials or PII; HTTP headers exposing server versions and technology stack; and timing side channels leaking information about internal state. The exposed information frequently serves as reconnaissance data enabling more targeted attacks, including credential harvesting, privilege escalation, and exploitation of identified software versions with known vulnerabilities.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-209",
+    "name": "Generation of Error Message Containing Sensitive Information",
+    "description": "This weakness occurs when software generates error messages that include sensitive information about the application environment, users, or associated data. Detailed error messages in production may expose database query structures (aiding SQL injection), file system paths (aiding path traversal), stack traces (revealing framework versions and code structure), internal IP addresses (mapping internal network), or user data (violating privacy). Attackers systematically trigger errors through malformed input, invalid parameters, and edge cases to harvest this information for subsequent attacks. Best practice requires generic error messages in production with detailed errors logged server-side only, separate error handling for development and production environments, and custom error pages that do not reveal internal details.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-532",
+    "name": "Insertion of Sensitive Information into Log File",
+    "description": "This weakness occurs when software writes sensitive information such as passwords, API keys, session tokens, credit card numbers, or PII into log files that may be accessible to unauthorized actors. Log files are frequently stored with broader access permissions than application data, transmitted to centralized logging systems with different access controls, retained for extended periods, and included in support bundles or diagnostic exports. Attackers who gain read access to logs (through log management platforms, backup files, or LFI vulnerabilities) can harvest credentials and tokens for account takeover, or PII for regulatory violations. This weakness is particularly common in applications that log full HTTP request/response bodies, database queries with parameters, or exception details including variable values.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-312",
+    "name": "Cleartext Storage of Sensitive Information",
+    "description": "This weakness occurs when software stores sensitive information in cleartext within a resource that might be accessible to unauthorized actors. Sensitive data includes passwords, cryptographic keys, API tokens, PII, financial data, and health records. Common cleartext storage locations include configuration files, flat-file databases, application preferences, registry entries, environment variables baked into container images, and mobile device local storage. Attackers who gain filesystem access (through path traversal, backup exposure, or system compromise) can immediately read all stored secrets without needing to defeat any cryptographic protections. Prevention requires encrypting sensitive data at rest using strong algorithms, storing credentials in dedicated secret management systems (HashiCorp Vault, AWS Secrets Manager, Azure Key Vault), and using one-way hashing for passwords.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-319",
+    "name": "Cleartext Transmission of Sensitive Information",
+    "description": "This weakness occurs when software transmits sensitive information across a network in cleartext without encryption, making it susceptible to interception by any actor with network access along the communication path. Protocols like HTTP, FTP, TELNET, SMTP (without STARTTLS), and unencrypted database connections expose credentials, session tokens, personal data, and business-critical information to network sniffing attacks. Attackers on the same network segment, at ISP level, or on compromised network infrastructure can passively capture this data using tools like Wireshark, tcpdump, or Responder. In cloud environments, this is particularly dangerous as traffic may traverse shared infrastructure. Prevention requires TLS/SSL encryption for all channels carrying sensitive data, with proper certificate validation and strong cipher suite configuration.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-327",
+    "name": "Use of a Broken or Risky Cryptographic Algorithm",
+    "description": "This weakness occurs when software uses a cryptographic algorithm that is known to be weak, broken, or inappropriate for the security requirements. Examples include DES and 3DES for symmetric encryption (replaced by AES), MD5 and SHA-1 for integrity verification or password hashing (vulnerable to collision attacks), RC4 for stream encryption (multiple biases discovered), and RSA with small key sizes or without proper padding (PKCS#1 v1.5 vulnerable to Bleichenbacher attacks). Attackers can exploit broken algorithms to forge signatures, decrypt communications, crack password hashes, or bypass integrity checks. Cryptographic agility (the ability to swap algorithms without code changes) is essential as algorithm weaknesses are continually discovered. Standards organizations like NIST publish recommended algorithms and key lengths that should be followed.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-328",
+    "name": "Use of Weak Hash",
+    "description": "This weakness occurs when software uses a hashing algorithm that does not provide sufficient collision resistance, preimage resistance, or computational cost for its intended purpose. Using MD5 or SHA-1 for digital signatures or certificate validation is dangerous because practical collision attacks exist. Using fast hash functions (MD5, SHA-256) for password hashing is inappropriate because they can be brute-forced at billions of attempts per second on modern GPUs. Password hashing requires purpose-built algorithms like bcrypt, scrypt, or Argon2 that incorporate salting and adjustable work factors. For integrity verification, SHA-256 or SHA-3 should be used as minimum standards. The distinction between hash function quality and appropriate use context is critical in cryptographic engineering.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-330",
+    "name": "Use of Insufficiently Random Values",
+    "description": "This weakness occurs when software uses insufficiently random numbers in a security context that requires unpredictability. Common sources of weak randomness include language-default PRNGs (Math.random() in JavaScript, random.random() in Python, java.util.Random) which are designed for statistical simulation rather than security and have predictable output given seed recovery. When weak randomness is used for session tokens, CSRF tokens, password reset links, cryptographic keys, or OTPs, attackers can predict or brute-force the generated values to hijack sessions, forge tokens, or compromise cryptographic operations. Secure alternatives include /dev/urandom, CryptGenRandom, SecureRandom, and the secrets module in Python, which draw from OS-provided cryptographic entropy sources.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-338",
+    "name": "Use of Cryptographically Weak Pseudo-Random Number Generator",
+    "description": "This weakness specifically addresses the use of PRNGs that are not designed for cryptographic applications in security-sensitive contexts. Non-cryptographic PRNGs like Mersenne Twister (used by default in many languages), Linear Congruential Generators, and XorShift have mathematical properties that make their output predictable given sufficient observed values. An attacker who can observe as few as 624 consecutive 32-bit outputs from Mersenne Twister can reconstruct the full internal state and predict all future outputs. This enables prediction of session tokens, nonces, password reset codes, and other security-critical random values. Always use cryptographically secure PRNGs (CSPRNGs) that are designed to resist state recovery and output prediction attacks.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-326",
+    "name": "Inadequate Encryption Strength",
+    "description": "This weakness occurs when software uses encryption with key lengths, modes, or parameters that do not provide sufficient security strength for the sensitivity of the protected data. Examples include RSA keys shorter than 2048 bits, AES keys shorter than 128 bits, Diffie-Hellman parameters using common primes or insufficient bit lengths, and elliptic curve keys on weak curves. Advances in computing power, including quantum computing threats, continually raise the minimum acceptable key lengths. Current recommendations include AES-256 for symmetric encryption, RSA-2048 minimum (RSA-4096 preferred) or ECDSA P-256+ for asymmetric operations, and SHA-256+ for hashing. Organizations should plan for post-quantum cryptographic migration as quantum computers capable of breaking current asymmetric algorithms advance.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-295",
+    "name": "Improper Certificate Validation",
+    "description": "This weakness occurs when software does not properly validate SSL/TLS certificates during secure communications, enabling man-in-the-middle attacks. Common validation failures include disabling certificate verification entirely (verify=False in Python requests), not checking certificate expiration, not validating the hostname matches the certificate CN/SAN, accepting self-signed certificates in production, not checking certificate revocation status (CRL/OCSP), and trusting overly broad certificate authorities. Attackers on the network path can present their own certificates and intercept all encrypted traffic, capturing credentials, session tokens, API keys, and sensitive data. This is particularly prevalent in mobile applications and internal service-to-service communications where developers disable validation during development and fail to re-enable it for production.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-798",
+    "name": "Use of Hard-coded Credentials",
+    "description": "This weakness occurs when software contains hard-coded credentials (passwords, API keys, cryptographic keys, tokens) embedded directly in source code, configuration files shipped with the application, or compiled binaries. Hard-coded credentials are discoverable through reverse engineering, source code review, or scanning public repositories (many secrets are accidentally committed to GitHub). Once discovered, these credentials provide persistent unauthorized access that cannot be easily revoked without releasing a software update. This weakness is especially dangerous in IoT devices, firmware, and distributed software where updates are difficult. Hard-coded credentials in backend services enable attackers to bypass authentication entirely. Prevention requires externalized secret management, environment-variable-based configuration, and automated secret scanning in CI/CD pipelines.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-259",
+    "name": "Use of Hard-coded Password",
+    "description": "This is a specific instance of hard-coded credentials where a password is embedded directly in software source code or binaries for inbound authentication (allowing anyone who discovers it to gain access) or outbound authentication (connecting to external services). Hard-coded passwords in firmware, IoT devices, and network equipment have been widely exploited in botnets (Mirai) and targeted attacks. The password is identical across all installations, meaning one compromise exposes all deployments. Even if the password is obfuscated or encrypted with a hard-coded key, determined attackers can recover it through reverse engineering. Organizations should use unique per-instance credentials, certificate-based authentication, or credential management services instead.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-321",
+    "name": "Use of Hard-coded Cryptographic Key",
+    "description": "This weakness occurs when software uses a hard-coded cryptographic key for encryption, decryption, signing, or authentication. Since the key is identical across all installations and discoverable through reverse engineering or source code access, any data encrypted with it can be decrypted by anyone who extracts the key. Similarly, digital signatures created with a hard-coded private key can be forged. This weakness compromises the fundamental assumption of cryptography that keys are secret. Common occurrences include hard-coded AES keys for encrypting local data, hard-coded HMAC secrets for signing JWTs or API requests, and embedded TLS private keys in firmware. Proper key management requires generating unique keys per deployment, storing them in HSMs or key management services, and implementing key rotation procedures.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-287",
+    "name": "Improper Authentication",
+    "description": "This broad weakness category covers situations where software does not properly prove that an actor claiming a particular identity is actually that identity. This includes missing authentication for critical functions, use of easily bypassed authentication schemes, improper implementation of authentication protocols, failure to re-authenticate for sensitive operations, and authentication that can be circumvented by manipulating client-side state. Attackers exploit improper authentication to impersonate legitimate users, access administrative functionality, access other users data, and perform unauthorized operations. Proper authentication requires strong credential verification, multi-factor authentication for sensitive operations, secure session management, protection against credential stuffing and brute force, and proper handling of authentication edge cases.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-306",
+    "name": "Missing Authentication for Critical Function",
+    "description": "This weakness occurs when software does not require any authentication for functionality that should require a provable user identity or that accesses sensitive data. Common examples include administrative endpoints accessible without login, API endpoints that bypass authentication middleware, debug or diagnostic interfaces exposed in production, file upload/download functions without access controls, and configuration modification endpoints. Attackers discover these unprotected functions through directory brute-forcing, API enumeration, source code review, or by observing client-side code that references the endpoints. The impact is typically severe since critical functions often manage user data, system configuration, or administrative operations. Prevention requires implementing authentication at the framework level with a default-deny approach.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-307",
+    "name": "Improper Restriction of Excessive Authentication Attempts",
+    "description": "This weakness occurs when software does not implement sufficient measures to prevent or detect brute-force authentication attacks. Without rate limiting, account lockout, CAPTCHA challenges, or progressive delays, attackers can systematically try large numbers of credential combinations against login endpoints. Modern brute-force tools can test millions of password combinations per hour against web applications, and credential stuffing attacks using breached password lists are highly effective given widespread password reuse. Effective countermeasures include progressive account lockout with backoff, IP-based rate limiting, CAPTCHA after failed attempts, multi-factor authentication, monitoring for distributed brute-force patterns, and device fingerprinting to identify suspicious login behavior.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-384",
+    "name": "Session Fixation",
+    "description": "Session fixation occurs when software does not regenerate the session identifier after a successful authentication, allowing an attacker who knows or sets the session ID before authentication to hijack the authenticated session. The attacker sets the victim session ID to a known value (via URL parameter, cookie injection, or cross-site scripting), waits for the victim to authenticate, and then uses the known session ID to access the authenticated session. This differs from session hijacking where an existing valid session is stolen. Prevention is straightforward: always regenerate the session identifier upon successful authentication, privilege level changes, and other security state transitions. Most modern web frameworks provide session regeneration functions, but developers must ensure they are called at the appropriate points.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-613",
+    "name": "Insufficient Session Expiration",
+    "description": "This weakness occurs when software does not sufficiently limit the lifetime of session tokens, allowing authenticated sessions to remain valid for extended periods. Long-lived sessions increase the window during which stolen session tokens (via XSS, network sniffing, or physical access) remain useful to attackers. Sessions that never expire or have extremely long timeouts enable persistent unauthorized access even after the legitimate user has finished their work. Effective session management requires absolute session timeouts (maximum session lifetime regardless of activity), idle timeouts (inactivity-based expiration), session invalidation upon password change, proper server-side session termination on logout, and limiting concurrent sessions per user for sensitive applications.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-640",
+    "name": "Weak Password Recovery Mechanism for Forgotten Password",
+    "description": "This weakness occurs when the password recovery mechanism can be exploited to gain unauthorized access to user accounts. Weak recovery mechanisms include security questions with easily guessable or researched answers, password reset links sent to unverified email addresses, reset tokens that are predictable or insufficiently random, reset links that do not expire, lack of rate limiting on reset requests, and information leakage confirming whether accounts exist. Attackers target password reset flows as an alternative to brute-forcing login credentials, exploiting the weaker authentication requirements of the recovery process. Secure recovery requires cryptographically random time-limited tokens, notification to the registered email/phone, re-validation of identity through MFA, and rate limiting of recovery requests.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-521",
+    "name": "Weak Password Requirements",
+    "description": "This weakness occurs when software does not enforce adequate password complexity or length requirements, making user passwords vulnerable to brute-force and dictionary attacks. Weak requirements include allowing very short passwords (under 8 characters), not checking against known breached password lists, not requiring character diversity, and not implementing password history to prevent reuse. NIST SP 800-63B recommends a minimum of 8 characters with a maximum of at least 64 characters, checking against breached password databases, and avoiding arbitrary complexity rules (uppercase, special character requirements) in favor of length-based strength. Password strength meters and real-time feedback help users choose stronger passwords.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-522",
+    "name": "Insufficiently Protected Credentials",
+    "description": "This weakness occurs when software does not adequately protect user credentials during storage, transmission, or processing. This encompasses multiple sub-weaknesses including storing passwords in plaintext or reversible encryption, transmitting credentials over unencrypted channels, logging credentials in application logs, caching credentials in browser or proxy caches, and exposing credentials through client-side storage (localStorage, cookies without secure flag). Attackers who obtain insufficiently protected credentials gain direct access to user accounts and any systems those credentials protect. Given widespread password reuse, compromised credentials from one service frequently enable access to many other services. Defense-in-depth requires hashing passwords with bcrypt/argon2, TLS for all credential transmission, credential-free authentication where possible (tokens, certificates), and secure credential management practices.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-256",
+    "name": "Plaintext Storage of a Password",
+    "description": "This weakness occurs when software stores user passwords in plaintext without applying any cryptographic transformation, meaning anyone who gains access to the storage medium (database, file, backup) can immediately read all passwords. This is among the most basic security failures an application can have, yet it continues to be discovered in production systems. A database breach of a system storing plaintext passwords exposes every user credential immediately, and due to password reuse, typically leads to compromise of users accounts across multiple services. Passwords must always be stored using purposefully slow, salted, one-way hashing algorithms like bcrypt, scrypt, or Argon2id with appropriate work factors that are increased over time as computing power grows.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-916",
+    "name": "Use of Password Hash With Insufficient Computational Effort",
+    "description": "This weakness occurs when software hashes passwords using algorithms that can be computed too quickly, enabling practical brute-force attacks against the hashed values. Fast hash functions like MD5, SHA-1, SHA-256, and even HMAC variants can be computed at billions of iterations per second on modern GPUs with tools like hashcat, making it feasible to recover most user passwords from their hashes. Purpose-built password hashing algorithms like bcrypt, scrypt, and Argon2id incorporate adjustable work factors (time cost, memory cost, parallelism parameters) that make each hash computation deliberately expensive, dramatically reducing the rate at which an attacker can test candidate passwords. Work factors should be tuned so that hashing takes at least 100ms per password and should be increased over time.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-862",
+    "name": "Missing Authorization",
+    "description": "This weakness occurs when software does not perform any authorization check when an actor attempts to access a resource or perform an action that should require verified permissions. Unlike authentication failures (verifying identity), authorization failures involve letting authenticated users access resources or actions beyond their permitted scope. Common examples include API endpoints that check authentication but not role-based permissions, direct object references without ownership verification, administrative functions accessible to regular users, and horizontal privilege escalation where User A can access User B data. Missing authorization is distinct from incorrect authorization (CWE-863) because no check is performed at all. Prevention requires implementing authorization at every access point with a default-deny policy and consistent enforcement across all application layers.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-863",
+    "name": "Incorrect Authorization",
+    "description": "This weakness occurs when software performs an authorization check but does so incorrectly, allowing actors to access resources or perform actions beyond their intended permissions. Unlike missing authorization where no check exists, incorrect authorization involves flawed logic in existing checks. Examples include checking the wrong permission, using client-controlled data for authorization decisions, relying on security through obscurity (hidden URLs), implementing allow-by-default logic, failing to check authorization for all code paths to a resource, and race conditions in permission checks (TOCTOU). Incorrect authorization vulnerabilities are often subtle and survive code review because authorization logic exists but contains logical flaws. Centralized authorization services, comprehensive access control testing, and formal authorization models help prevent these issues.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-285",
+    "name": "Improper Authorization",
+    "description": "This is the parent category for authorization weaknesses where software does not properly restrict access to resources or functionality from unauthorized actors. It encompasses both missing authorization checks (CWE-862) and incorrect authorization logic (CWE-863). Improper authorization is consistently rated as one of the most critical and prevalent web application vulnerabilities, corresponding to OWASP A01:2021 Broken Access Control. The impact is typically severe because authorization failures directly enable access to other users data, administrative functions, or restricted resources. Proper authorization requires a centralized, well-tested authorization mechanism that applies consistently across all application endpoints, with default-deny semantics and the principle of least privilege applied to all roles and permissions.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-269",
+    "name": "Improper Privilege Management",
+    "description": "This weakness occurs when software does not properly assign, modify, track, or check privileges for actors, resulting in some actors having more privileges than required or gaining privileges they should not have. This includes granting administrative rights by default, failing to revoke temporary privileges, not implementing the principle of least privilege, allowing privilege accumulation over time, and insecure delegation of privileges. Improper privilege management creates unnecessarily large attack surfaces because compromising any over-privileged account provides access far beyond what the account needs. Prevention requires implementing role-based access control (RBAC) or attribute-based access control (ABAC), regular privilege audits, just-in-time privilege elevation, and documentation of the minimum privileges required for each role.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-250",
+    "name": "Execution with Unnecessary Privileges",
+    "description": "This weakness occurs when software executes with higher privileges than necessary to perform its required functions. Running applications as root/SYSTEM, granting database accounts DBA privileges when only SELECT is needed, or deploying cloud services with admin IAM roles are common examples. If such an application is compromised through any vulnerability, the attacker inherits these excessive privileges, greatly amplifying the impact. A web application running as root means any code execution vulnerability immediately gives the attacker full system control. Prevention requires applying the principle of least privilege: running services as dedicated low-privilege accounts, using minimal database permissions, assigning narrow IAM roles, and dropping privileges after initialization if elevated privileges were needed for startup.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-732",
+    "name": "Incorrect Permission Assignment for Critical Resource",
+    "description": "This weakness occurs when software sets permissions on a critical resource (configuration files, cryptographic keys, databases, log files, executables) in a way that allows unintended actors to read, modify, or execute it. Common examples include world-readable configuration files containing database passwords, writable directories for application binaries allowing replacement, overly permissive ACLs on cloud storage buckets, and shared temp directories used for sensitive intermediate files. Attackers exploit incorrect permissions to steal credentials, modify application behavior, inject malicious code, or access sensitive data. This is particularly common in deployment and installation scripts that set permissions too broadly for convenience. Prevention requires following the principle of least privilege for file permissions and regularly auditing permissions on critical resources.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-276",
+    "name": "Incorrect Default Permissions",
+    "description": "This weakness occurs when software is installed with default permissions that are more permissive than necessary, exposing resources to unauthorized access from the moment of deployment. Default configurations are often designed for ease of installation and compatibility rather than security, resulting in overly permissive file permissions, open network ports, enabled debug features, and anonymous access. Many major breaches have resulted from default configurations, including publicly accessible Elasticsearch instances, MongoDB databases with no authentication, and S3 buckets with public read access. The OWASP Security Misconfiguration category (A05:2021) directly addresses this class of issues. Organizations must establish secure baseline configurations, automate security hardening during deployment, and regularly audit deployed systems against security benchmarks like CIS Benchmarks.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-639",
+    "name": "Authorization Bypass Through User-Controlled Key (IDOR)",
+    "description": "Insecure Direct Object Reference (IDOR) occurs when software uses user-controllable input (such as incrementing IDs, filenames, or GUIDs) to directly access internal objects without verifying that the requesting user is authorized to access the specific object. Attackers enumerate or manipulate these references to access other users records, files, or functionality. For example changing user_id=123 to user_id=124 in an API request to access another users profile, or modifying an order reference to view another customers order details. IDOR is one of the most common and exploitable authorization vulnerabilities because it requires no special tools or expertise. Prevention requires implementing server-side authorization checks that verify the requesting user has permission to access the specific requested object, using indirect references that map to internal objects, and avoiding predictable identifiers.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-352",
+    "name": "Cross-Site Request Forgery (CSRF)",
+    "description": "CSRF occurs when a web application does not verify that a request was intentionally sent by the authenticated user and not triggered by a malicious site visited by the user. Attackers create pages or emails containing hidden requests (via image tags, JavaScript, or auto-submitting forms) that execute actions on vulnerable sites using the victims authenticated session. Common attack scenarios include changing account email addresses, initiating money transfers, modifying security settings, creating admin accounts, and any state-changing operation. The SameSite cookie attribute, anti-CSRF tokens (synchronizer token pattern), double-submit cookies, and requiring re-authentication for sensitive operations provide defense. Modern frameworks like Django, Rails, and Spring Security include built-in CSRF protection, but developers must ensure it is properly configured and not disabled.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-601",
+    "name": "URL Redirection to Untrusted Site (Open Redirect)",
+    "description": "Open redirect occurs when software accepts a user-controlled URL parameter and uses it to redirect the user to that URL without adequate validation. Attackers craft URLs that redirect through the trusted domain to a malicious site, leveraging the trust users place in the legitimate domain for phishing attacks, credential harvesting, or malware distribution. An open redirect on a banking domain makes phishing significantly more effective because the initial URL appears legitimate. Open redirects also facilitate OAuth token theft by redirecting authorization codes to attacker-controlled endpoints. While often considered low severity in isolation, open redirects are powerful components in attack chains combining phishing, OAuth abuse, and SSRF. Prevention requires validating redirect URLs against a strict allowlist of permitted domains and paths.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-610",
+    "name": "Externally Controlled Reference to a Resource in Another Sphere",
+    "description": "This weakness occurs when software uses an externally-provided reference (URL, file path, service identifier) to access a resource in a different trust sphere without adequate validation. This encompasses SSRF (CWE-918), open redirects (CWE-601), and file inclusion vulnerabilities where the attacker controls which external resource is accessed. The fundamental issue is trusting external input to specify cross-boundary resource access, which can be exploited to access internal networks, cloud metadata services, local files, or other protected resources that the attacker cannot directly reach. Defense requires strict validation of all external references, implementing allowlists for permitted targets, and using network-level controls (egress filtering, internal firewalls) as defense in depth.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1021",
+    "name": "Improper Restriction of Rendered UI Layers or Frames (Clickjacking)",
+    "description": "Clickjacking occurs when software does not restrict how its UI can be rendered within frames controlled by other sites, allowing attackers to overlay transparent or opaque layers that trick users into clicking on hidden elements. Attackers create malicious pages that frame the target application and position invisible buttons or links over seemingly innocent UI elements, causing users to unknowingly perform actions like changing security settings, initiating transactions, or granting permissions. Techniques include transparent iframe overlays, drag-and-drop cross-frame interactions, and cursorjacking. Prevention requires setting X-Frame-Options headers (DENY or SAMEORIGIN), implementing Content-Security-Policy frame-ancestors directive, and using JavaScript frame-busting as defense in depth. CSP frame-ancestors is the modern and more flexible approach.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-345",
+    "name": "Insufficient Verification of Data Authenticity",
+    "description": "This weakness occurs when software does not sufficiently verify the authenticity or origin of data it receives and processes. Without proper verification, attackers can forge, tamper with, or replay data that the application trusts. This applies to unsigned software updates (allowing man-in-the-middle injection of malware), API responses without HMAC or signature verification, inter-service communication without mutual authentication, webhook payloads without signature validation, and configuration data loaded from external sources. The impact depends on what the unverified data controls but frequently includes code execution (via injected updates), data corruption, authentication bypass, and business logic manipulation. Prevention requires cryptographic verification (digital signatures, HMAC, checksums) of all data received from external or semi-trusted sources.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-346",
+    "name": "Origin Validation Error",
+    "description": "This weakness occurs when software does not properly verify the origin of data or communication, allowing untrusted sources to send requests or data that is processed as if it came from a trusted source. Common manifestations include missing CORS origin validation, accepting API calls from any origin, not validating webhook source IP addresses, trusting X-Forwarded-For headers from untrusted proxies, and missing referrer checks. Attackers exploit origin validation errors to perform cross-origin attacks, forge API requests, impersonate trusted services, and bypass access controls that depend on request origin. Prevention requires strict origin validation using cryptographic methods (signed tokens, mutual TLS) rather than easily spoofable attributes (IP addresses, referrer headers, user-agent strings) where possible.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-347",
+    "name": "Improper Verification of Cryptographic Signature",
+    "description": "This weakness occurs when software does not properly verify digital signatures or message authentication codes before processing the signed data. This includes accepting data without checking the signature at all, using weak signature verification that can be bypassed (algorithm confusion attacks in JWT where 'none' algorithm is accepted), not validating the signing certificate chain, or verifying against the wrong public key. JWT-specific attacks include algorithm switching (RS256 to HS256 using the public key as HMAC secret), null signature acceptance, and JWK header injection. Successful exploitation allows attackers to forge authenticated messages, bypass integrity checks on software updates, impersonate trusted parties, and tamper with signed data. All signed data must have its signature verified before processing, using the correct algorithm and key material.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-362",
+    "name": "Concurrent Execution using Shared Resource with Improper Synchronization (Race Condition)",
+    "description": "Race conditions occur when software accesses shared resources in a way that depends on the sequence or timing of events, and proper synchronization is not implemented to ensure exclusive access. In security contexts, race conditions most commonly manifest as Time-of-Check to Time-of-Use (TOCTOU) vulnerabilities where a security check is performed at one point but the checked resource changes before it is used. Attackers exploit race conditions by sending concurrent requests to trigger the vulnerable window, potentially achieving privilege escalation, authentication bypass, double-spending in financial systems, and file system manipulation. The vulnerability window may be very small but can be reliably exploited using techniques like request racing/batching and symlink attacks. Prevention requires atomic operations, proper locking mechanisms, and avoiding multi-step operations where security checks and actions are separated.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-367",
+    "name": "Time-of-check Time-of-use (TOCTOU) Race Condition",
+    "description": "TOCTOU is a specific race condition where software checks the state of a resource, then uses that resource based on the check, but the resource state can change between the check and the use. Classic examples include checking file permissions then opening the file (attacker swaps the file via symlink between check and open), verifying account balance then debiting (attacker submits concurrent transaction between check and debit), and checking user permissions then performing action (permissions revoked between check and action). File system TOCTOU vulnerabilities are particularly common in privileged programs that check file ownership or permissions before performing operations. Prevention requires using atomic operations that combine the check and use into a single operation, using file descriptors rather than file names, and implementing proper locking.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-400",
+    "name": "Uncontrolled Resource Consumption",
+    "description": "This weakness occurs when software does not properly control the amount of resources (CPU, memory, disk space, network bandwidth, file handles, database connections) that can be consumed by an actor, enabling denial of service. Attackers exploit this by sending requests that trigger expensive operations (complex regex matching, large file processing, recursive algorithms), uploading excessively large files, creating many concurrent connections, or triggering excessive logging. Specific patterns include ReDoS (Regular Expression Denial of Service), ZIP bomb attacks, XML entity expansion (Billion Laughs), hash collision attacks against hash table implementations, and algorithmic complexity attacks. Prevention requires setting resource limits at multiple layers: request size limits, timeout constraints, rate limiting, connection pooling, and monitoring resource consumption with automatic throttling.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-770",
+    "name": "Allocation of Resources Without Limits or Throttling",
+    "description": "This weakness occurs when software allocates resources such as memory, CPU cycles, file handles, network connections, or threads without imposing any limit on the quantity that can be allocated to a single actor or in total. Without limits, a single malicious or misbehaving client can exhaust all available resources, causing denial of service for legitimate users. Common examples include unlimited file upload sizes, unbounded query result sets, unlimited concurrent WebSocket connections per user, no rate limiting on API endpoints, and unlimited thread or process creation per request. Prevention requires implementing resource quotas (per-user, per-IP, per-session), API rate limiting, pagination for data queries, maximum request size limits, connection pooling with upper bounds, and circuit breakers for cascading failure prevention.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-772",
+    "name": "Missing Release of Resource after Effective Lifetime",
+    "description": "This weakness occurs when software does not release allocated resources (memory, file handles, database connections, locks, sockets) after they are no longer needed, leading to resource leaks that accumulate over time. In long-running server applications, persistent resource leaks eventually exhaust available resources, causing degraded performance and denial of service. Attackers can accelerate resource exhaustion by triggering code paths that leak resources, such as error handling paths that fail to clean up, timeout scenarios that skip resource release, and exceptional conditions that bypass finally blocks. Prevention requires deterministic resource management (using with/using/try-with-resources patterns), connection pooling with lifecycle management, resource monitoring and alerting, and thorough testing of error handling paths for proper cleanup.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-404",
+    "name": "Improper Resource Shutdown or Release",
+    "description": "This weakness occurs when software does not properly release or shut down resources when they are no longer needed or when cleanup should occur. This includes not closing file handles, database connections, network sockets, or releasing locks during shutdown or error conditions. Unlike CWE-772 which focuses on lifetime management, this weakness also covers improper shutdown sequences that leave resources in inconsistent states, partial cleanup that releases some but not all resources, and failure to clean up sensitive data from memory before release. Improper resource management can lead to resource exhaustion, data corruption, information leakage from reused resources (uncleared buffers), and deadlocks from unreleased locks.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1236",
+    "name": "Improper Neutralization of Formula Elements in a CSV File",
+    "description": "CSV injection (also called formula injection) occurs when software incorporates user-controlled input into CSV files without neutralizing formula elements (cells starting with =, +, -, @, tab, or carriage return). When the CSV is opened in spreadsheet applications like Excel or Google Sheets, these formulas execute and can call external commands (=CMD|), access local files, exfiltrate data via hyperlinks, or make external network requests that leak data. While the exploitation requires the victim to open the CSV in a spreadsheet application and potentially dismiss security warnings, it remains a practical social engineering vector, particularly for data export features in business applications. Prevention requires prefixing suspicious cell values with a single quote or tab character to prevent formula interpretation.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-943",
+    "name": "Improper Neutralization of Special Elements in Data Query Logic (NoSQL Injection)",
+    "description": "NoSQL injection occurs when software constructs NoSQL database queries (MongoDB, CouchDB, Redis, Elasticsearch) using externally-influenced input without proper neutralization. Unlike SQL injection, NoSQL injection exploits the query syntax of specific database systems, often using JSON or JavaScript operators. In MongoDB, attackers use operators like $gt, $ne, $regex in query parameters to bypass authentication or extract data. NoSQL injection can also involve JavaScript injection in databases that support server-side JavaScript execution (MongoDB $where clauses). The impact is similar to SQL injection: authentication bypass, unauthorized data access, data modification, and in some cases code execution. Prevention requires using parameterized queries, input type validation, disabling server-side JavaScript where possible, and applying the principle of least privilege to database accounts.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-90",
+    "name": "Improper Neutralization of Special Elements used in an LDAP Query (LDAP Injection)",
+    "description": "LDAP injection occurs when software constructs LDAP queries using externally-influenced input without neutralizing special characters like *, (, ), \\, NUL, and the boolean operators & and |. Attackers craft input that alters LDAP query logic to bypass authentication, enumerate directory information, access unauthorized LDAP entries, or modify directory data. For example, injecting *)(&) into a username field can alter a query to match all users, bypassing authentication. In environments where LDAP controls access to enterprise resources (Active Directory, OpenLDAP), LDAP injection can lead to unauthorized access to the entire corporate directory, user credential exposure, and privilege escalation. Prevention requires parameterized LDAP queries, strict input validation against LDAP special characters, and least-privilege LDAP bind accounts.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-91",
+    "name": "XML Injection (aka Blind XPath Injection)",
+    "description": "XML/XPath injection occurs when software uses externally-influenced input in XPath expressions or XML queries without proper neutralization. Attackers inject XPath syntax to modify query logic, extract data from XML documents, or bypass authentication based on XML data stores. Blind XPath injection uses boolean-based or time-based inference techniques to extract data character by character when results are not directly visible. Unlike SQL injection, XPath has no equivalent of UNION SELECT, but the entire XML document can be extracted through iterative XPath queries using position() and string functions. This is particularly relevant in applications using XML-based data storage, SOAP web services, SAML authentication, and configuration files queried via XPath.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1336",
+    "name": "Improper Neutralization of Special Elements Used in a Template Engine (SSTI)",
+    "description": "Server-Side Template Injection (SSTI) occurs when user input is embedded directly into template engine expressions rather than being passed as data to the template. Template engines like Jinja2 (Python), Twig (PHP), Freemarker (Java), Velocity (Java), ERB (Ruby), and Pebble (Java) provide powerful expression languages that can access the full programming language runtime. Attackers inject template syntax that escapes the data context and executes arbitrary code on the server. SSTI is often initially dismissed as XSS but is far more severe because execution occurs server-side. Detection involves injecting mathematical expressions ({{7*7}}) and checking if the template engine evaluates them. Prevention requires never embedding user input in template strings and always using template engine data binding.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-74",
+    "name": "Improper Neutralization of Special Elements in Output Used by a Downstream Component (Injection)",
+    "description": "This is the parent category for all injection vulnerabilities where software generates output that is sent to a downstream component (SQL database, OS shell, XML parser, LDAP server, template engine, mail server, or web browser) without neutralizing special elements that have significance to that component. The downstream component interprets the injected elements as commands or control instructions rather than data, allowing attackers to alter the intended behavior. This encompasses SQL injection, OS command injection, XSS, LDAP injection, XML injection, header injection, log injection, and many other injection variants. The universal prevention principle is to use parameterized interfaces that separate data from control structures, and when not available, to apply context-appropriate encoding or escaping.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-116",
+    "name": "Improper Encoding or Escaping of Output",
+    "description": "This weakness occurs when software prepares output for a downstream component but does not properly encode or escape the output for the specific context in which it will be interpreted. Even when input validation is performed, output encoding is necessary because the same data may be safe in one context but dangerous in another. For example, data safe in HTML body context needs different encoding for HTML attributes, JavaScript strings, CSS values, and URL parameters. Common manifestations include missing HTML entity encoding leading to XSS, missing URL encoding leading to parameter pollution, missing shell escaping leading to command injection, and missing SQL escaping when parameterized queries are not available. Context-aware output encoding is the primary defense against injection attacks.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-838",
+    "name": "Inappropriate Encoding for Output",
+    "description": "This weakness is a variant of CWE-116 where the software applies encoding or escaping but uses the wrong encoding scheme for the output context. For example, applying HTML entity encoding to data placed in a JavaScript context does not prevent XSS because the JavaScript interpreter processes the data before the HTML parser. Similarly, URL encoding data placed in HTML attributes, or HTML encoding data used in LDAP queries, provides no protection. The correct encoding must match the interpretation context of the downstream component. Web applications are particularly susceptible because a single page may contain multiple encoding contexts (HTML, JavaScript, CSS, URL) requiring different encoding strategies for each.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-134",
+    "name": "Use of Externally-Controlled Format String",
+    "description": "Format string vulnerabilities occur when software uses externally-influenced input as a format string parameter in functions like printf(), sprintf(), syslog(), or their equivalents. In C/C++, format specifiers like %s, %x, and %n allow attackers to read from the stack (%x reveals memory contents), write to arbitrary memory locations (%n writes the number of bytes printed so far), and crash the application. While primarily a C/C++ issue, format string attacks can also affect logging frameworks in other languages that interpret format specifiers in user-supplied data. Exploitation can achieve information disclosure, denial of service, and arbitrary code execution. Prevention requires never using user input as format strings, always using fixed format strings with user data as arguments, and using compiler warnings (-Wformat-security) to detect potential issues.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-426",
+    "name": "Untrusted Search Path",
+    "description": "This weakness occurs when software uses a search path to locate critical resources such as libraries, executables, or configuration files, and the search path includes directories that are under attacker control. The most common manifestation is DLL search order hijacking on Windows where an attacker places a malicious DLL in a directory that is searched before the legitimate DLL location (such as the application working directory). Similarly on Linux, manipulating LD_LIBRARY_PATH, PATH, or PYTHONPATH can redirect library or executable loading. This enables code execution with the privileges of the vulnerable application, which is particularly dangerous for privileged services and SUID/SGID programs. Prevention requires using fully-qualified paths, restricting search paths, validating loaded resources, and setting secure directory permissions.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-427",
+    "name": "Uncontrolled Search Path Element",
+    "description": "This weakness occurs when software uses a search path that includes an element controlled by an attacker, typically through environment variable manipulation, writable directories in the system PATH, or current directory inclusion in search paths. On Windows, the default DLL search order includes the application directory and current working directory before system directories, enabling DLL planting attacks. On Linux, writable directories in LD_LIBRARY_PATH or executables with RPATH pointing to writable locations enable similar attacks. This is commonly exploited in privilege escalation scenarios where a low-privilege attacker places malicious libraries in locations searched by privileged applications. The distinction from CWE-426 is that this weakness focuses on uncontrolled elements within the search path rather than the untrusted path as a whole.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-428",
+    "name": "Unquoted Search Path or Element",
+    "description": "This weakness occurs on Windows when software specifies a path to an executable or service that contains spaces but is not enclosed in quotation marks. Windows resolves unquoted paths by trying each space-delimited segment as a potential executable. For a service configured with ImagePath = C:\\Program Files\\My App\\service.exe, Windows will try C:\\Program.exe first, then C:\\Program Files\\My.exe, before finally trying the intended path. Attackers who can create files at these intermediate paths achieve code execution with the privileges of the service (often SYSTEM). This is a common privilege escalation vector on Windows systems and is readily discovered by tools like PowerUp and winPEAS. Prevention requires quoting all paths containing spaces in service configurations, scheduled tasks, and registry entries.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-494",
+    "name": "Download of Code Without Integrity Check",
+    "description": "This weakness occurs when software downloads code (updates, plugins, libraries, scripts) from a remote source without verifying its integrity through cryptographic signatures, hashes, or other integrity verification mechanisms. Attackers who can intercept or modify the download (through man-in-the-middle attacks, DNS hijacking, compromised mirrors, or CDN compromise) can replace legitimate code with malicious versions. This is the technical weakness behind many software supply chain attacks. Notable examples include the CCleaner supply chain compromise, SolarWinds Orion backdoor, and various npm/PyPI package hijacking incidents. Prevention requires verifying digital signatures from trusted publishers, checking cryptographic hashes obtained through separate secure channels, using pinned hashes for dependencies (package-lock.json, Pipfile.lock), and implementing transparency logs (Sigstore, TUF).",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-829",
+    "name": "Inclusion of Functionality from Untrusted Control Sphere",
+    "description": "This weakness occurs when software includes or imports functionality from a source outside its trust boundary without adequate verification. This encompasses loading JavaScript from third-party CDNs without Subresource Integrity (SRI), importing packages that could be replaced through dependency confusion attacks, including remote files (PHP include of remote URLs), referencing external scripts or stylesheets that could be compromised, and using third-party APIs or services without verifying response integrity. Attackers who compromise the external source gain code execution within the trusting application. The scope and supply chain implications make this particularly dangerous in modern application development where applications commonly depend on hundreds of external packages and services.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-506",
+    "name": "Embedded Malicious Code",
+    "description": "This weakness describes software that contains code specifically designed to perform unauthorized functions, acting as a backdoor, trojan, logic bomb, or time bomb. Unlike vulnerabilities that arise from programming errors, embedded malicious code is intentionally placed by an insider threat, compromised development environment, or supply chain attacker. Examples include hidden admin accounts in firmware, time-delayed data exfiltration, conditional logic bombs triggered by specific dates or events, and cryptocurrency miners embedded in popular packages. Detection is challenging because the malicious code may be obfuscated, dormant for extended periods, or disguised as legitimate functionality. Prevention relies on code review, behavioral analysis, supply chain security controls, and monitoring for anomalous behavior in deployed software.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1104",
+    "name": "Use of Unmaintained Third-Party Components",
+    "description": "This weakness occurs when software depends on third-party components (libraries, frameworks, services) that are no longer actively maintained, meaning security vulnerabilities discovered after abandonment will never be patched. Unmaintained dependencies accumulate vulnerabilities over time and become increasingly dangerous as disclosed CVEs are never fixed. The risk is amplified when the unmaintained component handles security-sensitive operations like authentication, encryption, or input parsing. Identifying unmaintained dependencies requires monitoring project activity (commit frequency, issue response time, last release date) and establishing organizational policies for evaluating and replacing abandoned dependencies. Software Composition Analysis (SCA) tools can automate detection of outdated and unmaintained components.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1035",
+    "name": "Use of Components with Known Vulnerabilities",
+    "description": "This weakness occurs when software incorporates third-party components (libraries, frameworks, operating system packages) with publicly known and documented security vulnerabilities. Using vulnerable components is one of the most common application security weaknesses because modern applications depend on hundreds of direct and transitive dependencies, any of which may have known CVEs. Attackers use tools like Vulners, NVD, and Snyk to find applications using vulnerable component versions and apply known exploits with minimal effort. Notable exploitation includes Equifax breach (Apache Struts CVE-2017-5638), Log4Shell (Log4j CVE-2021-44228), and Spring4Shell (Spring Framework CVE-2022-22965). Prevention requires automated dependency scanning in CI/CD, keeping components updated, monitoring security advisories, and maintaining a Software Bill of Materials (SBOM).",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-676",
+    "name": "Use of Potentially Dangerous Function",
+    "description": "This weakness occurs when software uses functions that are known to be inherently dangerous due to their inability to perform bounds checking, their susceptibility to format string attacks, or other inherent design limitations. In C/C++, this includes strcpy(), strcat(), sprintf(), gets(), scanf() without width specifiers, and system(). These functions have safer alternatives: strncpy()/strlcpy(), strncat()/strlcat(), snprintf(), fgets(), and parameterized execution APIs. Many compilers and static analysis tools flag usage of these dangerous functions, and some organizations (including Microsoft through its Security Development Lifecycle) ban their use entirely. While not all uses of dangerous functions are exploitable, replacing them with safe alternatives eliminates entire categories of potential vulnerabilities.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-668",
+    "name": "Exposure of Resource to Wrong Sphere",
+    "description": "This weakness occurs when software makes a resource available to actors in a security sphere beyond the one intended by the developer. This is a broad category encompassing files accessible to wrong users, internal services exposed to the internet, sensitive API endpoints accessible cross-origin, database ports exposed to public networks, and internal configuration exposed through public interfaces. The concept of security spheres distinguishes between intended access boundaries: internal network vs internet, user space vs kernel space, tenant A vs tenant B in multi-tenant systems. Attackers who discover resources exposed to the wrong sphere often gain unexpected access without needing to exploit any traditional vulnerability. Prevention requires explicit access control at every boundary and regular verification that resources are only accessible from intended spheres.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-706",
+    "name": "Use of Incorrectly-Resolved Name or Reference",
+    "description": "This weakness occurs when software uses a name or reference to access a resource but the name resolves to an unintended resource, either due to environmental manipulation, name collision, or ambiguous resolution rules. Examples include DNS rebinding attacks where a hostname resolves to different IPs at different times, file path canonicalization bypass where symlinks or alternative path representations (8.3 filenames, UNC paths, URL encoding) resolve differently than expected, and package namespace confusion where a public package shadows an internal one. This is the underlying weakness behind dependency confusion attacks where attackers publish public packages with the same name as internal packages, which are then installed instead of the intended internal version. Prevention requires canonicalizing names and references before use, implementing proper namespace isolation, and using immutable references where possible.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1275",
+    "name": "Sensitive Cookie with Improper SameSite Attribute",
+    "description": "This weakness occurs when a security-sensitive cookie does not have a proper SameSite attribute, potentially enabling cross-site request forgery (CSRF) attacks. The SameSite attribute controls whether cookies are sent with cross-site requests: Strict prevents the cookie from being sent on any cross-site request; Lax (the current browser default) sends the cookie only with top-level navigations using safe HTTP methods; None sends the cookie with all cross-site requests (requires the Secure attribute). Authentication cookies and session identifiers should use SameSite=Strict or SameSite=Lax to prevent CSRF. Setting SameSite=None is necessary for legitimate cross-site cookie usage (embedded content, OAuth flows) but requires additional CSRF protections.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-614",
+    "name": "Sensitive Cookie in HTTPS Session Without Secure Attribute",
+    "description": "This weakness occurs when a cookie containing sensitive information (session identifier, authentication token, CSRF token) is set without the Secure flag, meaning the browser will transmit it over unencrypted HTTP connections in addition to HTTPS. If the user visits any page on the same domain over HTTP (even through a redirect, mixed content, or an attacker-forced downgrade), the sensitive cookie is transmitted in cleartext and can be captured by any network attacker. This enables session hijacking through passive network sniffing. Even when the application exclusively serves content over HTTPS, the Secure flag is necessary because users may type the domain without https:// or follow HTTP links. All sensitive cookies must include the Secure attribute.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1004",
+    "name": "Sensitive Cookie Without HttpOnly Flag",
+    "description": "This weakness occurs when a cookie containing sensitive information such as a session identifier does not have the HttpOnly flag set, making it accessible to client-side JavaScript through the document.cookie API. This enables XSS attacks to steal session cookies by injecting scripts that read and exfiltrate cookie values to attacker-controlled servers. The HttpOnly flag provides defense-in-depth against cookie theft via XSS, though it should not be considered a substitute for XSS prevention. Session cookies, authentication tokens, and CSRF tokens should always have the HttpOnly flag set. Cookies that need to be accessible to JavaScript for legitimate application functionality (such as user preference cookies) should not contain sensitive authentication data.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-942",
+    "name": "Permissive Cross-domain Policy with Untrusted Domains",
+    "description": "This weakness occurs when software uses overly permissive cross-domain policies (CORS, crossdomain.xml, clientaccesspolicy.xml) that allow untrusted or overly broad origins to access resources. Setting Access-Control-Allow-Origin to * (wildcard) or dynamically reflecting the Origin header without validation allows any website to make authenticated cross-origin requests and read responses. This can expose sensitive API data, enable CSRF-like attacks that read responses, and allow third-party sites to impersonate authenticated users. Combined with credentials (Access-Control-Allow-Credentials: true), permissive CORS policies can lead to complete account takeover. Proper CORS configuration requires an explicit allowlist of trusted origins, avoiding credential sharing with wildcard origins, and minimizing exposed headers and methods.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-757",
+    "name": "Selection of Less-Secure Algorithm During Negotiation",
+    "description": "This weakness occurs when software allows protocol negotiation or algorithm selection to choose a weaker algorithm than necessary, enabling downgrade attacks. Attackers who can influence the negotiation process force the use of weak or broken algorithms that they can then exploit. Notable examples include SSL/TLS downgrade attacks (POODLE forcing SSL 3.0, DROWN exploiting SSLv2), SSH algorithm downgrade attacks, and WiFi protocol downgrades (WPA3 to WPA2). Prevention requires disabling support for weak algorithms and protocol versions, implementing negotiation integrity checks (TLS 1.3 encrypted handshake), and configuring minimum acceptable security levels. Organizations should maintain updated cipher suite configurations that remove algorithms as they become weak.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-311",
+    "name": "Missing Encryption of Sensitive Data",
+    "description": "This weakness occurs when software fails to encrypt sensitive data that requires confidentiality protection, either at rest or in transit. Unencrypted sensitive data is directly accessible to any actor who gains access to the storage medium or communication channel. This includes database columns containing PII stored without column-level encryption, backup files containing unencrypted sensitive data, internal API communications carrying authentication tokens over plaintext, and removable media containing unencrypted sensitive records. The impact of missing encryption is amplified in regulated industries where data protection requirements (GDPR, HIPAA, PCI-DSS) mandate encryption of specific data categories. Prevention requires a data classification scheme that identifies sensitive data, encryption standards for each classification level, and technical controls to enforce encryption requirements.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-922",
+    "name": "Insecure Storage of Sensitive Information",
+    "description": "This weakness occurs when software stores sensitive information without adequate safeguards to prevent unauthorized access. This encompasses storing data in world-readable locations, using reversible encryption instead of one-way hashing for passwords, storing cryptographic keys alongside the data they protect, caching sensitive data in browser storage (localStorage, sessionStorage), and storing sensitive data in unprotected mobile device locations. The weakness is broader than cleartext storage (CWE-312) as it includes scenarios where some protection exists but is insufficient, such as using XOR obfuscation, hardcoded encryption keys, or storing encrypted data with the decryption key in the same location. Prevention requires threat-modeling storage locations, applying encryption with properly managed keys, and minimizing the sensitive data that needs to be stored.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-538",
+    "name": "Insertion of Sensitive Information into Externally-Accessible File or Directory",
+    "description": "This weakness occurs when software places sensitive information into files or directories that are accessible to actors beyond the intended audience. Common examples include writing sensitive data to files in the web root directory (accessible via HTTP), creating temporary files containing credentials in world-readable directories, storing debug logs with sensitive data in publicly accessible locations, and committing secrets to version control repositories. Combined with directory indexing or path traversal vulnerabilities, this can lead to large-scale data exposure. The Git repository exposure pattern (.git directory accessible via web) has led to many source code leaks containing hardcoded credentials. Prevention requires identifying all locations where data is written and ensuring appropriate access controls follow the data.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-117",
+    "name": "Improper Output Neutralization for Logs",
+    "description": "Log injection occurs when software writes user-controllable data to log files without neutralizing characters that have special meaning in the log context. Attackers inject newline characters to forge log entries, potentially covering their tracks by injecting misleading log lines, triggering log-processing systems (SIEM rules, automated parsers) with crafted entries, or exploiting log viewer vulnerabilities (XSS in web-based log viewers, command injection in log processing pipelines). Log4Shell (CVE-2021-44228) demonstrated the extreme danger of log injection when the logging framework itself interpreted log content as commands (JNDI lookups). Prevention requires neutralizing newline and control characters in log output, using structured logging formats (JSON), and ensuring log processing pipelines treat log content as untrusted data.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-778",
+    "name": "Insufficient Logging",
+    "description": "This weakness occurs when software does not log security-relevant events or does not include sufficient detail in log entries to support security monitoring, incident response, and forensic analysis. Events that should be logged include authentication successes and failures, authorization failures, input validation failures, application errors, administrative actions, data access and modification, and security configuration changes. Insufficient logging enables attackers to operate undetected for extended periods, drastically increasing the impact of breaches. The median dwell time (time between compromise and detection) for organizations with poor logging is measured in months. Effective security logging requires defining a comprehensive logging policy, implementing centralized log aggregation, correlating events across systems, and establishing alerting thresholds for suspicious patterns.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-223",
+    "name": "Omission of Security-relevant Information",
+    "description": "This weakness occurs when software does not record or display information that is important for identifying security-relevant events or making security decisions. This includes failing to log the source IP address of requests, omitting user identity from audit trails, not recording the specific permission that was denied in authorization failures, and not including timestamps or correlation IDs that would enable event reconstruction. Without this information, security teams cannot effectively investigate incidents, detect attack patterns, or satisfy compliance requirements for audit trails. This is the qualitative complement to CWE-778 (insufficient logging); even when events are logged, missing security-relevant details can render the logs useless for security purposes.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-754",
+    "name": "Improper Check for Unusual or Exceptional Conditions",
+    "description": "This weakness occurs when software does not properly check for conditions that are unusual or unexpected but could indicate security-related issues. Examples include not checking return values from security-critical functions (authentication, authorization, cryptographic operations), not handling unusual input combinations that bypass business logic, ignoring error codes from system calls, and not detecting anomalous system states. Attackers often exploit edge cases and exceptional conditions to bypass security controls, counting on the software to fail open rather than fail securely when confronted with unexpected situations. Defensive programming requires checking all return values, handling all error conditions, implementing fail-secure defaults, and testing with boundary conditions, null values, and maximum-length inputs.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-755",
+    "name": "Improper Handling of Exceptional Conditions",
+    "description": "This weakness occurs when software detects an exceptional condition but does not handle it properly, leading to security consequences. This differs from CWE-754 in that the condition is detected but the response is inappropriate. Examples include catching all exceptions with empty catch blocks (swallowing errors), logging the error but continuing with default values that bypass security checks, displaying detailed error information to users, and failing to clean up sensitive data from memory during error handling. Poor exception handling can lead to information disclosure, denial of service, bypassed security checks, and inconsistent application state that creates further vulnerabilities. Exception handling should follow the principle of failing securely: denying access, cleaning up resources, and logging details server-side while showing generic errors to users.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-388",
+    "name": "Error Handling Issues",
+    "description": "This is a parent category for weaknesses related to improper handling of errors and exceptional conditions. It encompasses missing error handling (CWE-754), incorrect error handling (CWE-755), information exposure through error messages (CWE-209), and uncaught exceptions that cause application crashes. Error handling is a critical security concern because it determines how software behaves when its assumptions are violated, which is precisely what attackers attempt to achieve. Robust error handling requires a consistent strategy across the application: security-relevant events are logged with detail, users receive generic error messages, resources are properly cleaned up, and the application transitions to a secure state. Many security vulnerabilities are only exploitable because error handling paths have not been thoroughly tested or reviewed.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1333",
+    "name": "Inefficient Regular Expression Complexity (ReDoS)",
+    "description": "Regular Expression Denial of Service (ReDoS) occurs when software uses regular expressions that are vulnerable to catastrophic backtracking when evaluated against specially crafted input strings. Regex engines using backtracking (NFA-based, used by most programming languages including Python, Java, JavaScript, .NET, and Ruby) can exhibit exponential time complexity with patterns containing nested quantifiers, overlapping alternations, or ambiguous repetitions. For example, the pattern (a+)+ against the input aaaaaaaaaaaaaaaaX causes the regex engine to explore 2^n matching paths before failing. Attackers submit input strings designed to trigger worst-case regex evaluation, consuming CPU resources and causing application hangs or denial of service. Prevention requires using regex engines with linear-time guarantees (RE2, Rust regex), setting evaluation timeouts, avoiding vulnerable pattern constructs, and testing regex patterns with ReDoS detection tools.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1321",
+    "name": "Improperly Controlled Modification of Object Prototype Attributes (Prototype Pollution)",
+    "description": "Prototype pollution occurs in JavaScript/Node.js applications when an attacker can modify the prototype of base objects (Object.prototype) through operations that recursively merge, clone, or set object properties using user-controlled keys. By setting properties on Object.prototype through paths like __proto__.isAdmin or constructor.prototype.role, attackers inject properties that are inherited by all objects in the application, potentially bypassing security checks, enabling unauthorized access, or achieving remote code execution. Prototype pollution through JSON.parse with recursive merge functions is common in Node.js applications using libraries like lodash.merge, jQuery.extend, and similar deep-merge utilities. Exploitation can lead to XSS, authentication bypass, RCE (via poisoning child_process options or template engine settings), and denial of service. Prevention requires freezing Object.prototype, using Map instead of plain objects, and validating that user-controlled keys do not include __proto__, constructor, or prototype.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-915",
+    "name": "Improperly Controlled Modification of Dynamically-Determined Object Attributes (Mass Assignment)",
+    "description": "Mass assignment (also called auto-binding or object injection) occurs when software automatically binds user-supplied input to internal object properties without restricting which properties can be set. Web frameworks that automatically map request parameters to model attributes (Rails, Django, Spring, Express with body-parser) are particularly susceptible. Attackers include unexpected parameters in requests to modify properties like is_admin, role, price, verified, or account_balance that should only be set by the application internally. For example, sending role=admin in a user registration form to create an administrator account. Prevention requires explicit allowlists of bindable properties (strong parameters in Rails, serializer fields in Django REST Framework), using separate DTOs for input that map only permitted fields, and never directly binding request data to database models or security-sensitive objects.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1341",
+    "name": "Multiple Releases of Same Resource or Handle",
+    "description": "This weakness occurs when software releases a resource or handle more than once, commonly known as a double-free when applied to memory. Double-free corrupts the memory allocator metadata, potentially allowing an attacker to control subsequent memory allocations and achieve arbitrary code execution. When the same memory region is freed twice and then allocated again, two different pointers may reference the same memory location, creating a use-after-free condition that can be exploited. Double-free vulnerabilities are common in C/C++ applications with complex resource lifecycle management, error handling paths that free resources already freed in the normal path, and concurrent access to shared resources. Modern heap implementations include double-free detection, but these protections can sometimes be bypassed through heap manipulation techniques.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-415",
+    "name": "Double Free",
+    "description": "Double free is the specific memory corruption vulnerability where the same memory allocation is freed twice through calls to free(), delete, or equivalent deallocation functions. The second free operation corrupts the heap allocator free list, which attackers can manipulate to achieve an arbitrary write primitive that leads to code execution. Exploitation involves causing the allocator to return the same memory region for two different allocations, allowing controlled overlap of objects. Sophisticated exploitation techniques combine double-free with heap spraying and type confusion to reliably achieve code execution despite modern heap protections (safe unlinking, heap cookies). Double-free vulnerabilities are discovered through fuzzing, address sanitizers (ASan), and static analysis tools. Memory-safe languages eliminate this class of vulnerability entirely.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-369",
+    "name": "Divide By Zero",
+    "description": "Divide by zero occurs when software performs a division or modulo operation where the divisor is zero, leading to application crashes, undefined behavior, or infinite values depending on the language and data type. While primarily a reliability issue causing denial of service through application crashes, divide by zero can have security implications in specific contexts: floating-point division by zero producing Infinity or NaN can corrupt calculations used for access control decisions, financial transactions, or resource allocation. In C/C++, integer division by zero triggers undefined behavior which optimizing compilers may exploit in unexpected ways, potentially eliminating security checks. Prevention requires validating that divisors are non-zero before division operations and handling the zero case appropriately.",
+    "severity": "Low"
+  },
+  {
+    "id": "CWE-843",
+    "name": "Access of Resource Using Incompatible Type (Type Confusion)",
+    "description": "Type confusion occurs when software accesses a resource using a type that is not compatible with the actual type of the resource, leading to interpretation of memory contents in unintended ways. In C/C++, this often results from incorrect casting, union misuse, or virtual table corruption. In JavaScript, type confusion in JIT-compiled code exploits incorrect type assumptions to achieve out-of-bounds reads and writes. Type confusion vulnerabilities in browsers and PDF readers are among the most commonly exploited in the wild, frequently appearing in zero-day exploit chains. Exploitation typically gives the attacker the ability to read and write arbitrary memory, leading to reliable code execution. Browser JIT type confusion is a primary exploit primitive for sandbox escape chains used by advanced threat actors and commercial spyware vendors.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-704",
+    "name": "Incorrect Type Conversion or Cast",
+    "description": "This weakness occurs when software converts or casts data from one type to another incorrectly, leading to unexpected values, truncation, sign errors, or reinterpretation of data. Common examples include casting a larger integer type to a smaller type causing truncation, converting signed integers to unsigned (negative values becoming large positive values), narrowing conversions in C/C++ that lose data, and implicit type coercion in dynamically-typed languages that produces unexpected results. Security implications arise when the incorrectly converted value is used in size calculations (leading to buffer overflows), comparison operations (leading to bypass of checks), or memory reference operations. Prevention requires explicit validation of conversion target ranges, using safe conversion functions that detect overflow, and avoiding implicit type coercion in security-critical code.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1327",
+    "name": "Binding to an Unrestricted IP Address",
+    "description": "This weakness occurs when software binds a network socket to all available interfaces (0.0.0.0 or ::) when it should only be listening on a specific interface such as localhost (127.0.0.1) or an internal network interface. Services intended only for local access (database servers, debug interfaces, management APIs, development servers) that bind to 0.0.0.0 become accessible from the network, potentially exposing them to unauthorized remote access. This is particularly dangerous in cloud environments where instance network interfaces may be directly or indirectly accessible from the internet. Many database breaches (exposed MongoDB, Elasticsearch, Redis instances) have resulted from services binding to all interfaces with default or no authentication. Prevention requires explicitly specifying the minimum necessary bind address and using firewall rules as defense in depth.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-16",
+    "name": "Configuration",
+    "description": "This is a broad category for security weaknesses that arise from how software is configured rather than from programming errors in the code itself. Configuration weaknesses include default credentials, unnecessary services enabled, debug mode active in production, verbose error messages, overly permissive access controls, disabled security features, insecure protocol versions, and missing security headers. Configuration weaknesses are among the most common and easily exploitable because they require no code changes to fix, only configuration updates, yet organizations consistently fail to secure configurations across their infrastructure. Automated security configuration scanning (CIS Benchmarks, Docker Bench, kube-bench), infrastructure-as-code with security policies, and configuration drift detection help maintain secure configurations at scale.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1188",
+    "name": "Insecure Default Initialization of Resource",
+    "description": "This weakness occurs when software initializes resources (variables, data structures, configurations, services) with default values that are not secure. Examples include uninitialized security flags defaulting to false (granting access), debug mode enabled by default, authentication disabled by default, encryption using weak default algorithms or key sizes, and default accounts with well-known credentials. The principle of secure defaults requires that software is secure out-of-the-box without requiring the user to make configuration changes. Users who do not modify default settings (which is the majority in practice) should still have a secure posture. This weakness is related to security misconfiguration (CWE-16) but specifically addresses the default state established by the software developer or vendor.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1390",
+    "name": "Weak Authentication",
+    "description": "This weakness occurs when software uses authentication mechanisms that are inherently weak or easily bypassed by attackers. This includes reliance on easily spoofable attributes (IP address, user-agent, referrer header) for authentication, single-factor authentication for sensitive operations, authentication tokens with insufficient entropy, protocols without replay protection, challenge-response systems with predictable challenges, and custom authentication schemes that have not been cryptographically analyzed. Weak authentication is distinct from missing authentication (CWE-306) in that an authentication mechanism exists but provides insufficient security. Prevention requires using well-established authentication protocols and frameworks, implementing multi-factor authentication for sensitive operations, and avoiding custom authentication designs without expert cryptographic review.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1391",
+    "name": "Use of Weak Credentials",
+    "description": "This weakness occurs when software allows or uses credentials that can be easily discovered, guessed, or brute-forced by attackers. This includes allowing empty passwords, common passwords (password, 123456, admin), credentials matching the username, short PINs without lockout, and default credentials that are not required to be changed on first use. Weak credentials are the most common entry point for unauthorized access across all system types: web applications, databases, network devices, IoT devices, and cloud services. Credential breach databases contain billions of password entries. Prevention requires enforcing minimum password strength requirements, checking against breached password databases, requiring MFA, and forcing credential changes on initial setup for default accounts.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-552",
+    "name": "Files or Directories Accessible to External Parties",
+    "description": "This weakness occurs when software makes files or directories accessible to parties outside the intended access boundary. Common examples include exposing .git directories, backup files (.bak, .old, .swp), configuration files (web.config, .env, wp-config.php), database files, source code, and internal documentation through web servers. Automated scanning tools routinely check for these exposures, and search engines index accidentally exposed files. The impact ranges from information disclosure (source code, credentials) to complete system compromise when configuration files contain database passwords or API keys. Prevention requires configuring web servers to deny access to sensitive file types and directories, placing sensitive files outside the web root, regular security scans for exposed files, and implementing proper .gitignore and deployment exclusion rules.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-281",
+    "name": "Improper Preservation of Permissions",
+    "description": "This weakness occurs when software does not properly maintain the security permissions of resources when they are copied, moved, backed up, restored, or otherwise transferred. File copy operations may not preserve ACLs, creating files with default (potentially more permissive) permissions. Archive extraction may create files with permissions from the archive rather than the current security policy. Database migrations may not preserve row-level security policies. Container image layer operations may modify file permissions unexpectedly. This can silently widen access to sensitive resources without any direct action by an attacker, creating opportunities for unauthorized access discovered later through routine enumeration.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-266",
+    "name": "Incorrect Privilege Assignment",
+    "description": "This weakness occurs when software assigns incorrect privileges to a particular actor, granting more access than intended. This includes creating user accounts with admin privileges by default, assigning overly broad database roles, granting cloud IAM policies with admin access for convenience, and privilege inheritance that grants child objects broader access than intended. Incorrect privilege assignment violates the principle of least privilege and creates opportunities for both accidental misuse and deliberate exploitation. Once an account with excessive privileges is compromised, the attacker gains access to all resources those privileges protect. Prevention requires defining minimum required privileges for each role, implementing privilege request and approval workflows, and conducting regular privilege audits to identify and remediate over-privileged accounts.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-913",
+    "name": "Improper Control of Dynamically-Managed Code Resources",
+    "description": "This weakness occurs when software does not properly restrict the creation, modification, or execution of dynamically managed code resources. This includes allowing untrusted code to be loaded and executed (eval, dynamic imports, plugin systems without sandboxing), permitting modification of executable code at runtime, and failing to validate dynamically generated code before execution. Server-side template injection, dynamic code compilation with user input, and unrestricted plugin/extension loading are common manifestations. The impact is typically remote code execution since the attacker can introduce arbitrary executable code into the application. Prevention requires avoiding dynamic code generation from user input, implementing strict sandboxing for plugin systems, using CSP to control client-side script execution, and applying code signing for dynamically loaded components.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-471",
+    "name": "Modification of Assumed-Immutable Data (MAID)",
+    "description": "This weakness occurs when software does not properly protect data that it assumes cannot be modified by an attacker. Developers often assume certain data is immutable because it is stored in hidden form fields, cookies, headers, or other client-side locations, but attackers can modify any data under their control. Similarly, data in shared memory, temporary files, or inter-process communication channels may be assumed immutable but is modifiable by other processes. Common examples include trusting hidden form field values for pricing or authorization, relying on client-side JavaScript validation as the sole security control, and trusting data from earlier pipeline stages without re-validation. Prevention requires treating all data from outside the trust boundary as potentially tampered and implementing server-side validation and enforcement for all security-relevant decisions.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-564",
+    "name": "SQL Injection: Hibernate",
+    "description": "This is a specific variant of SQL injection that occurs in applications using Hibernate ORM when developers construct HQL (Hibernate Query Language) or Criteria queries using string concatenation with user input rather than using parameterized queries. While Hibernate provides parameterized query support through named parameters and the Criteria API, developers sometimes bypass these safe methods by building HQL strings directly. HQL injection allows attackers to manipulate queries to access unauthorized data, modify records, or bypass authentication. The exploitation is similar to traditional SQL injection but uses HQL syntax. Prevention requires consistently using Hibernate named parameters (:paramName), Criteria API predicates, or JPA specification predicates instead of string concatenation in all query construction.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-95",
+    "name": "Improper Neutralization of Directives in Dynamically Evaluated Code (Eval Injection)",
+    "description": "Eval injection occurs when software uses functions like eval(), exec(), Function(), or equivalent dynamic code evaluation mechanisms with input that contains user-controllable data. The dynamic evaluation mechanism interprets the input as code and executes it within the application context, giving attackers the ability to execute arbitrary code on the server or client. Common vulnerable patterns include eval() of JSON (use JSON.parse instead), eval() of mathematical expressions, dynamic method lookup using user input, and template systems that call eval. In Python, eval/exec with user input enables os.system() calls; in JavaScript/Node.js, vm.runInNewContext can be escaped; in PHP, eval() enables arbitrary code execution. This is often the most directly exploitable injection vulnerability as it requires no intermediate interpreter.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-98",
+    "name": "Improper Control of Filename for Include/Require Statement in PHP (File Inclusion)",
+    "description": "File inclusion vulnerabilities occur when PHP applications use user-controllable input in include(), require(), include_once(), or require_once() statements. Local File Inclusion (LFI) allows attackers to include files from the local server filesystem, potentially reading sensitive configuration files, PHP session files, or log files. Remote File Inclusion (RFI) allows including files from remote servers, directly enabling remote code execution. While primarily a PHP issue, similar vulnerabilities exist in other languages with dynamic file inclusion. LFI can be escalated to RCE through various techniques including log poisoning, PHP filter chains, zip/phar wrapper abuse, and /proc/self/environ injection. Prevention requires avoiding user input in file inclusion paths, using allowlists for includable files, and disabling allow_url_include in PHP configuration.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1386",
+    "name": "Insecure Operation on Windows Junction / Mount Point",
+    "description": "This weakness occurs when software performs file operations that follow Windows NTFS junctions or mount points without validating that the target is within the expected directory. NTFS junctions are similar to Unix symbolic links but operate at the directory level. Attackers create junctions that redirect file operations to unintended locations, such as redirecting a temporary directory to point to a privileged system directory. When a privileged application writes to or deletes files in the junction target, it performs those operations with its elevated privileges on the attacker-chosen location. This is a common privilege escalation technique on Windows and has been used in numerous local privilege escalation exploits against antivirus software, Windows services, and installation programs. Prevention requires checking for junction points before file operations, using restricted create options, and operating with minimum necessary privileges.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-377",
+    "name": "Insecure Temporary File",
+    "description": "This weakness occurs when software creates temporary files in an insecure manner, potentially allowing unauthorized access, modification, or creation of symlinks to redirect file operations. Common issues include using predictable filenames that enable race condition attacks, creating temp files in world-writable directories without exclusive access flags, not setting restrictive permissions, and not cleaning up temporary files that may contain sensitive data. Attackers can pre-create files with the predicted name (symlink to sensitive files), race the file creation to inject content, or read temporary files containing sensitive data after they are created. Prevention requires using language-provided secure temporary file APIs (mkstemp, tempfile.NamedTemporaryFile), creating files with exclusive flags (O_EXCL), setting restrictive permissions, and cleaning up files promptly after use.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-59",
+    "name": "Improper Link Resolution Before File Access (Link Following)",
+    "description": "This weakness occurs when software accesses files through symbolic links (symlinks) or hard links without verifying that the link target is within the expected directory or is an appropriate target. Attackers create symlinks that redirect file operations to unintended locations. A classic attack involves creating a symlink in /tmp pointing to /etc/passwd; when a privileged program writes to the temp file, it overwrites the password file instead. Link following attacks are a primary technique for local privilege escalation on Unix/Linux systems, particularly against setuid programs and system services. Similar attacks on Windows use NTFS junctions and mount points (CWE-1386). Prevention requires checking for symlinks before operations (lstat), using O_NOFOLLOW when opening files, operating in restricted directories, and using privilege separation.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-203",
+    "name": "Observable Discrepancy (Timing Side Channel)",
+    "description": "This weakness occurs when software exhibits observable differences in behavior (timing, error messages, response content) that allow attackers to infer sensitive information. Timing side channels are the most exploited variant: comparing a user-supplied password byte-by-byte with a stored password and returning early on the first mismatch leaks information about which bytes are correct, enabling character-by-character recovery. Similar timing discrepancies in cryptographic operations enabled attacks like BEAST, Lucky13, and various padding oracle attacks against TLS. Beyond timing, observable discrepancies include different error messages for valid vs invalid usernames (enabling user enumeration), different response sizes or HTTP status codes, and cache timing differences that leak information about data access patterns. Prevention requires constant-time comparison functions for secrets, uniform error responses regardless of failure type, and elimination of data-dependent branching in cryptographic code.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-208",
+    "name": "Observable Timing Discrepancy",
+    "description": "This is a specific case of observable discrepancy (CWE-203) focused on timing variations that leak sensitive information. Software that takes measurably different amounts of time to process valid vs invalid inputs, correct vs incorrect credentials, or existent vs non-existent users creates a timing oracle that attackers can exploit. Network-level timing measurements may seem noisy but statistical techniques with sufficient samples reliably extract the signal. Concurrency-based techniques (sending requests in parallel and comparing completion order) further improve timing attack accuracy. Critical areas requiring constant-time implementation include password verification, HMAC comparison, cryptographic operations, authorization checks, and token validation. Languages and frameworks provide constant-time comparison functions (hmac.compare_digest in Python, crypto.timingSafeEqual in Node.js, MessageDigest.isEqual in Java) that should be used for all secret comparisons.",
+    "severity": "Medium"
+  }
 ]

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
+import { StandaloneLanding } from '@/components/StandaloneLanding';
 import toast from 'react-hot-toast';
 import {
   ShieldCheck, Plus, Trash2, Brain, Loader2, Sparkles, Database, ArrowRight,
@@ -69,6 +70,89 @@ interface ThreatModelData {
   threats: Threat[];
   ai_summary: string;
   created_at: string;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object';
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeThreatModel(data: any): ThreatModelData {
+  const components = Array.isArray(data?.components)
+    ? data.components.filter(isRecord).map((item: Record<string, any>) => ({
+        id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
+        name: typeof item.name === 'string' ? item.name : 'Unnamed component',
+        type: typeof item.type === 'string' ? item.type : 'service',
+        technology: typeof item.technology === 'string' ? item.technology : '',
+        x: typeof item.x === 'number' ? item.x : 0,
+        y: typeof item.y === 'number' ? item.y : 0,
+      }))
+    : [];
+
+  const dataFlows = Array.isArray(data?.data_flows)
+    ? data.data_flows.filter(isRecord).map((item: Record<string, any>) => ({
+        id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
+        source: typeof item.source === 'string' ? item.source : '',
+        target: typeof item.target === 'string' ? item.target : '',
+        protocol: typeof item.protocol === 'string' ? item.protocol : '',
+        data_classification: typeof item.data_classification === 'string' ? item.data_classification : '',
+        authentication: typeof item.authentication === 'string' ? item.authentication : undefined,
+        label: typeof item.label === 'string' ? item.label : undefined,
+      }))
+    : [];
+
+  const trustBoundaries = Array.isArray(data?.trust_boundaries)
+    ? data.trust_boundaries.filter(isRecord).map((item: Record<string, any>) => ({
+        id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
+        name: typeof item.name === 'string' ? item.name : 'Unnamed boundary',
+        component_ids: stringList(item.component_ids),
+      }))
+    : [];
+
+  const threats = Array.isArray(data?.threats)
+    ? data.threats.filter(isRecord).map((item: Record<string, any>) => ({
+        id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
+        component_id: typeof item.component_id === 'string' ? item.component_id : '',
+        component_name: typeof item.component_name === 'string' ? item.component_name : '',
+        category: typeof item.category === 'string' ? item.category : 'Other',
+        title: typeof item.title === 'string' ? item.title : 'Untitled threat',
+        description: typeof item.description === 'string' ? item.description : '',
+        severity: typeof item.severity === 'string' ? item.severity.toLowerCase() : 'low',
+        attack_vector: typeof item.attack_vector === 'string' ? item.attack_vector : '',
+        mitigation: typeof item.mitigation === 'string' ? item.mitigation : '',
+        likelihood: typeof item.likelihood === 'string' || typeof item.likelihood === 'number' ? item.likelihood : 'low',
+        impact: typeof item.impact === 'string' || typeof item.impact === 'number' ? item.impact : 'low',
+        risk_score: typeof item.risk_score === 'number' ? item.risk_score : undefined,
+        prerequisites: typeof item.prerequisites === 'string' ? item.prerequisites : undefined,
+        exploitation_complexity: typeof item.exploitation_complexity === 'string' ? item.exploitation_complexity : undefined,
+        real_world_examples: typeof item.real_world_examples === 'string' ? item.real_world_examples : undefined,
+        mitre_technique: typeof item.mitre_technique === 'string' ? item.mitre_technique : undefined,
+        linked_node_id: typeof item.linked_node_id === 'string' ? item.linked_node_id : undefined,
+      }))
+    : [];
+
+  return {
+    ...data,
+    id: typeof data?.id === 'string' ? data.id : crypto.randomUUID(),
+    project_id: typeof data?.project_id === 'string' ? data.project_id : '',
+    name: typeof data?.name === 'string' ? data.name : 'Untitled Threat Model',
+    description: typeof data?.description === 'string' ? data.description : '',
+    methodology: typeof data?.methodology === 'string' ? data.methodology : 'stride',
+    scope: typeof data?.scope === 'string' ? data.scope : '',
+    components,
+    data_flows: dataFlows,
+    trust_boundaries: trustBoundaries,
+    threats,
+    ai_summary: typeof data?.ai_summary === 'string' ? data.ai_summary : '',
+    created_at: typeof data?.created_at === 'string' ? data.created_at : '',
+  };
 }
 
 const METHODOLOGIES = [
@@ -164,20 +248,21 @@ export function ThreatModelView() {
     if (!currentProject) return;
     try {
       const data = await api.listThreatModels(currentProject.id);
-      setThreatModels(data);
+      setThreatModels(Array.isArray(data) ? data.map((item) => normalizeThreatModel(item)) : []);
     } catch (e: any) { toast.error(e.message); }
   };
 
   const handleCreate = async () => {
-    if (!currentProject) { toast('Open a project to create threat models', { icon: '📂' }); return; }
+    if (!currentProject) { toast('Open a standalone scan or project scan workspace to create threat models', { icon: '📂' }); return; }
     try {
       const tm = await api.createThreatModel({
         project_id: currentProject.id,
         name: createName || `Threat Model (${createMethodology.toUpperCase()})`,
         methodology: createMethodology,
       });
-      setThreatModels([tm, ...threatModels]);
-      setSelected(tm);
+      const normalized = normalizeThreatModel(tm);
+      setThreatModels([normalized, ...threatModels]);
+      setSelected(normalized);
       setShowCreate(false);
       setCreateName('');
     } catch (e: any) { toast.error(e.message); }
@@ -197,8 +282,9 @@ export function ThreatModelView() {
     setDfdLoading(true);
     try {
       const result = await api.aiGenerateDFD(selected.id, { system_description: systemDesc });
-      setSelected(result);
-      setThreatModels(threatModels.map(t => t.id === result.id ? result : t));
+      const normalized = normalizeThreatModel(result);
+      setSelected(normalized);
+      setThreatModels(threatModels.map(t => t.id === normalized.id ? normalized : t));
       toast.success('DFD generated');
     } catch (e: any) { toast.error(e.message); }
     finally { setDfdLoading(false); }
@@ -209,16 +295,17 @@ export function ThreatModelView() {
     setThreatLoading(true);
     try {
       const result = await api.aiGenerateThreats(selected.id, {});
-      setSelected(result);
-      setThreatModels(threatModels.map(t => t.id === result.id ? result : t));
+      const normalized = normalizeThreatModel(result);
+      setSelected(normalized);
+      setThreatModels(threatModels.map(t => t.id === normalized.id ? normalized : t));
       setActiveTab('threats');
-      toast.success(`AI found ${result.threats?.length || 0} threats`);
+      toast.success(`AI found ${normalized.threats?.length || 0} threats`);
     } catch (e: any) { toast.error(e.message); }
     finally { setThreatLoading(false); }
   };
 
   const handleFullAnalysis = async () => {
-    if (!currentProject) { toast('Open a project to run full analysis', { icon: '📂' }); return; }
+    if (!currentProject) { toast('Open a standalone scan or project scan workspace to run full analysis', { icon: '📂' }); return; }
     if (!systemDesc.trim()) return;
     setFullLoading(true);
     try {
@@ -227,8 +314,9 @@ export function ThreatModelView() {
         methodology: createMethodology,
         name: createName || 'AI Threat Model',
       });
-      setThreatModels([result, ...threatModels]);
-      setSelected(result);
+      const normalized = normalizeThreatModel(result);
+      setThreatModels([normalized, ...threatModels]);
+      setSelected(normalized);
       setActiveTab('threats');
       toast.success('Full AI analysis complete');
     } catch (e: any) { toast.error(e.message); }
@@ -471,6 +559,21 @@ export function ThreatModelView() {
 
     return { sevCounts, avgRisk, topThreats, compRisk, totalRisk };
   }, [threats, components, threatsByComponent]);
+
+  if (!currentProject) {
+    return (
+      <StandaloneLanding
+        icon={<ShieldCheck size={28} className="text-emerald-500" />}
+        title="Threat Modeling Workspace"
+        description="Generate threat models inside either a standalone scan workspace or a project scan workspace. The workspace objective and system description can drive full AI analysis, then link findings back into the attack tree."
+        features={[
+          { icon: <Database size={15} className="text-emerald-500" />, title: 'DFD Generation', desc: 'Build data flow diagrams for scoped systems, services, and trust boundaries.' },
+          { icon: <Shield size={15} className="text-emerald-500" />, title: 'Threat Discovery', desc: 'Run STRIDE, PASTA, or LINDDUN analyses with risk scoring and narratives.' },
+          { icon: <Link2 size={15} className="text-emerald-500" />, title: 'Tree Linking', desc: 'Push validated threats back into the workspace attack tree as actionable nodes.' },
+        ]}
+      />
+    );
+  }
 
   return (
     <div className="h-full flex flex-col">

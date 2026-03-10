@@ -9,15 +9,14 @@ from ..models.node import Node
 from ..schemas.export import ExportRequest
 from ..schemas.node import NodeResponse
 from ..services import export_service
+from ..services.access_control import require_project_access
+from ..services.auth import get_current_user_id, get_current_user_name
 
 router = APIRouter(prefix="/export", tags=["export"])
 
 
 async def _get_project_and_nodes(project_id: str, db: AsyncSession):
-    proj_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = proj_result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(404, "Project not found")
+    project = await require_project_access(project_id, db)
 
     nodes_result = await db.execute(
         select(Node).where(Node.project_id == project_id)
@@ -35,6 +34,8 @@ async def _get_project_and_nodes(project_id: str, db: AsyncSession):
         "id": project.id, "name": project.name, "description": project.description,
         "context_preset": project.context_preset, "root_objective": project.root_objective,
         "owner": project.owner,
+        "workspace_mode": (project.metadata_json or {}).get("workspace_mode", "project_scan"),
+        "metadata_json": project.metadata_json or {},
     }
     nodes_dicts = [NodeResponse.model_validate(n).model_dump(mode="json") for n in nodes]
     return project_dict, nodes_dicts
@@ -97,7 +98,15 @@ async def import_json(data: dict, db: AsyncSession = Depends(get_db)):
         description=project_data.get("description", ""),
         context_preset=project_data.get("context_preset", "general"),
         root_objective=project_data.get("root_objective", ""),
-        owner=project_data.get("owner", "analyst"),
+        owner=get_current_user_name(),
+        user_id=get_current_user_id(),
+        metadata_json={
+            **(project_data.get("metadata_json", {}) or {}),
+            "workspace_mode": project_data.get(
+                "workspace_mode",
+                (project_data.get("metadata_json", {}) or {}).get("workspace_mode", "project_scan"),
+            ),
+        },
     )
     db.add(project)
 
@@ -145,6 +154,8 @@ async def import_json(data: dict, db: AsyncSession = Depends(get_db)):
             time_estimate=node_data.get("time_estimate", ""),
             assumptions=node_data.get("assumptions", ""),
             analyst=node_data.get("analyst", ""),
+            cve_references=node_data.get("cve_references", ""),
+            extended_metadata=node_data.get("extended_metadata", {}) or {},
         )
         db.add(node)
 
@@ -157,6 +168,7 @@ async def recalculate_risk(project_id: str, db: AsyncSession = Depends(get_db)):
     """Recalculate all risk scores for a project's tree."""
     from ..services.risk_engine import compute_inherent_risk, compute_residual_risk, rollup_or_risk, rollup_and_risk
 
+    await require_project_access(project_id, db)
     result = await db.execute(
         select(Node).where(Node.project_id == project_id)
         .options(selectinload(Node.mitigations))

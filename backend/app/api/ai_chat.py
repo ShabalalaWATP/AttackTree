@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models.llm_config import LLMProviderConfig
 from ..models.node import Node
+from ..services.access_control import require_provider_access
 from ..services.crypto import decrypt_value
 from ..services.llm_service import chat_completion
 
@@ -24,6 +25,12 @@ class BrainstormRequest(BaseModel):
     provider_id: str
     project_name: str = ""
     root_objective: str = ""
+    context_preset: str = ""
+    workspace_mode: str = ""
+    technical_depth: str = "standard"
+    focus_mode: str = "broad"
+    tree_context: str = ""
+    context_packets: list[str] = []
     messages: list[ChatMessage] = []
 
 
@@ -60,12 +67,7 @@ class AIChatResponse(BaseModel):
 
 # ── Helpers ─────────────────────────────────────────────────────
 async def _get_provider(provider_id: str, db: AsyncSession) -> dict:
-    result = await db.execute(
-        select(LLMProviderConfig).where(LLMProviderConfig.id == provider_id)
-    )
-    provider = result.scalar_one_or_none()
-    if not provider:
-        raise HTTPException(status_code=404, detail="LLM provider not found")
+    provider = await require_provider_access(provider_id, db)
     return {
         "base_url": provider.base_url,
         "api_key_encrypted": provider.api_key_encrypted,
@@ -93,21 +95,77 @@ Be concise but insightful. When the user provides context, respond with concrete
 
 If this is the start of the session, introduce yourself briefly and ask the first probing question about the target environment."""
 
+FOCUS_MODE_GUIDANCE = {
+    "broad": "Keep coverage broad and balanced across attack surfaces, attacker paths, and operational constraints.",
+    "attack_surface": "Prioritize entry points, exposed trust boundaries, reachable services, remote access paths, and likely initial footholds.",
+    "technical_research": "Prioritize deeply technical analysis: vulnerability classes, reverse engineering targets, exploit primitives, parser logic, protocol edge cases, and concrete implementation weaknesses.",
+    "chain_building": "Prioritize chained attack paths, preconditions, pivots, privilege escalation, collection, and objective completion.",
+    "defense_pressure": "Prioritize mitigation gaps, detection blind spots, trust assumptions, control bypasses, and defender failure modes.",
+    "prioritization": "Prioritize which hypotheses should be investigated first based on exploitability, likely impact, evidence gaps, and attacker leverage.",
+}
+
+TECHNICAL_DEPTH_GUIDANCE = {
+    "standard": "Default to concise but concrete analysis. Use specific tradecraft, but do not over-index on exploit development unless the user asks for it.",
+    "deep_technical": (
+        "Respond at a deeply technical level. When relevant, discuss exploit primitives, memory corruption behaviors, protocol/state-machine edge cases, "
+        "software architecture, trust boundaries, patch-diffing ideas, reverse engineering angles, and artifact-level evidence the team should collect next."
+    ),
+}
+
+
+def _build_brainstorm_system_prompt(req: BrainstormRequest) -> str:
+    sections = [BRAINSTORM_SYSTEM]
+
+    focus = FOCUS_MODE_GUIDANCE.get(req.focus_mode, FOCUS_MODE_GUIDANCE["broad"])
+    technical_depth = TECHNICAL_DEPTH_GUIDANCE.get(req.technical_depth, TECHNICAL_DEPTH_GUIDANCE["standard"])
+
+    sections.append(f"Focus Mode: {req.focus_mode or 'broad'}")
+    sections.append(focus)
+    sections.append(f"Technical Depth: {req.technical_depth or 'standard'}")
+    sections.append(technical_depth)
+
+    if (req.technical_depth or "").lower() == "deep_technical":
+        sections.append(
+            "Deep technical requirements:\n"
+            "- Prefer technically specific hypotheses over generic lists.\n"
+            "- Call out likely implementation details, attacker prerequisites, and failure conditions.\n"
+            "- Where useful, suggest concrete artifacts to inspect next: binaries, handlers, parsers, logs, configs, packet captures, crash traces, firmware images, or update packages."
+        )
+
+    if req.workspace_mode:
+        sections.append(f"Workspace Mode: {req.workspace_mode}")
+    if req.context_preset:
+        sections.append(f"Environment Preset: {req.context_preset}")
+    if req.project_name:
+        sections.append(f"Project: {req.project_name}")
+    if req.root_objective:
+        sections.append(f"Attacker Objective: {req.root_objective}")
+    if req.tree_context:
+        sections.append(f"Existing Tree Context:\n{req.tree_context}")
+    if req.context_packets:
+        sections.append("Supplemental Context:\n" + "\n".join(f"- {packet}" for packet in req.context_packets if packet))
+
+    return "\n\n".join(section for section in sections if section)
+
+
+def _build_brainstorm_seed(req: BrainstormRequest) -> str:
+    seed_parts = ["Start the brainstorming session."]
+    if req.focus_mode and req.focus_mode != "broad":
+        seed_parts.append(f"Focus first on {req.focus_mode.replace('_', ' ')}.")
+    if req.technical_depth == "deep_technical":
+        seed_parts.append("Use deep technical detail where the context supports it.")
+    return " ".join(seed_parts)
+
 
 @router.post("/brainstorm", response_model=AIChatResponse)
 async def brainstorm_chat(req: BrainstormRequest, db: AsyncSession = Depends(get_db)):
     config = await _get_provider(req.provider_id, db)
-
-    system_content = BRAINSTORM_SYSTEM
-    if req.project_name:
-        system_content += f"\n\nProject: {req.project_name}"
-    if req.root_objective:
-        system_content += f"\nAttacker Objective: {req.root_objective}"
+    system_content = _build_brainstorm_system_prompt(req)
 
     messages = [{"role": "system", "content": system_content}]
 
     if not req.messages:
-        messages.append({"role": "user", "content": "Start the brainstorming session."})
+        messages.append({"role": "user", "content": _build_brainstorm_seed(req)})
     else:
         for m in req.messages:
             messages.append({"role": m.role, "content": m.content})

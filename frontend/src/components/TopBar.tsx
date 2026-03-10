@@ -1,20 +1,25 @@
 import { useState, useEffect } from 'react';
 import { useStore, type ViewMode } from '@/stores/useStore';
+import { useAuthStore } from '@/stores/useAuthStore';
 import { cn } from '@/utils/cn';
+import { queryClient } from '@/lib/queryClient';
 import { api } from '@/utils/api';
 import { KeyboardShortcutsDialog } from '@/components/KeyboardShortcutsDialog';
 import { HelpDialog } from '@/components/HelpDialog';
+import { ChangePasswordDialog } from '@/components/ChangePasswordDialog';
+import { UserManagementDialog } from '@/components/UserManagementDialog';
 import toast from 'react-hot-toast';
 import ocpLogo from '@/assets/ocp.png';
 import {
   FolderOpen, GitBranch, LayoutDashboard, BookOpen, Settings,
   Undo2, Redo2, Save, Download, Upload, Sun, Moon, Keyboard, HelpCircle,
-  FlaskConical, Route, ShieldCheck, ChevronRight, Brain, Swords
+  FlaskConical, Route, ShieldCheck, ChevronRight, Brain, Swords, Network,
+  KeyRound, LogOut, Users
 } from 'lucide-react';
 import { RedTeamAdvisorPanel } from '@/components/RedTeamAdvisorPanel';
 
 const NAV_HOME: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
-  { id: 'projects', label: 'Projects', icon: <FolderOpen size={15} /> },
+  { id: 'projects', label: 'Workspaces', icon: <FolderOpen size={15} /> },
 ];
 
 const NAV_TOOLS: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
@@ -23,6 +28,7 @@ const NAV_TOOLS: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
   { id: 'scenarios', label: 'Scenarios', icon: <FlaskConical size={15} /> },
   { id: 'kill_chain', label: 'Kill Chain', icon: <Route size={15} /> },
   { id: 'threat_model', label: 'Threat Model', icon: <ShieldCheck size={15} /> },
+  { id: 'infra_map', label: 'Infra Map', icon: <Network size={15} /> },
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={15} /> },
 ];
 
@@ -32,10 +38,14 @@ const NAV_UTIL: { id: ViewMode; label: string; icon: React.ReactNode }[] = [
 ];
 
 export function TopBar() {
-  const { viewMode, setViewMode, currentProject, canUndo, canRedo, undo, redo, darkMode, toggleDarkMode } = useStore();
+  const { viewMode, setViewMode, currentProject, canUndo, canRedo, undo, redo, darkMode, toggleDarkMode, resetWorkspaceState } = useStore();
+  const user = useAuthStore((state) => state.user);
+  const logout = useAuthStore((state) => state.logout);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [advisorOpen, setAdvisorOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [userManagementOpen, setUserManagementOpen] = useState(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -145,6 +155,12 @@ export function TopBar() {
     </button>
   );
 
+  const handleLogout = () => {
+    queryClient.clear();
+    logout();
+    resetWorkspaceState();
+  };
+
   return (
     <>
       <header className="h-13 border-b border-border/50 bg-card/80 backdrop-blur-md flex items-center px-4 gap-2 shrink-0">
@@ -233,12 +249,44 @@ export function TopBar() {
           >
             {darkMode ? <Sun size={14} /> : <Moon size={14} />}
           </button>
+          {user?.role === 'admin' && (
+            <button onClick={() => setUserManagementOpen(true)} className="topbar-btn" title="User management">
+              <Users size={14} />
+            </button>
+          )}
+          <button onClick={() => setChangePasswordOpen(true)} className="topbar-btn" title="Change password">
+            <KeyRound size={14} />
+          </button>
+          <div className="hidden items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-2.5 py-1 text-xs md:flex">
+            <div className="min-w-0">
+              <div className="truncate font-semibold">{user?.name || 'User'}</div>
+              <div className="truncate text-[10px] text-muted-foreground">
+                {user?.username ? `@${user.username}` : user?.email || ''}
+              </div>
+            </div>
+            <span className={cn(
+              'rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]',
+              user?.role === 'admin' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-muted text-muted-foreground'
+            )}>
+              {user?.role || 'user'}
+            </span>
+            {user?.password_reset_required && (
+              <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-amber-400">
+                Rotate Password
+              </span>
+            )}
+          </div>
+          <button onClick={handleLogout} className="topbar-btn" title="Log out">
+            <LogOut size={14} />
+          </button>
         </div>
       </header>
 
       <KeyboardShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
       <RedTeamAdvisorPanel open={advisorOpen} onClose={() => setAdvisorOpen(false)} />
+      <ChangePasswordDialog open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
+      <UserManagementDialog open={userManagementOpen} onClose={() => setUserManagementOpen(false)} />
     </>
   );
 }

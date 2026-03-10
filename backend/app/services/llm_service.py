@@ -10,6 +10,14 @@ import time
 import logging
 from pathlib import Path
 from typing import Optional
+
+# Pattern to strip reasoning/thinking tokens from model responses
+_THINK_PATTERN = re.compile(r"<think>[\s\S]*?</think>\s*", re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks emitted by reasoning models."""
+    return _THINK_PATTERN.sub("", text).strip()
 import httpx
 
 from ..services.crypto import decrypt_value
@@ -101,7 +109,12 @@ async def chat_completion(config: dict, messages: list[dict], temperature: float
         "temperature": temperature,
     }
     if max_tokens:
-        payload["max_tokens"] = max_tokens
+        # Newer OpenAI models (o1, o3, etc.) require max_completion_tokens
+        model_lower = model.lower()
+        if any(tag in model_lower for tag in ("o1", "o3", "o4")):
+            payload["max_completion_tokens"] = max_tokens
+        else:
+            payload["max_tokens"] = max_tokens
 
     start = time.time()
     try:
@@ -116,6 +129,7 @@ async def chat_completion(config: dict, messages: list[dict], temperature: float
             if resp.status_code == 200:
                 data = resp.json()
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                content = _strip_thinking(content)
                 usage = data.get("usage", {})
                 return {
                     "status": "success",
@@ -136,66 +150,259 @@ async def chat_completion(config: dict, messages: list[dict], temperature: float
         return {"status": "error", "content": "", "message": str(e)}
 
 
-def build_branch_suggestion_prompt(node_data: dict, tree_context: str, suggestion_type: str) -> list[dict]:
+def _coerce_vulnerability_cards(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _summarise_vulnerability_cards(cards: list[dict]) -> str:
+    if not cards:
+        return ""
+
+    summaries = []
+    for index, card in enumerate(cards[:5], start=1):
+        fragments = []
+        for key, label in (
+            ("title", "title"),
+            ("software_family", "software"),
+            ("software_version", "version"),
+            ("affected_component", "component"),
+            ("vulnerability_type", "class"),
+            ("attack_surface", "surface"),
+            ("entry_point", "entry"),
+            ("root_cause", "root cause"),
+            ("primitive", "primitive"),
+            ("reproduction_steps", "repro"),
+            ("exploitation_notes", "notes"),
+            ("references", "refs"),
+        ):
+            value = str(card.get(key, "")).strip()
+            if value:
+                fragments.append(f"{label}: {value}")
+        if fragments:
+            summaries.append(f"{index}. " + " | ".join(fragments))
+    return "\n".join(summaries)
+
+
+def _derive_suggestion_profile(node_data: dict, technical_depth: str, prompt_profile: str) -> tuple[bool, str]:
+    extended_metadata = node_data.get("extended_metadata")
+    extended_metadata = extended_metadata if isinstance(extended_metadata, dict) else {}
+    metadata_profile = str(extended_metadata.get("prompt_profile", "")).strip().lower()
+    effective_profile = (prompt_profile or metadata_profile or "standard").strip().lower()
+
+    project_context = node_data.get("project_context")
+    project_context = project_context if isinstance(project_context, dict) else {}
+    context_blob = " ".join(
+        str(value)
+        for value in (
+            node_data.get("title", ""),
+            node_data.get("description", ""),
+            node_data.get("platform", ""),
+            node_data.get("attack_surface", ""),
+            node_data.get("notes", ""),
+            node_data.get("cve_references", ""),
+            project_context.get("context_preset", ""),
+            project_context.get("root_objective", ""),
+            extended_metadata.get("research_domain", ""),
+            extended_metadata.get("investigation_summary", ""),
+        )
+        if value
+    ).lower().replace("_", " ").replace("-", " ")
+
+    cards = _coerce_vulnerability_cards(extended_metadata.get("vulnerability_cards"))
+    explicit_deep = technical_depth.strip().lower() in {"deep", "deep_technical", "research", "expert"}
+    profile_deep = effective_profile in {
+        "deep",
+        "deep_technical",
+        "reverse_engineering",
+        "vulnerability_research",
+        "exploit_development",
+    }
+    keyword_deep = any(
+        keyword in context_blob
+        for keyword in (
+            "reverse engineering",
+            "reverse-engineering",
+            "vulnerability research",
+            "binary diff",
+            "patch diff",
+            "patch-diff",
+            "ida",
+            "ghidra",
+            "binary ninja",
+            "frida",
+            "win_dbg",
+            "windbg",
+            "x64dbg",
+            "disassembly",
+            "decompile",
+            "exploit primitive",
+            "memory corruption",
+            "type confusion",
+            "heap overflow",
+            "use-after-free",
+            "deserialization",
+            "browser extension",
+            "thick client",
+            "desktop client",
+            "updater",
+            "firmware",
+            "ota",
+        )
+    )
+    return explicit_deep or profile_deep or keyword_deep or bool(cards), effective_profile
+
+
+def build_branch_suggestion_prompt(
+    node_data: dict,
+    tree_context: str,
+    suggestion_type: str,
+    additional_context: str = "",
+    technical_depth: str = "standard",
+    prompt_profile: str = "",
+) -> list[dict]:
     """Build a prompt for branch suggestions."""
     node_title = node_data.get("title", "Unknown")
     node_type = node_data.get("node_type", "attack_step")
     node_desc = node_data.get("description", "")
     platform = node_data.get("platform", "")
+    attack_surface = node_data.get("attack_surface", "")
+    threat_category = node_data.get("threat_category", "")
+    required_access = node_data.get("required_access", "")
+    required_privileges = node_data.get("required_privileges", "")
+    required_tools = node_data.get("required_tools", "")
+    required_skill = node_data.get("required_skill", "")
+    notes = node_data.get("notes", "")
+    cve_references = node_data.get("cve_references", "")
+    extended_metadata = node_data.get("extended_metadata")
+    extended_metadata = extended_metadata if isinstance(extended_metadata, dict) else {}
+    project_context = node_data.get("project_context")
+    project_context = project_context if isinstance(project_context, dict) else {}
+
+    deep_technical, effective_profile = _derive_suggestion_profile(
+        node_data,
+        technical_depth,
+        prompt_profile,
+    )
+    vulnerability_cards = _coerce_vulnerability_cards(
+        extended_metadata.get("vulnerability_cards")
+    )
+    card_summary = _summarise_vulnerability_cards(vulnerability_cards)
+
+    context_lines = [
+        f'Node: "{node_title}"',
+        f"Type: {node_type}",
+        f"Description: {node_desc}",
+        f"Platform/Context: {platform or 'Not specified'}",
+    ]
+    if attack_surface:
+        context_lines.append(f"Attack Surface: {attack_surface}")
+    if threat_category:
+        context_lines.append(f"Threat Category: {threat_category}")
+    if required_access:
+        context_lines.append(f"Required Access: {required_access}")
+    if required_privileges:
+        context_lines.append(f"Required Privileges: {required_privileges}")
+    if required_tools:
+        context_lines.append(f"Known Tools / Tooling Constraints: {required_tools}")
+    if required_skill:
+        context_lines.append(f"Required Skill Level: {required_skill}")
+    if project_context:
+        context_lines.append(
+            "Workspace Context: "
+            f"{project_context.get('name', '')} | preset={project_context.get('context_preset', 'general')} | "
+            f"objective={project_context.get('root_objective', '')}"
+        )
+    if effective_profile and effective_profile != "standard":
+        context_lines.append(f"Prompt Profile: {effective_profile}")
+    if notes:
+        context_lines.append(f"Analyst Notes: {notes}")
+    if cve_references:
+        context_lines.append(f"CVE / Advisory References: {cve_references}")
+    if extended_metadata.get("research_domain"):
+        context_lines.append(f"Research Domain: {extended_metadata.get('research_domain')}")
+    if extended_metadata.get("investigation_summary"):
+        context_lines.append(
+            f"Investigation Summary: {extended_metadata.get('investigation_summary')}"
+        )
+    if card_summary:
+        context_lines.append("Vulnerability Cards:\n" + card_summary)
+    if additional_context.strip():
+        context_lines.append("Additional Analyst Context:\n" + additional_context.strip())
+    context_lines.append("Tree context:")
+    context_lines.append(tree_context)
+    context_block = "\n".join(context_lines)
+
+    deep_guidance = ""
+    if deep_technical:
+        deep_guidance = """
+Deep technical requirements:
+- Respond like a vulnerability researcher and reverse engineer, not a generic threat modeller.
+- When relevant, reason in terms of exploit primitives, parser states, trust boundaries, update/signing flows, IPC/RPC surfaces, memory corruption hypotheses, sandbox escapes, or auth/crypto implementation defects.
+- Reference concrete tooling and workflows where useful: IDA Pro, Ghidra, Binary Ninja, Frida, WinDbg, x64dbg, LLDB, jadx, apktool, radare2, Burp Suite, AFL++, libFuzzer, QEMU, diffing, patch analysis, hook-based tracing, and crash triage.
+- Use the vulnerability cards as evidence and extend them into adjacent attack paths, exploit-development tasks, code-level mitigations, or low-noise detections.
+- Avoid generic phrasing such as "exploit vulnerability" without naming the likely bug class, reversing task, or abuse path.
+""".strip()
 
     type_prompts = {
-        "branches": f"""You are a cyber security attack tree analyst. Given the following attack tree node, suggest 3-6 likely child attack steps or sub-goals that an attacker would need to accomplish.
+        "branches": f"""You are an expert red-team cyber security analyst. Given the following attack tree node, suggest 3-6 likely child attack steps or sub-goals that an attacker would need to accomplish.
 
-Node: "{node_title}"
-Type: {node_type}
-Description: {node_desc}
-Platform/Context: {platform}
+{context_block}
 
-Tree context:
-{tree_context}
+{deep_guidance}
+
+For each suggestion, write a detailed description (4-6 sentences) from the attacker's perspective: what exactly they do, which tools or scripts they use, what vulnerability or misconfiguration they exploit, what they gain on success, and how they evade detection. Reference real tools, CVEs, exploit classes, and MITRE ATT&CK technique IDs where applicable.
 
 Return a JSON array of objects with these fields:
-- title: short attack step title
-- description: brief description
+- title: specific attack step title (include technique name)
+- description: detailed 4-6 sentence attacker-perspective description
 - node_type: one of goal, sub_goal, attack_step, precondition, weakness, pivot_point
 - logic_type: OR or AND
-- threat_category: category of threat
+- threat_category: MITRE ATT&CK-aligned category
 - likelihood: estimated likelihood 1-10
 - impact: estimated impact 1-10
 
 Return ONLY valid JSON array, no markdown formatting.""",
 
-        "mitigations": f"""You are a cyber security analyst. For the following attack step, suggest 3-5 mitigations or security controls.
+        "mitigations": f"""You are an expert cyber security analyst with red-team and blue-team experience. For the following attack step, suggest 3-5 specific mitigations or security controls.
 
-Attack step: "{node_title}"
-Description: {node_desc}
-Platform/Context: {platform}
+{context_block}
+
+{deep_guidance}
+
+For each mitigation, provide detailed implementation guidance (2-4 sentences): specific product names, configuration settings, compiler or linker hardening, sandboxing, parser isolation, secure coding changes, update-signing controls, policy settings, firewall rules, or code changes. Explain what attacker behaviour it blocks and any limitations.
 
 Return a JSON array of objects:
-- title: mitigation title
-- description: how it works
+- title: specific mitigation title
+- description: detailed implementation guidance (2-4 sentences)
 - effectiveness: 0.0 to 1.0
 
 Return ONLY valid JSON array.""",
 
-        "detections": f"""You are a cyber security analyst. For the following attack step, suggest 3-5 detection opportunities.
+        "detections": f"""You are an expert detection engineer and threat hunter. For the following attack step, suggest 3-5 specific detection opportunities.
 
-Attack step: "{node_title}"
-Description: {node_desc}
-Platform/Context: {platform}
+{context_block}
+
+{deep_guidance}
+
+For each detection, provide specific details (2-4 sentences): exact log sources and event IDs to monitor, runtime telemetry, crash signals, ETW/EDR traces, debugger or instrumentation indicators, example detection queries (Sigma, KQL, or SPL snippets), the attacker behaviour it catches, and false positive considerations.
 
 Return a JSON array of objects:
-- title: detection title
-- description: how to detect
+- title: specific detection title
+- description: detailed detection guidance (2-4 sentences)
 - coverage: 0.0 to 1.0
-- data_source: data source
+- data_source: specific log source and event IDs
 
 Return ONLY valid JSON array.""",
 
         "mappings": f"""You are a cyber security analyst. For the following attack step, suggest relevant MITRE ATT&CK techniques, CAPEC patterns, CWE weaknesses, and OWASP categories.
 
-Attack step: "{node_title}"
-Description: {node_desc}
+{context_block}
+
+{deep_guidance}
+
+Prefer concrete weakness IDs that match the exploit primitive or bug class described in the node and vulnerability cards.
 
 Return a JSON array of objects:
 - framework: one of "attack", "capec", "cwe", "owasp"
@@ -206,9 +413,18 @@ Return ONLY valid JSON array.""",
     }
 
     prompt_text = type_prompts.get(suggestion_type, type_prompts["branches"])
+    system_prompt = (
+        "You are an expert cyber security attack tree analyst. "
+        "Respond only with valid JSON."
+    )
+    if deep_technical:
+        system_prompt = (
+            "You are an expert cyber security attack tree analyst, vulnerability researcher, and reverse engineer. "
+            "Respond only with valid JSON."
+        )
 
     return [
-        {"role": "system", "content": "You are an expert cyber security attack tree analyst. Respond only with valid JSON."},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt_text},
     ]
 
@@ -268,6 +484,51 @@ Use precise technical language."""
     ]
 
 
+def _template_metadata_lines(template: dict | None) -> list[str]:
+    if not template:
+        return []
+
+    lines = []
+    template_family = template.get("template_family")
+    technical_profile = template.get("technical_profile")
+    focus_areas = template.get("focus_areas", [])
+    prompt_hints = template.get("prompt_hints", [])
+
+    if template_family:
+        lines.append(f"Template Family: {template_family}")
+    if technical_profile:
+        lines.append(f"Technical Profile: {technical_profile}")
+    if focus_areas:
+        lines.append("Focus Areas: " + ", ".join(str(item) for item in focus_areas[:6]))
+    if prompt_hints:
+        lines.append("Prompt Hints:")
+        lines.extend(f"- {hint}" for hint in prompt_hints[:4])
+    return lines
+
+
+def _template_needs_deep_guidance(template: dict | None) -> bool:
+    if not template:
+        return False
+    technical_profile = str(template.get("technical_profile", "")).strip().lower()
+    return technical_profile in {
+        "deep",
+        "deep_technical",
+        "reverse_engineering",
+        "vulnerability_research",
+        "exploit_development",
+    }
+
+
+def _build_technical_generation_guidance() -> str:
+    return """
+Deep technical generation requirements:
+- Model the operation at exploit-development and reverse-engineering depth where relevant.
+- Prefer concrete workflows such as patch diffing, decompilation, disassembly, runtime instrumentation, protocol reversing, crash triage, fuzzing, exploit primitive extraction, trust-boundary abuse, and update-chain analysis.
+- Name realistic tooling, debug surfaces, bug classes, and likely operator decision points instead of generic attacker actions.
+- Where useful, reference concrete exploit classes such as type confusion, memory corruption, deserialization, sandbox escape, insecure update validation, client-side trust abuse, or parser state-machine flaws.
+""".strip()
+
+
 def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int,
                             template_example: dict | None = None,
                             reference_arch: str = "") -> list[dict]:
@@ -293,6 +554,9 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
 **Tree Depth:** up to {depth} levels deep
 **Breadth:** up to {breadth} child nodes per parent"""]
 
+    if domain == "software_research":
+        user_parts.append(_build_technical_generation_guidance())
+
     # --- Reference architecture context ---
     if reference_arch:
         user_parts.append(f"\n**Reference Architecture:**\n{reference_arch}")
@@ -305,6 +569,11 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
     if template_example:
         example_nodes = template_example.get("nodes", [])[:6]  # First 6 nodes for context
         example_text = json.dumps(_template_to_tree_example(template_example), indent=2)
+        metadata_lines = _template_metadata_lines(template_example)
+        if metadata_lines:
+            user_parts.append("\n**Template metadata:**\n" + "\n".join(metadata_lines))
+        if _template_needs_deep_guidance(template_example):
+            user_parts.append(_build_technical_generation_guidance())
         user_parts.append(f"""
 **Example structure** (use this as a reference for quality, depth, and field population — do NOT copy it verbatim, generate original content for the given objective):
 ```json
@@ -313,8 +582,8 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
 
     user_parts.append("""
 Return a single JSON object representing the root node. Every node MUST have ALL of these fields:
-- "title": concise attack step title
-- "description": 2-3 sentence technical description of the attack step
+- "title": concise but specific attack step title (include the technique name, e.g. "Kerberoast Service Account Hashes" not just "Credential Theft")
+- "description": detailed 4-8 sentence technical description written from the attacker's perspective. Include: what the attacker does step-by-step, specific tools or scripts used (e.g. Impacket, Rubeus, sqlmap, Burp Suite, Cobalt Strike, Metasploit), the exact vulnerability class or misconfiguration exploited, what the attacker gains on success, real-world CVEs or APT campaigns where applicable, and why this step is effective. Write as if briefing a red team operator.
 - "node_type": one of "goal", "sub_goal", "attack_step", "precondition", "weakness", "pivot_point"
 - "logic_type": "AND" or "OR" (AND = all children required in sequence, OR = any one suffices)
 - "status": one of "draft", "validated", "mitigated", "accepted" — set "validated" for well-known TTPs, "draft" for speculative paths
@@ -337,11 +606,13 @@ Rules:
 3. Deeper nodes should be "attack_step", "precondition", or "weakness"
 4. Use AND logic where multiple steps are ALL required in sequence
 5. Use OR logic where alternative approaches exist
-6. Be specific and realistic — reference real TTPs, vulnerability classes, and attack techniques
+6. Be specific and realistic — reference real TTPs, tools, vulnerability classes, CVEs, and attack techniques
 7. Cover diverse attack vectors: network, physical, social engineering, supply chain, insider threat where applicable
-8. Leaf nodes should be concrete, actionable attack steps
+8. Leaf nodes should be concrete, actionable attack steps with enough detail for a red team operator to execute
 9. Every single field listed above MUST be populated for every node — no empty strings, no nulls
 10. Platform and attack_surface must be specific to each node's context, not generic
+11. Descriptions must read like a red team playbook — include tools, techniques, evasion methods, and expected outcomes
+12. Reference real CVEs, MITRE ATT&CK technique IDs, or named malware/APT campaigns where relevant
 
 Return ONLY the JSON object. Do not wrap in markdown code blocks.""")
 
@@ -356,9 +627,19 @@ def build_template_expand_prompt(template: dict, objective: str, scope: str,
     """Build a prompt that takes a template skeleton and asks the AI to expand and customise it."""
     domain = _detect_domain(objective, scope)
     system = _get_domain_system_prompt(domain)
+    metadata_lines = _template_metadata_lines(template)
+    deep_guidance = (
+        _build_technical_generation_guidance()
+        if domain == "software_research" or _template_needs_deep_guidance(template)
+        else ""
+    )
 
     # Convert template to a simplified tree structure for the prompt
     template_tree = json.dumps(_template_nodes_to_tree(template), indent=2)
+    metadata_block = ""
+    if metadata_lines:
+        metadata_block = "\n**Template metadata:**\n" + "\n".join(metadata_lines)
+    deep_guidance_block = f"\n{deep_guidance}" if deep_guidance else ""
 
     user_prompt = f"""You are given an existing attack tree template as a starting skeleton. Your job is to:
 1. Keep the overall structure but EXPAND each branch with {breadth-1} to {breadth} additional child nodes per parent
@@ -371,6 +652,8 @@ def build_template_expand_prompt(template: dict, objective: str, scope: str,
 **Scope / Target Description:** {scope}
 **Expand to Depth:** {depth} levels
 **Expand to Breadth:** {breadth} children per parent
+{metadata_block}
+{deep_guidance_block}
 
 **Starting Template (skeleton — expand this, do NOT just copy it):**
 ```json
@@ -410,6 +693,12 @@ def build_gap_analysis_prompt(existing_nodes: list[dict], objective: str, scope:
         "You identify missing attack paths, overlooked vectors, and coverage blind spots. "
         "Respond ONLY with valid JSON — no markdown, no commentary."
     )
+    if domain == "software_research":
+        system = (
+            "You are an expert vulnerability researcher, reverse engineer, and red-team analyst conducting a gap analysis on an attack tree. "
+            "You identify missing exploit-development tasks, reversing steps, trust-boundary abuses, and coverage blind spots. "
+            "Respond ONLY with valid JSON — no markdown, no commentary."
+        )
 
     user_prompt = f"""Analyse the following attack tree and identify MISSING attack paths, vectors, and weaknesses that are NOT yet covered.
 
@@ -444,21 +733,24 @@ Return ONLY the JSON array. No markdown, no commentary."""
 def build_mitigations_detections_pass_prompt(nodes_summary: list[dict]) -> list[dict]:
     """Build a prompt for Pass 4: generate mitigations and detections for leaf nodes."""
     system = (
-        "You are an expert blue-team defender and detection engineer. "
-        "For each attack step leaf node, suggest specific mitigations and detection opportunities. "
+        "You are an expert blue-team defender and detection engineer with red-team experience. "
+        "For each attack step leaf node, suggest specific, detailed mitigations and detection opportunities. "
+        "Include specific product/tool names, configuration guidance, detection queries (e.g. Sigma rules, KQL, SPL), "
+        "and explain the attacker behaviour each detection catches. "
         "Respond ONLY with valid JSON — no markdown, no commentary."
     )
 
     nodes_text = json.dumps(nodes_summary, indent=2)
-    user_prompt = f"""For each of the following attack tree leaf nodes, suggest mitigations and detections.
+    user_prompt = f"""For each of the following attack tree leaf nodes, suggest detailed mitigations and detections.
 
 {nodes_text}
 
 Return a JSON array with one object per node:
 - "index": the original index number
-- "mitigations": array of {{"title": "...", "description": "...", "effectiveness": 0.0-1.0}}
-- "detections": array of {{"title": "...", "description": "...", "coverage": 0.0-1.0, "data_source": "..."}}
+- "mitigations": array of {{"title": "specific control name", "description": "2-4 sentences: what it does, how to implement it, specific products or configurations (e.g. 'Enable Credential Guard via Group Policy', 'Deploy ModSecurity with OWASP CRS v4')", "effectiveness": 0.0-1.0}}
+- "detections": array of {{"title": "specific detection name", "description": "2-4 sentences: what attacker behaviour it detects, example detection logic or query, false positive considerations", "coverage": 0.0-1.0, "data_source": "specific log source (e.g. Windows Security Event 4768, Sysmon Event 1, CloudTrail, WAF logs)"}}
 
+Provide 3-5 mitigations and 3-5 detections per node. Be specific — reference real products, event IDs, and detection signatures.
 Return ONLY the JSON array."""
 
     return [
@@ -500,17 +792,17 @@ def build_enrich_nodes_prompt(nodes_summary: list[dict]) -> list[dict]:
     )
 
     nodes_text = json.dumps(nodes_summary, indent=2)
-    user_prompt = f"""The following attack tree nodes have incomplete fields. For each node, fill in ALL missing or empty fields.
+    user_prompt = f"""The following attack tree nodes have incomplete fields. For each node, fill in ALL missing or empty fields with detailed, attacker-perspective content.
 
 {nodes_text}
 
 Return a JSON array of objects, one per node in the same order. Each object must have:
 - "index": the original index number
-- "description": 2-3 sentence technical description
+- "description": detailed 4-8 sentence technical description from the attacker's perspective — include specific tools, exploitation steps, what is gained, and real-world references
 - "status": one of "draft", "validated", "mitigated", "accepted"
-- "platform": specific platform/environment
-- "attack_surface": specific attack surface
-- "threat_category": MITRE-aligned category
+- "platform": specific platform/environment (e.g. "Windows Server 2022" not just "Windows")
+- "attack_surface": specific attack surface (e.g. "Kerberos Authentication Protocol" not just "Network")
+- "threat_category": MITRE ATT&CK-aligned category
 - "required_access": access level needed
 - "required_privileges": privilege level needed
 - "required_skill": one of "Low", "Medium", "High", "Expert"
@@ -709,6 +1001,15 @@ _DOMAIN_KEYWORDS = {
         "web app", "api ", "rest api", "graphql", "oauth", "jwt", "xss",
         "sql injection", "ssrf", "csrf", "authentication", "web server",
     ],
+    "software_research": [
+        "reverse engineering", "reverse-engineering", "reversing", "decompile",
+        "disassembly", "binary", "patch diff", "patch-diff", "binary diff",
+        "vulnerability research", "exploit development", "exploit dev",
+        "crash triage", "fuzzing", "parser", "memory corruption", "type confusion",
+        "use-after-free", "heap overflow", "desktop client", "thick client",
+        "browser extension", "updater", "code signing", "firmware extraction",
+        "ota", "ida", "ghidra", "frida",
+    ],
 }
 
 
@@ -767,12 +1068,23 @@ def _get_domain_system_prompt(domain: str) -> str:
             "bypass techniques (OAuth/OIDC/JWT abuse), API-specific attacks, server-side vulnerabilities, "
             "and application-layer exploitation chains. "
         ),
+        "software_research": (
+            "You specialise in software vulnerability research, reverse engineering, exploit development, "
+            "and binary trust-boundary analysis. You are comfortable with static and dynamic analysis, "
+            "patch diffing, fuzzing, crash triage, parser and protocol reversing, secure updater abuse, "
+            "memory corruption classes, sandbox boundaries, and code-signing or trust-store validation flaws. "
+            "Reference realistic tooling such as IDA Pro, Ghidra, Binary Ninja, WinDbg, x64dbg, LLDB, Frida, "
+            "jadx, apktool, AFL++, libFuzzer, and QEMU when appropriate. "
+        ),
     }
 
     expertise = domain_expertise.get(domain, "")
     return (
         base + expertise +
         "You generate comprehensive, realistic attack trees in structured JSON. "
+        "Write every description as a detailed red team briefing — include specific tools, "
+        "exploitation techniques, evasion methods, real CVEs, and step-by-step attacker actions. "
+        "Be thorough and technical. A penetration tester should be able to use your output as an operational playbook. "
         "Respond ONLY with valid JSON — no markdown, no commentary."
     )
 
@@ -807,6 +1119,15 @@ Common weaknesses: legacy DNP3 without auth, exposed VNC/RDP, vendor remote acce
 - Integration: BACnet/IP, KNX, Modbus, MQTT, REST APIs
 Key boundaries: cloud-to-gateway, gateway-to-device, IT-to-building OT
 Common weaknesses: default credentials, firmware without signing, flat networks, no encryption""",
+
+    "software_research": """Software / client application architecture:
+- Delivery layer: installer, package manager, signed updater, CDN, crash-reporting and telemetry endpoints
+- Application layer: UI client, local privilege boundary, plugin/extension framework, scripting engine, IPC/RPC interfaces
+- Trust layer: certificate store, code-signing checks, update manifests, license enforcement, anti-tamper and anti-debug logic
+- Data layer: local caches, SQLite databases, config files, key stores, session tokens, serialized objects
+- Network layer: backend APIs, WebSocket/IPC bridges, custom binary protocols, auth tokens, TLS pinning
+Key boundaries: updater-to-client trust, privileged helper services, client-to-backend trust, extension/plugin isolation
+Common weaknesses: client-side trust decisions, weak update verification, unsafe deserialization, parser memory corruption, insecure IPC, hidden admin features, hardcoded secrets""",
 }
 
 
@@ -869,6 +1190,7 @@ def find_best_template_for_objective(objective: str, scope: str) -> dict | None:
         return None
 
     text = f"{objective} {scope}".lower()
+    domain = _detect_domain(objective, scope)
     best_score = 0
     best_template = None
 
@@ -878,12 +1200,37 @@ def find_best_template_for_objective(objective: str, scope: str) -> dict | None:
             name = data.get("name", "").lower()
             desc = data.get("description", "").lower()
             obj = data.get("root_objective", "").lower()
-            template_text = f"{name} {desc} {obj}"
+            context_preset = data.get("context_preset", "").lower()
+            template_family = data.get("template_family", "").lower()
+            technical_profile = data.get("technical_profile", "").lower()
+            focus_areas = " ".join(str(item) for item in data.get("focus_areas", [])).lower()
+            prompt_hints = " ".join(str(item) for item in data.get("prompt_hints", [])).lower()
+            node_titles = " ".join(
+                str(node.get("title", ""))
+                for node in data.get("nodes", [])[:12]
+                if isinstance(node, dict)
+            ).lower()
+            template_text = (
+                f"{name} {desc} {obj} {context_preset} {template_family} "
+                f"{technical_profile} {focus_areas} {prompt_hints} {node_titles}"
+            )
 
             # Score by word overlap
             words = set(re.findall(r'\b\w{4,}\b', text))
             template_words = set(re.findall(r'\b\w{4,}\b', template_text))
             overlap = len(words & template_words)
+            if domain != "general" and (
+                context_preset == domain or template_family == domain or domain in template_text
+            ):
+                overlap += 2
+            if domain == "software_research" and technical_profile in {
+                "deep",
+                "deep_technical",
+                "reverse_engineering",
+                "vulnerability_research",
+                "exploit_development",
+            }:
+                overlap += 2
             if overlap > best_score:
                 best_score = overlap
                 best_template = data
