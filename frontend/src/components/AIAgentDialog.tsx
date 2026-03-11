@@ -119,14 +119,13 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   }, [loading]);
 
   const PROGRESS_STEPS = [
-    'Detecting domain, planning profile, and templates...',
-    'Building attack tree structure (Pass 1)...',
-    'Enriching node attributes (Pass 2)...',
-    'Mapping MITRE ATT&CK / CAPEC / CWE (Pass 3)...',
-    'Generating mitigations & detections (Pass 4)...',
-    'Saving nodes to project...',
+    'Preparing prompts, templates, and planning context...',
+    'Estimated stage: generating attack-tree structure...',
+    'Estimated stage: enriching node detail...',
+    'Estimated stage: mapping references and controls...',
+    'Estimated stage: finalizing the generated tree...',
   ];
-  const progressStep = Math.min(Math.floor(elapsedSec / 12), PROGRESS_STEPS.length - 1);
+  const progressStep = Math.min(Math.floor(elapsedSec / 15), PROGRESS_STEPS.length - 1);
 
   const handleGenerate = async () => {
     if (!objective.trim() && mode !== 'expand') {
@@ -426,7 +425,9 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                   style={{ width: `${Math.min(((elapsedSec / (depth * breadth * 2)) * 100), 95)}%` }}
                 />
               </div>
-              <div className="text-[10px] text-muted-foreground">{elapsedSec}s elapsed &middot; Depth {depth} &times; Breadth {breadth}</div>
+              <div className="text-[10px] text-muted-foreground">
+                {elapsedSec}s elapsed &middot; Depth {depth} &times; Breadth {breadth} &middot; Stage text is estimated until the request completes
+              </div>
             </div>
           )}
 

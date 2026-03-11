@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -463,8 +464,10 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     # ── Persist nodes to database ───────────────────────────────────
     id_map = {}
     for idx, node_info in enumerate(nodes_created):
+        node_id = str(uuid.uuid4())
         parent_db_id = id_map.get(node_info["parent_id"]) if node_info["parent_id"] is not None else None
         node = Node(
+            id=node_id,
             project_id=data.project_id,
             parent_id=parent_db_id,
             node_type=node_info["node_type"],
@@ -492,8 +495,7 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
             node.exploitability, node.detectability,
         )
         db.add(node)
-        await db.flush()
-        id_map[idx] = node.id
+        id_map[idx] = node_id
 
     # ── Persist mitigations & detections from Pass 4 ────────────────
     from ..models.mitigation import Mitigation
