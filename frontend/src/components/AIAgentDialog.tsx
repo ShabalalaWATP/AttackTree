@@ -100,6 +100,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   const [loading, setLoading] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [result, setResult] = useState<LLMAgentResponseData | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
   const selectedTemplate = templates.find((template) => template.id === templateId);
   const selectedGenerationProfile = getPlanningProfileOption(generationProfile);
 
@@ -138,6 +139,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
     }
     setLoading(true);
     setResult(null);
+    setErrorMessage('');
     try {
       const res = await api.agentGenerateTree({
         project_id: projectId,
@@ -154,13 +156,16 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
       toast.success(`Generated ${res.nodes_created} nodes${passesMsg}`);
     } catch (e: any) {
       const msg = e.message || 'Unknown error';
+      let friendly = msg;
       if (msg.includes('timed out') || msg.includes('504')) {
-        toast.error('Request timed out — try reducing depth/breadth or use a faster model');
+        friendly = 'Request timed out. Try reducing depth or breadth, or switch to a faster model.';
       } else if (msg.includes('invalid tree structure')) {
-        toast.error('AI returned malformed output — try again with lower depth/breadth');
-      } else {
-        toast.error(msg);
+        friendly = 'AI returned malformed tree output. Try again with lower depth or breadth.';
+      } else if (msg.includes('max_completion_tokens') || msg.includes('max_tokens')) {
+        friendly = 'The configured model rejected the token-budget parameter. Retry now that the provider compatibility fix is in place.';
       }
+      setErrorMessage(friendly);
+      toast.error(friendly);
     } finally {
       setLoading(false);
     }
@@ -171,6 +176,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
     setScope('');
     setGenerationProfile('balanced');
     setResult(null);
+    setErrorMessage('');
     onComplete();
     onClose();
   };
@@ -432,6 +438,17 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
               </p>
               <p className="text-xs text-muted-foreground mt-1">
                 {result.nodes_created} nodes created &middot; {result.passes_completed || 1} passes &middot; Model: {result.model_used} &middot; {(result.elapsed_ms / 1000).toFixed(1)}s
+              </p>
+            </div>
+          )}
+
+          {errorMessage && !loading && (
+            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-sm">
+              <p className="font-medium text-red-600 dark:text-red-400">
+                Generation failed
+              </p>
+              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                {errorMessage}
               </p>
             </div>
           )}

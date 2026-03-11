@@ -48,6 +48,34 @@ function handleUnauthorized(res: Response): void {
   }
 }
 
+function extractApiErrorMessage(status: number, text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed?.detail === 'string' && parsed.detail.trim()) {
+      return `${status}: ${parsed.detail}`;
+    }
+    if (Array.isArray(parsed?.detail) && parsed.detail.length > 0) {
+      const detailText = parsed.detail
+        .map((item: any) => {
+          if (typeof item === 'string') return item;
+          if (typeof item?.msg === 'string') return item.msg;
+          return '';
+        })
+        .filter(Boolean)
+        .join('; ');
+      if (detailText) {
+        return `${status}: ${detailText}`;
+      }
+    }
+    if (typeof parsed?.message === 'string' && parsed.message.trim()) {
+      return `${status}: ${parsed.message}`;
+    }
+  } catch {
+    // Fall back to raw text below.
+  }
+  return `${status}: ${text}`;
+}
+
 async function request<T>(url: string, options?: ApiRequestOptions): Promise<T> {
   const { noAuth, headers, ...rest } = options || {};
   const res = await fetch(`${BASE}${url}`, {
@@ -57,7 +85,7 @@ async function request<T>(url: string, options?: ApiRequestOptions): Promise<T> 
   if (!res.ok) {
     handleUnauthorized(res);
     const text = await res.text().catch(() => 'Unknown error');
-    throw new Error(`${res.status}: ${text}`);
+    throw new Error(extractApiErrorMessage(res.status, text));
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -76,7 +104,7 @@ async function fetchExport(url: string, body: Record<string, unknown>): Promise<
   if (!res.ok) {
     handleUnauthorized(res);
     const text = await res.text().catch(() => 'Export failed');
-    throw new Error(`${res.status}: ${text}`);
+    throw new Error(extractApiErrorMessage(res.status, text));
   }
   return res;
 }
