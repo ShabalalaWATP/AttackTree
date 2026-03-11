@@ -88,6 +88,18 @@ const PRESET_CATEGORIES = [
   },
 ];
 
+const MAX_RECOMMENDED_AGENT_NODES = 240;
+
+function estimateTreeNodeBudget(depth: number, breadth: number): number {
+  let total = 1;
+  let levelSize = 1;
+  for (let level = 1; level < depth; level += 1) {
+    levelSize *= breadth;
+    total += levelSize;
+  }
+  return total;
+}
+
 export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentDialogProps) {
   const [objective, setObjective] = useState('');
   const [scope, setScope] = useState('');
@@ -103,6 +115,8 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   const [errorMessage, setErrorMessage] = useState('');
   const selectedTemplate = templates.find((template) => template.id === templateId);
   const selectedGenerationProfile = getPlanningProfileOption(generationProfile);
+  const estimatedNodeBudget = estimateTreeNodeBudget(depth, breadth);
+  const exceedsRecommendedBudget = mode !== 'expand' && estimatedNodeBudget > MAX_RECOMMENDED_AGENT_NODES;
 
   // Load templates for "from_template" mode
   useEffect(() => {
@@ -152,7 +166,8 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
       });
       setResult(res);
       const passesMsg = res.passes_completed ? ` (${res.passes_completed} passes)` : '';
-      toast.success(`Generated ${res.nodes_created} nodes${passesMsg}`);
+      const warningsMsg = res.warnings?.length ? ` with ${res.warnings.length} warning${res.warnings.length === 1 ? '' : 's'}` : '';
+      toast.success(`Generated ${res.nodes_created} nodes${passesMsg}${warningsMsg}`);
     } catch (e: any) {
       const msg = e.message || 'Unknown error';
       let friendly = msg;
@@ -162,6 +177,14 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
         friendly = 'AI returned malformed tree output. Try again with lower depth or breadth.';
       } else if (msg.includes('max_completion_tokens') || msg.includes('max_tokens')) {
         friendly = 'The configured model rejected the token-budget parameter. Retry now that the provider compatibility fix is in place.';
+      } else if (msg.includes('already contains nodes')) {
+        friendly = 'This project already has a tree. Use Gap Analysis to extend it, or create a new project for a fresh generation.';
+      } else if (msg.includes('Gap analysis requires an existing tree')) {
+        friendly = 'Gap Analysis only works on a project that already has nodes.';
+      } else if (msg.includes('Select a valid template')) {
+        friendly = 'The selected template could not be loaded. Reopen the dialog and choose it again.';
+      } else if (msg.includes('Requested tree size is too large')) {
+        friendly = 'The requested tree shape is too large for a robust run. Reduce depth or breadth before generating.';
       }
       setErrorMessage(friendly);
       toast.error(friendly);
@@ -361,36 +384,52 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
           </div>
 
           {/* Depth & Breadth */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-                Tree Depth (levels): {depth}
-              </label>
-              <input
-                type="range" min={2} max={9} value={depth}
-                onChange={(e) => setDepth(Number(e.target.value))}
-                disabled={loading}
-                className="w-full"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>Shallow (2)</span><span>Deep (9)</span>
-              </div>
+          {mode === 'expand' ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+              Gap Analysis uses the existing tree and ignores depth and breadth controls.
             </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
-                Breadth (children per node): {breadth}
-              </label>
-              <input
-                type="range" min={2} max={10} value={breadth}
-                onChange={(e) => setBreadth(Number(e.target.value))}
-                disabled={loading}
-                className="w-full"
-              />
-              <div className="flex justify-between text-[10px] text-muted-foreground">
-                <span>Narrow (2)</span><span>Wide (10)</span>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+                    Tree Depth (levels): {depth}
+                  </label>
+                  <input
+                    type="range" min={2} max={6} value={depth}
+                    onChange={(e) => setDepth(Number(e.target.value))}
+                    disabled={loading}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
+                    <span>Shallow (2)</span><span>Deep (6)</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+                    Breadth (children per node): {breadth}
+                  </label>
+                  <input
+                    type="range" min={2} max={6} value={breadth}
+                    onChange={(e) => setBreadth(Number(e.target.value))}
+                    disabled={loading}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
+                    <span>Narrow (2)</span><span>Wide (6)</span>
+                  </div>
+                </div>
               </div>
+              <div className="text-[11px] text-muted-foreground">
+                Estimated max nodes at full branching: {estimatedNodeBudget}. Actual output is often smaller.
+              </div>
+              {exceedsRecommendedBudget && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-700 dark:text-red-300">
+                  This tree shape is too large for the hardened generator. Reduce depth or breadth until the estimate is at most {MAX_RECOMMENDED_AGENT_NODES} nodes.
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
           {/* Info box */}
           <div className="p-3 rounded-lg bg-muted/50 text-xs text-muted-foreground">
@@ -433,13 +472,23 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
 
           {/* Result */}
           {result && (
-            <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/30 text-sm">
+            <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/30 text-sm space-y-2">
               <p className="font-medium text-green-600 dark:text-green-400">
                 Tree generated successfully
               </p>
               <p className="text-xs text-muted-foreground mt-1">
                 {result.nodes_created} nodes created &middot; {result.passes_completed || 1} passes &middot; Model: {result.model_used} &middot; {(result.elapsed_ms / 1000).toFixed(1)}s
               </p>
+              {result.warnings && result.warnings.length > 0 && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+                  <p className="font-medium">Generation warnings</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4">
+                    {result.warnings.map((warning, index) => (
+                      <li key={index}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
 
@@ -474,7 +523,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                 </button>
                 <button
                   onClick={handleGenerate}
-                  disabled={loading || (mode !== 'expand' && !objective.trim())}
+                  disabled={loading || (mode !== 'expand' && !objective.trim()) || exceedsRecommendedBudget}
                   className={cn(
                     "flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md",
                     "bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"

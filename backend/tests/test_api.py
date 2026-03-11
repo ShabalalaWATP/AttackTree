@@ -1,5 +1,6 @@
 """Integration tests for the API endpoints."""
 import json
+import re
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -160,6 +161,185 @@ async def test_llm_chat_completion_retries_with_alternate_token_parameter(monkey
     assert "max_tokens" not in calls[1]
 
 
+@pytest.mark.asyncio
+async def test_llm_agent_rejects_unsafe_generation_modes(authed_client: AsyncClient):
+    await _create_active_provider(authed_client, name="Agent Guardrails Provider")
+
+    resp = await authed_client.post("/api/projects", json={"name": "Agent Empty Project"})
+    assert resp.status_code == 201, resp.text
+    empty_project = resp.json()
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": empty_project["id"],
+        "objective": "",
+        "scope": "",
+        "depth": 4,
+        "breadth": 5,
+        "mode": "expand",
+    })
+    assert resp.status_code == 400, resp.text
+    assert "existing tree" in resp.json()["detail"].lower()
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": empty_project["id"],
+        "objective": "Compromise airport operations systems",
+        "scope": "AODB, FIDS, baggage, and partner links",
+        "depth": 4,
+        "breadth": 5,
+        "mode": "from_template",
+        "template_id": "missing_template",
+    })
+    assert resp.status_code == 400, resp.text
+    assert "valid template" in resp.json()["detail"].lower()
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Agent Existing Tree Project",
+        "root_objective": "Exfiltrate operations data",
+    })
+    assert resp.status_code == 201, resp.text
+    populated_project = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": populated_project["id"],
+        "title": "Existing root",
+        "node_type": "goal",
+        "logic_type": "OR",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": populated_project["id"],
+        "objective": "Exfiltrate operations data",
+        "scope": "Existing project should not be overwritten",
+        "depth": 4,
+        "breadth": 5,
+        "mode": "generate",
+    })
+    assert resp.status_code == 409, resp.text
+    assert "already contains nodes" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_batches_leaf_analysis_persists_mappings_and_surfaces_warnings(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Agent Multi-pass Provider")
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Agent Multi-pass Project",
+        "context_preset": "airport",
+    })
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+
+    mapping_batches: list[list[int]] = []
+    mitdet_batches: list[list[int]] = []
+
+    async def fake_chat_completion(config, messages, temperature=0.7, max_tokens=0, timeout_override=None):
+        prompt = messages[-1]["content"]
+        if "Generate a complete attack tree" in prompt:
+            return {
+                "status": "success",
+                "content": json.dumps(_build_agent_tree_payload()),
+                "model": "test-model",
+                "tokens": 120,
+                "elapsed_ms": 40,
+            }
+
+        if "suggest the most relevant MITRE ATT&CK techniques" in prompt:
+            indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
+            mapping_batches.append(indexes)
+            if len(mapping_batches) == 2:
+                return {
+                    "status": "error",
+                    "message": "provider overload",
+                    "tokens": 0,
+                    "elapsed_ms": 15,
+                }
+            return {
+                "status": "success",
+                "content": json.dumps([
+                    {
+                        "index": idx,
+                        "mappings": [
+                            {"framework": "attack", "ref_id": f"T{1000 + idx}", "ref_name": "Technique"},
+                            {"framework": "capec", "ref_id": f"CAPEC-{idx}", "ref_name": "Pattern"},
+                        ],
+                    }
+                    for idx in indexes
+                ]),
+                "model": "test-model",
+                "tokens": 55,
+                "elapsed_ms": 20,
+            }
+
+        if "suggest detailed mitigations and detections" in prompt:
+            indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
+            mitdet_batches.append(indexes)
+            return {
+                "status": "success",
+                "content": json.dumps([
+                    {
+                        "index": idx,
+                        "mitigations": [
+                            {
+                                "title": f"Mitigate {idx}",
+                                "description": "Apply a concrete preventative control with product-specific tuning.",
+                                "effectiveness": 0.8,
+                            }
+                        ],
+                        "detections": [
+                            {
+                                "title": f"Detect {idx}",
+                                "description": "Detect the operator behaviour with endpoint or proxy telemetry.",
+                                "coverage": 0.6,
+                                "data_source": "EDR telemetry",
+                            }
+                        ],
+                    }
+                    for idx in indexes
+                ]),
+                "model": "test-model",
+                "tokens": 75,
+                "elapsed_ms": 25,
+            }
+
+        pytest.fail(f"Unexpected AI prompt: {prompt[:120]}")
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(llm_service, "find_best_template_for_objective", lambda *args, **kwargs: None)
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": project["id"],
+        "objective": "Compromise airport operations systems",
+        "scope": "AODB, FIDS, baggage handling, and partner maintenance links",
+        "depth": 3,
+        "breadth": 6,
+        "mode": "generate",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["nodes_created"] == 43
+    assert body["passes_completed"] == 4
+    assert len(mapping_batches) == 3
+    assert len(mitdet_batches) == 3
+    assert any("Reference-mapping batch 2 failed" in warning for warning in body["warnings"])
+
+    resp = await authed_client.get(f"/api/nodes/project/{project['id']}")
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()
+    assert len(nodes) == 43
+
+    total_reference_mappings = sum(len(node["reference_mappings"]) for node in nodes)
+    total_mitigations = sum(len(node["mitigations"]) for node in nodes)
+    total_detections = sum(len(node["detections"]) for node in nodes)
+
+    assert total_reference_mappings == 48
+    assert total_mitigations == 36
+    assert total_detections == 36
+
+
 async def _create_active_provider(client: AsyncClient, *, name: str = "Test Provider") -> dict:
     response = await client.post("/api/llm/providers", json={
         "name": name,
@@ -307,6 +487,79 @@ def _infra_branch_fallback_payload(branch_label: str, category: str) -> dict:
             },
         ],
         "summary": f"{branch_label} fallback coverage.",
+    }
+
+
+def _build_agent_tree_payload(branch_count: int = 6, leaves_per_branch: int = 6) -> dict:
+    children = []
+    for branch_index in range(1, branch_count + 1):
+        branch_children = []
+        for leaf_index in range(1, leaves_per_branch + 1):
+            branch_children.append({
+                "title": f"Leaf {branch_index}-{leaf_index}",
+                "description": (
+                    f"Leaf {branch_index}-{leaf_index} models a concrete operator action with tooling, "
+                    "access preconditions, and the expected control impact on success."
+                ),
+                "node_type": "attack_step",
+                "logic_type": "OR",
+                "status": "validated",
+                "platform": "Windows Server 2022",
+                "attack_surface": "Identity Infrastructure",
+                "threat_category": "Credential Access",
+                "required_access": "Authenticated User",
+                "required_privileges": "User",
+                "required_skill": "High",
+                "likelihood": 7,
+                "impact": 8,
+                "effort": 6,
+                "exploitability": 7,
+                "detectability": 4,
+                "children": [],
+            })
+        children.append({
+            "title": f"Branch {branch_index}",
+            "description": (
+                f"Branch {branch_index} represents a distinct operational path with concrete access abuse "
+                "and follow-on intrusion opportunities."
+            ),
+            "node_type": "sub_goal",
+            "logic_type": "OR",
+            "status": "validated",
+            "platform": "Hybrid Enterprise",
+            "attack_surface": "Remote Access",
+            "threat_category": "Initial Access",
+            "required_access": "None/Public",
+            "required_privileges": "None",
+            "required_skill": "Medium",
+            "likelihood": 6,
+            "impact": 7,
+            "effort": 5,
+            "exploitability": 7,
+            "detectability": 5,
+            "children": branch_children,
+        })
+    return {
+        "title": "Compromise target environment",
+        "description": (
+            "The root goal models the complete intrusion objective across the exposed trust boundaries, "
+            "operator workflows, and business-critical systems in scope."
+        ),
+        "node_type": "goal",
+        "logic_type": "OR",
+        "status": "validated",
+        "platform": "Enterprise Environment",
+        "attack_surface": "Multiple",
+        "threat_category": "Impact",
+        "required_access": "None/Public",
+        "required_privileges": "None",
+        "required_skill": "High",
+        "likelihood": 6,
+        "impact": 9,
+        "effort": 6,
+        "exploitability": 7,
+        "detectability": 4,
+        "children": children,
     }
 
 

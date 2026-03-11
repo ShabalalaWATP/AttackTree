@@ -265,6 +265,7 @@ export interface LLMAgentResponseData {
   model_used: string;
   elapsed_ms: number;
   passes_completed?: number;
+  warnings?: string[];
 }
 
 export interface ReferenceItem {
