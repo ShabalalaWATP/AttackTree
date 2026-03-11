@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import type { PlanningProfile } from '@/types';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
 import { StandaloneLanding } from '@/components/StandaloneLanding';
+import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
 import toast from 'react-hot-toast';
 import {
   ShieldCheck, Plus, Trash2, Brain, Loader2, Sparkles, Database, ArrowRight,
@@ -17,6 +19,8 @@ interface Component {
   name: string;
   type: string;
   technology: string;
+  description?: string;
+  attack_surface?: string;
   x: number;
   y: number;
 }
@@ -41,6 +45,7 @@ interface Threat {
   id: string;
   component_id: string;
   component_name: string;
+  target_type?: string;
   category: string;
   title: string;
   description: string;
@@ -52,9 +57,36 @@ interface Threat {
   risk_score?: number;
   prerequisites?: string;
   exploitation_complexity?: string;
+  entry_surface?: string;
+  trust_boundary?: string;
+  business_impact?: string;
+  detection_notes?: string;
   real_world_examples?: string;
   mitre_technique?: string;
   linked_node_id?: string;
+}
+
+interface ThreatAnalysisMetadata {
+  highest_risk_areas: string[];
+  attack_surface_score?: number;
+  recommended_attack_priorities: string[];
+  generation_warnings: string[];
+  generation_strategy?: string;
+  chunk_count?: number;
+  pending_chunk_count?: number;
+  generation_status?: string;
+}
+
+interface DFDGenerationMetadata {
+  generation_warnings: string[];
+  generation_strategy?: string;
+  generation_status?: string;
+  current_stage?: string;
+  zone_count?: number;
+  pending_zone_count?: number;
+  pending_zone_ids: string[];
+  cross_zone_flow_status?: string;
+  topology_summary?: string;
 }
 
 interface ThreatModelData {
@@ -69,6 +101,9 @@ interface ThreatModelData {
   trust_boundaries: TrustBoundary[];
   threats: Threat[];
   ai_summary: string;
+  dfd_metadata: DFDGenerationMetadata;
+  analysis_metadata: ThreatAnalysisMetadata;
+  deep_dive_cache: Record<string, any>;
   created_at: string;
 }
 
@@ -84,6 +119,26 @@ function stringList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function resolveThreatTarget(
+  targetId: string,
+  components: Component[],
+  dataFlows: DataFlow[],
+): { label: string; type?: string } {
+  if (!targetId) return { label: '' };
+  const component = components.find((item) => item.id === targetId);
+  if (component) {
+    return { label: component.name, type: 'component' };
+  }
+  const flow = dataFlows.find((item) => item.id === targetId);
+  if (!flow) {
+    return { label: targetId };
+  }
+  const source = components.find((item) => item.id === flow.source)?.name || flow.source;
+  const target = components.find((item) => item.id === flow.target)?.name || flow.target;
+  const label = flow.label ? `${flow.label} (${source} -> ${target})` : `${source} -> ${target}`;
+  return { label, type: 'data_flow' };
+}
+
 function normalizeThreatModel(data: any): ThreatModelData {
   const components = Array.isArray(data?.components)
     ? data.components.filter(isRecord).map((item: Record<string, any>) => ({
@@ -91,6 +146,8 @@ function normalizeThreatModel(data: any): ThreatModelData {
         name: typeof item.name === 'string' ? item.name : 'Unnamed component',
         type: typeof item.type === 'string' ? item.type : 'service',
         technology: typeof item.technology === 'string' ? item.technology : '',
+        description: typeof item.description === 'string' ? item.description : undefined,
+        attack_surface: typeof item.attack_surface === 'string' ? item.attack_surface : undefined,
         x: typeof item.x === 'number' ? item.x : 0,
         y: typeof item.y === 'number' ? item.y : 0,
       }))
@@ -117,25 +174,39 @@ function normalizeThreatModel(data: any): ThreatModelData {
     : [];
 
   const threats = Array.isArray(data?.threats)
-    ? data.threats.filter(isRecord).map((item: Record<string, any>) => ({
-        id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
-        component_id: typeof item.component_id === 'string' ? item.component_id : '',
-        component_name: typeof item.component_name === 'string' ? item.component_name : '',
-        category: typeof item.category === 'string' ? item.category : 'Other',
-        title: typeof item.title === 'string' ? item.title : 'Untitled threat',
-        description: typeof item.description === 'string' ? item.description : '',
-        severity: typeof item.severity === 'string' ? item.severity.toLowerCase() : 'low',
-        attack_vector: typeof item.attack_vector === 'string' ? item.attack_vector : '',
-        mitigation: typeof item.mitigation === 'string' ? item.mitigation : '',
-        likelihood: typeof item.likelihood === 'string' || typeof item.likelihood === 'number' ? item.likelihood : 'low',
-        impact: typeof item.impact === 'string' || typeof item.impact === 'number' ? item.impact : 'low',
-        risk_score: typeof item.risk_score === 'number' ? item.risk_score : undefined,
-        prerequisites: typeof item.prerequisites === 'string' ? item.prerequisites : undefined,
-        exploitation_complexity: typeof item.exploitation_complexity === 'string' ? item.exploitation_complexity : undefined,
-        real_world_examples: typeof item.real_world_examples === 'string' ? item.real_world_examples : undefined,
-        mitre_technique: typeof item.mitre_technique === 'string' ? item.mitre_technique : undefined,
-        linked_node_id: typeof item.linked_node_id === 'string' ? item.linked_node_id : undefined,
-      }))
+    ? data.threats.filter(isRecord).map((item: Record<string, any>) => {
+        const target = resolveThreatTarget(
+          typeof item.component_id === 'string' ? item.component_id : '',
+          components,
+          dataFlows,
+        );
+        return {
+          id: typeof item.id === 'string' ? item.id : crypto.randomUUID(),
+          component_id: typeof item.component_id === 'string' ? item.component_id : '',
+          component_name: typeof item.component_name === 'string' && item.component_name.trim()
+            ? item.component_name
+            : target.label,
+          target_type: typeof item.target_type === 'string' ? item.target_type : target.type,
+          category: typeof item.category === 'string' ? item.category : 'Other',
+          title: typeof item.title === 'string' ? item.title : 'Untitled threat',
+          description: typeof item.description === 'string' ? item.description : '',
+          severity: typeof item.severity === 'string' ? item.severity.toLowerCase() : 'low',
+          attack_vector: typeof item.attack_vector === 'string' ? item.attack_vector : '',
+          mitigation: typeof item.mitigation === 'string' ? item.mitigation : '',
+          likelihood: typeof item.likelihood === 'string' || typeof item.likelihood === 'number' ? item.likelihood : 'low',
+          impact: typeof item.impact === 'string' || typeof item.impact === 'number' ? item.impact : 'low',
+          risk_score: typeof item.risk_score === 'number' ? item.risk_score : undefined,
+          prerequisites: typeof item.prerequisites === 'string' ? item.prerequisites : undefined,
+          exploitation_complexity: typeof item.exploitation_complexity === 'string' ? item.exploitation_complexity : undefined,
+          entry_surface: typeof item.entry_surface === 'string' ? item.entry_surface : undefined,
+          trust_boundary: typeof item.trust_boundary === 'string' ? item.trust_boundary : undefined,
+          business_impact: typeof item.business_impact === 'string' ? item.business_impact : undefined,
+          detection_notes: typeof item.detection_notes === 'string' ? item.detection_notes : undefined,
+          real_world_examples: typeof item.real_world_examples === 'string' ? item.real_world_examples : undefined,
+          mitre_technique: typeof item.mitre_technique === 'string' ? item.mitre_technique : undefined,
+          linked_node_id: typeof item.linked_node_id === 'string' ? item.linked_node_id : undefined,
+        };
+      })
     : [];
 
   return {
@@ -151,6 +222,65 @@ function normalizeThreatModel(data: any): ThreatModelData {
     trust_boundaries: trustBoundaries,
     threats,
     ai_summary: typeof data?.ai_summary === 'string' ? data.ai_summary : '',
+    dfd_metadata: isRecord(data?.dfd_metadata)
+      ? {
+          generation_warnings: stringList(data.dfd_metadata.generation_warnings),
+          generation_strategy: typeof data.dfd_metadata.generation_strategy === 'string'
+            ? data.dfd_metadata.generation_strategy
+            : undefined,
+          generation_status: typeof data.dfd_metadata.generation_status === 'string'
+            ? data.dfd_metadata.generation_status
+            : undefined,
+          current_stage: typeof data.dfd_metadata.current_stage === 'string'
+            ? data.dfd_metadata.current_stage
+            : undefined,
+          zone_count: typeof data.dfd_metadata.zone_count === 'number'
+            ? data.dfd_metadata.zone_count
+            : undefined,
+          pending_zone_count: typeof data.dfd_metadata.pending_zone_count === 'number'
+            ? data.dfd_metadata.pending_zone_count
+            : undefined,
+          pending_zone_ids: stringList(data.dfd_metadata.pending_zone_ids),
+          cross_zone_flow_status: typeof data.dfd_metadata.cross_zone_flow_status === 'string'
+            ? data.dfd_metadata.cross_zone_flow_status
+            : undefined,
+          topology_summary: typeof data.dfd_metadata.topology_summary === 'string'
+            ? data.dfd_metadata.topology_summary
+            : undefined,
+        }
+      : {
+          generation_warnings: [],
+          pending_zone_ids: [],
+        },
+    analysis_metadata: isRecord(data?.analysis_metadata)
+      ? {
+          highest_risk_areas: stringList(data.analysis_metadata.highest_risk_areas),
+          attack_surface_score: typeof data.analysis_metadata.attack_surface_score === 'number'
+            ? data.analysis_metadata.attack_surface_score
+            : undefined,
+          recommended_attack_priorities: stringList(data.analysis_metadata.recommended_attack_priorities),
+          generation_warnings: stringList(data.analysis_metadata.generation_warnings),
+          generation_strategy: typeof data.analysis_metadata.generation_strategy === 'string'
+            ? data.analysis_metadata.generation_strategy
+            : undefined,
+          chunk_count: typeof data.analysis_metadata.chunk_count === 'number'
+            ? data.analysis_metadata.chunk_count
+            : undefined,
+          pending_chunk_count: typeof data.analysis_metadata.pending_chunk_count === 'number'
+            ? data.analysis_metadata.pending_chunk_count
+            : undefined,
+          generation_status: typeof data.analysis_metadata.generation_status === 'string'
+            ? data.analysis_metadata.generation_status
+            : undefined,
+        }
+      : {
+          highest_risk_areas: [],
+          recommended_attack_priorities: [],
+          generation_warnings: [],
+        },
+    deep_dive_cache: isRecord(data?.deep_dive_cache)
+      ? Object.fromEntries(Object.entries(data.deep_dive_cache).filter(([, value]) => isRecord(value)))
+      : {},
     created_at: typeof data?.created_at === 'string' ? data.created_at : '',
   };
 }
@@ -221,6 +351,8 @@ export function ThreatModelView() {
   const [createName, setCreateName] = useState('');
   const [createMethodology, setCreateMethodology] = useState('stride');
   const [systemDesc, setSystemDesc] = useState('');
+  const [operatorGuidance, setOperatorGuidance] = useState('');
+  const [planningProfile, setPlanningProfile] = useState<PlanningProfile>('planning_first');
   const [activeTab, setActiveTab] = useState<'dfd' | 'threats' | 'matrix' | 'summary'>('dfd');
   const [expandedThreat, setExpandedThreat] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('all');
@@ -228,6 +360,7 @@ export function ThreatModelView() {
   const [deepDiveLoading, setDeepDiveLoading] = useState<string | null>(null);
   const [deepDiveResults, setDeepDiveResults] = useState<Record<string, any>>({});
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const selectedPlanningProfile = useMemo(() => getPlanningProfileOption(planningProfile), [planningProfile]);
 
   // Load nodes from API when entering this view
   useEffect(() => {
@@ -243,6 +376,14 @@ export function ThreatModelView() {
   useEffect(() => {
     if (selected && activeTab === 'dfd') drawDFD();
   }, [selected, activeTab]);
+
+  useEffect(() => {
+    setSystemDesc(selected?.scope || '');
+  }, [selected?.id, selected?.scope]);
+
+  useEffect(() => {
+    setDeepDiveResults(selected?.deep_dive_cache || {});
+  }, [selected?.id, selected?.deep_dive_cache]);
 
   const loadModels = async () => {
     if (!currentProject) return;
@@ -281,7 +422,11 @@ export function ThreatModelView() {
     if (!selected || !systemDesc.trim()) return;
     setDfdLoading(true);
     try {
-      const result = await api.aiGenerateDFD(selected.id, { system_description: systemDesc });
+      const result = await api.aiGenerateDFD(selected.id, {
+        system_description: systemDesc,
+        user_guidance: operatorGuidance,
+        planning_profile: planningProfile,
+      });
       const normalized = normalizeThreatModel(result);
       setSelected(normalized);
       setThreatModels(threatModels.map(t => t.id === normalized.id ? normalized : t));
@@ -294,7 +439,10 @@ export function ThreatModelView() {
     if (!selected) return;
     setThreatLoading(true);
     try {
-      const result = await api.aiGenerateThreats(selected.id, {});
+      const result = await api.aiGenerateThreats(selected.id, {
+        user_guidance: operatorGuidance,
+        planning_profile: planningProfile,
+      });
       const normalized = normalizeThreatModel(result);
       setSelected(normalized);
       setThreatModels(threatModels.map(t => t.id === normalized.id ? normalized : t));
@@ -311,8 +459,10 @@ export function ThreatModelView() {
     try {
       const result = await api.aiFullThreatModel(currentProject.id, {
         system_description: systemDesc,
+        user_guidance: operatorGuidance,
         methodology: createMethodology,
         name: createName || 'AI Threat Model',
+        planning_profile: planningProfile,
       });
       const normalized = normalizeThreatModel(result);
       setThreatModels([normalized, ...threatModels]);
@@ -487,6 +637,16 @@ export function ThreatModelView() {
 
   const components = selected?.components || [];
   const threats = selected?.threats || [];
+  const dfdMetadata = selected?.dfd_metadata || {
+    generation_warnings: [],
+    pending_zone_ids: [],
+  };
+  const analysisMetadata = selected?.analysis_metadata || {
+    highest_risk_areas: [],
+    recommended_attack_priorities: [],
+    generation_warnings: [],
+  };
+  const dfdComplete = !dfdMetadata.generation_status || dfdMetadata.generation_status === 'completed';
 
   // Filtered threats
   const filteredThreats = useMemo(() => threats.filter(t => {
@@ -584,13 +744,13 @@ export function ThreatModelView() {
         <div className="border-l h-5 mx-1" />
 
         <select value={selected?.id || ''} onChange={(e) => setSelected(threatModels.find(t => t.id === e.target.value) || null)}
-          className="text-xs bg-transparent border rounded px-2 py-1">
+          className="select-field text-xs px-2 py-1">
           <option value="">Select model...</option>
           {threatModels.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
 
         <select value={createMethodology} onChange={(e) => setCreateMethodology(e.target.value)}
-          className="text-xs bg-transparent border rounded px-2 py-1">
+          className="select-field text-xs px-2 py-1">
           {METHODOLOGIES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
 
@@ -607,11 +767,28 @@ export function ThreatModelView() {
 
         <div className="flex-1" />
 
+        <select
+          value={planningProfile}
+          onChange={(e) => setPlanningProfile(e.target.value as PlanningProfile)}
+          className="select-field text-xs px-2 py-1"
+        >
+          {PLANNING_PROFILE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+
+        <input
+          value={operatorGuidance}
+          onChange={(e) => setOperatorGuidance(e.target.value)}
+          placeholder="Optional analyst guidance..."
+          className="text-xs bg-transparent border rounded px-2 py-1 min-w-[220px] flex-1 max-w-sm"
+        />
+
         {selected && components.length > 0 && (
-          <button onClick={handleGenerateThreats} disabled={threatLoading}
+          <button onClick={handleGenerateThreats} disabled={threatLoading || !dfdComplete}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600 text-white text-xs font-medium hover:bg-amber-700 disabled:opacity-50">
             {threatLoading ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />}
-            AI Find Threats
+            {dfdComplete ? 'AI Find Threats' : 'Finish DFD First'}
           </button>
         )}
 
@@ -636,6 +813,7 @@ export function ThreatModelView() {
           <div className="text-center max-w-lg">
             <ShieldCheck size={40} className="mx-auto mb-3 text-emerald-500/50" />
             <p className="text-sm mb-4">Describe your system and let AI generate a threat model</p>
+            <p className="text-xs text-muted-foreground mb-4">{selectedPlanningProfile.label}: {selectedPlanningProfile.description}</p>
 
             <textarea value={systemDesc} onChange={(e) => setSystemDesc(e.target.value)}
               placeholder="Describe the system to threat-model, e.g.: A web app with a React frontend, Node.js API server, PostgreSQL database, and external payment gateway. Users authenticate via OAuth2..."
@@ -677,14 +855,47 @@ export function ThreatModelView() {
                     <button onClick={handleGenerateDFD} disabled={dfdLoading || !systemDesc.trim()}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50 shrink-0 self-end">
                       {dfdLoading ? <Loader2 size={13} className="animate-spin" /> : <Brain size={13} />}
-                      Generate DFD
+                      {dfdMetadata.generation_status === 'partial' || dfdMetadata.generation_status === 'running' ? 'Resume DFD' : 'Generate DFD'}
                     </button>
                   </div>
+                  {(dfdMetadata.topology_summary || dfdMetadata.generation_warnings.length > 0 || dfdMetadata.zone_count || dfdMetadata.generation_status) && (
+                    <div className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs space-y-2">
+                      <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                        <Info size={12} /> DFD Generation Notes
+                      </div>
+                      {(dfdMetadata.generation_strategy || dfdMetadata.zone_count || dfdMetadata.generation_status) && (
+                        <div className="text-muted-foreground">
+                          Strategy: {dfdMetadata.generation_strategy || 'standard'}
+                          {dfdMetadata.zone_count ? ` (${dfdMetadata.zone_count} zones)` : ''}
+                          {dfdMetadata.generation_status ? `, status: ${dfdMetadata.generation_status}` : ''}
+                          {dfdMetadata.current_stage ? `, stage: ${dfdMetadata.current_stage}` : ''}
+                          {typeof dfdMetadata.pending_zone_count === 'number' && dfdMetadata.pending_zone_count > 0
+                            ? `, pending zones: ${dfdMetadata.pending_zone_count}`
+                            : ''}
+                          {dfdMetadata.cross_zone_flow_status ? `, cross-zone flows: ${dfdMetadata.cross_zone_flow_status}` : ''}
+                        </div>
+                      )}
+                      {dfdMetadata.topology_summary && (
+                        <div className="text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                          {dfdMetadata.topology_summary}
+                        </div>
+                      )}
+                      {dfdMetadata.generation_warnings.length > 0 && (
+                        <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                          {dfdMetadata.generation_warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {components.length === 0 ? (
                   <div className="flex-1 flex items-center justify-center text-muted-foreground">
-                    <p className="text-xs">Describe your system above and click Generate DFD</p>
+                    <p className="text-xs">
+                      {dfdMetadata.generation_status === 'partial'
+                        ? 'DFD generation is partial. Click Resume DFD to finish the remaining zones.'
+                        : 'Describe your system above and click Generate DFD'}
+                    </p>
                   </div>
                 ) : (
                   <div className="flex-1 relative">
@@ -697,15 +908,22 @@ export function ThreatModelView() {
                         const hasCrit = ct.some(t => t.severity === 'critical');
                         const hasHigh = ct.some(t => t.severity === 'high');
                         return (
-                          <div key={c.id} className="flex items-center gap-1.5">
-                            {COMPONENT_ICONS[c.type] || <Box size={12} />}
-                            <span className="flex-1">{c.name}</span>
-                            {ct.length > 0 && (
-                              <span className={cn('px-1 py-0.5 rounded text-[9px] font-bold',
-                                hasCrit ? 'bg-red-500/20 text-red-400' : hasHigh ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400'
-                              )}>
-                                {ct.length}
-                              </span>
+                          <div key={c.id} className="space-y-0.5">
+                            <div className="flex items-center gap-1.5">
+                              {COMPONENT_ICONS[c.type] || <Box size={12} />}
+                              <span className="flex-1">{c.name}</span>
+                              {ct.length > 0 && (
+                                <span className={cn('px-1 py-0.5 rounded text-[9px] font-bold',
+                                  hasCrit ? 'bg-red-500/20 text-red-400' : hasHigh ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400'
+                                )}>
+                                  {ct.length}
+                                </span>
+                              )}
+                            </div>
+                            {(c.attack_surface || c.technology) && (
+                              <div className="pl-4 text-[9px] text-muted-foreground truncate">
+                                {c.attack_surface || c.technology}
+                              </div>
                             )}
                           </div>
                         );
@@ -768,7 +986,14 @@ export function ThreatModelView() {
                                 <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0', SEVERITY_COLORS[t.severity] || SEVERITY_COLORS.medium)}>
                                   {t.severity}
                                 </span>
-                                <span className="font-medium flex-1">{t.title}</span>
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-medium truncate">{t.title}</div>
+                                  {t.component_name && (
+                                    <div className="text-[10px] text-muted-foreground truncate">
+                                      Target: {t.component_name}
+                                    </div>
+                                  )}
+                                </div>
                                 {t.risk_score && (
                                   <span className="text-[10px] text-muted-foreground shrink-0">Risk: {t.risk_score}</span>
                                 )}
@@ -785,8 +1010,20 @@ export function ThreatModelView() {
                                   </div>
                                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                                     <div>
+                                      <div className="text-[10px] text-muted-foreground font-semibold">Target</div>
+                                      <p>{t.component_name || t.component_id || 'Unmapped target'}</p>
+                                    </div>
+                                    <div>
                                       <div className="text-[10px] text-muted-foreground font-semibold">Attack Vector</div>
                                       <p>{t.attack_vector}</p>
+                                    </div>
+                                    <div>
+                                      <div className="text-[10px] text-muted-foreground font-semibold">Entry Surface</div>
+                                      <p>{t.entry_surface || 'Not specified'}</p>
+                                    </div>
+                                    <div>
+                                      <div className="text-[10px] text-muted-foreground font-semibold">Trust Boundary</div>
+                                      <p>{t.trust_boundary || 'Not specified'}</p>
                                     </div>
                                     <div>
                                       <div className="text-[10px] text-muted-foreground font-semibold">Likelihood</div>
@@ -801,6 +1038,18 @@ export function ThreatModelView() {
                                       <p className={cn('inline-block px-1.5 py-0.5 rounded', COMPLEXITY_COLORS[t.exploitation_complexity || ''] || '')}>{t.exploitation_complexity || 'N/A'}</p>
                                     </div>
                                   </div>
+                                  {t.business_impact && (
+                                    <div>
+                                      <div className="text-[10px] text-muted-foreground font-semibold flex items-center gap-1"><BarChart3 size={10} /> Business Impact</div>
+                                      <p>{t.business_impact}</p>
+                                    </div>
+                                  )}
+                                  {t.detection_notes && (
+                                    <div>
+                                      <div className="text-[10px] text-muted-foreground font-semibold flex items-center gap-1"><Eye size={10} /> Detection Notes</div>
+                                      <p>{t.detection_notes}</p>
+                                    </div>
+                                  )}
                                   {t.prerequisites && (
                                     <div>
                                       <div className="text-[10px] text-muted-foreground font-semibold flex items-center gap-1"><Target size={10} /> Prerequisites</div>
@@ -1001,8 +1250,31 @@ export function ThreatModelView() {
                   <p className="text-xs text-muted-foreground">No summary available yet. Generate threats to get an AI summary.</p>
                 )}
 
+                {(analysisMetadata.generation_warnings.length > 0 || analysisMetadata.chunk_count || analysisMetadata.generation_strategy) && (
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-xs space-y-2">
+                    <div className="flex items-center gap-2 text-amber-400 font-semibold">
+                      <Info size={12} /> Generation Notes
+                    </div>
+                    {(analysisMetadata.generation_strategy || analysisMetadata.chunk_count) && (
+                      <div className="text-muted-foreground">
+                        Strategy: {analysisMetadata.generation_strategy || 'standard'}
+                        {analysisMetadata.chunk_count ? ` (${analysisMetadata.chunk_count} primary chunks)` : ''}
+                        {analysisMetadata.generation_status ? `, status: ${analysisMetadata.generation_status}` : ''}
+                        {typeof analysisMetadata.pending_chunk_count === 'number' && analysisMetadata.pending_chunk_count > 0
+                          ? `, pending: ${analysisMetadata.pending_chunk_count}`
+                          : ''}
+                      </div>
+                    )}
+                    {analysisMetadata.generation_warnings.length > 0 && (
+                      <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                        {analysisMetadata.generation_warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
                 {/* Key Metrics */}
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-center">
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-center">
                   <div className="p-3 rounded-lg bg-muted/30 border">
                     <div className="text-lg font-bold">{components.length}</div>
                     <div className="text-[10px] text-muted-foreground">Components</div>
@@ -1019,6 +1291,10 @@ export function ThreatModelView() {
                     <div className="text-lg font-bold text-amber-500">{threats.length}</div>
                     <div className="text-[10px] text-muted-foreground">Total Threats</div>
                   </div>
+                  <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                    <div className="text-lg font-bold text-purple-400">{analysisMetadata.attack_surface_score ?? '—'}</div>
+                    <div className="text-[10px] text-muted-foreground">Attack Surface Score</div>
+                  </div>
                   <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
                     <div className="text-lg font-bold text-red-400">{summaryStats.avgRisk}</div>
                     <div className="text-[10px] text-muted-foreground">Avg Risk Score</div>
@@ -1027,6 +1303,27 @@ export function ThreatModelView() {
 
                 {threats.length > 0 && (
                   <>
+                    {(analysisMetadata.highest_risk_areas.length > 0 || analysisMetadata.recommended_attack_priorities.length > 0) && (
+                      <div className="grid md:grid-cols-2 gap-4">
+                        {analysisMetadata.highest_risk_areas.length > 0 && (
+                          <div className="rounded-lg border bg-muted/20 p-4">
+                            <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5"><Zap size={13} className="text-red-400" /> Highest-Risk Areas</h3>
+                            <ul className="list-disc list-inside space-y-1 text-xs text-muted-foreground">
+                              {analysisMetadata.highest_risk_areas.map((item, index) => <li key={index}>{item}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {analysisMetadata.recommended_attack_priorities.length > 0 && (
+                          <div className="rounded-lg border bg-muted/20 p-4">
+                            <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5"><Crosshair size={13} className="text-amber-400" /> Recommended Attack Priorities</h3>
+                            <ul className="list-disc list-inside space-y-1 text-xs text-muted-foreground">
+                              {analysisMetadata.recommended_attack_priorities.map((item, index) => <li key={index}>{item}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {/* Severity Distribution - visual bars */}
                     <div>
                       <h3 className="text-xs font-semibold mb-3 flex items-center gap-1.5"><BarChart3 size={13} /> Severity Distribution</h3>
@@ -1056,7 +1353,10 @@ export function ThreatModelView() {
                           <div key={t.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/20 border text-xs">
                             <span className="shrink-0 w-5 h-5 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center text-[10px] font-bold">{i + 1}</span>
                             <span className={cn('px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0', SEVERITY_COLORS[t.severity])}>{t.severity}</span>
-                            <span className="font-medium flex-1 truncate">{t.title}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">{t.title}</div>
+                              {t.component_name && <div className="text-[10px] text-muted-foreground truncate">{t.component_name}</div>}
+                            </div>
                             {t.mitre_technique && <span className="text-[10px] text-purple-400 shrink-0">{t.mitre_technique}</span>}
                             <span className="text-muted-foreground shrink-0">Risk: {t.risk_score || '—'}</span>
                           </div>
@@ -1071,10 +1371,17 @@ export function ThreatModelView() {
                         {summaryStats.compRisk.map((c, i) => (
                           <div key={c.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/20 border text-xs">
                             <span className="shrink-0 w-5 h-5 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[10px] font-bold">{i + 1}</span>
-                            <div className="flex items-center gap-1.5 flex-1">
-                              {COMPONENT_ICONS[c.type] || <Box size={12} />}
-                              <span className="font-medium">{c.name}</span>
-                              <span className="text-[10px] text-muted-foreground">({c.technology || c.type})</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                {COMPONENT_ICONS[c.type] || <Box size={12} />}
+                                <span className="font-medium">{c.name}</span>
+                                <span className="text-[10px] text-muted-foreground">({c.technology || c.type})</span>
+                              </div>
+                              {(c.attack_surface || c.description) && (
+                                <div className="text-[10px] text-muted-foreground truncate">
+                                  {c.attack_surface || c.description}
+                                </div>
+                              )}
                             </div>
                             <span className="text-[10px] text-muted-foreground shrink-0">{c.threatCount} threats</span>
                             <div className="shrink-0 w-12 bg-muted/30 rounded-full h-2 overflow-hidden">

@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import toast from 'react-hot-toast';
 import { Loader2, Lock, Shield, UserPlus } from 'lucide-react';
 
+import ocpLogo from '@/assets/ocp.png';
 import type { AuthLoginResponseData } from '@/types';
 import { queryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -52,8 +53,8 @@ export function AuthView() {
   };
 
   const handleSignup = async () => {
-    if (!signupName.trim() || !signupEmail.trim() || !signupPassword.trim()) {
-      toast.error('Complete the sign-up form.');
+    if (!signupName.trim() || !signupUsername.trim() || !signupEmail.trim() || !signupPassword.trim()) {
+      toast.error('Complete the sign-up form, including a username.');
       return;
     }
 
@@ -61,7 +62,7 @@ export function AuthView() {
     try {
       handleSuccess(await api.signup({
         name: signupName.trim(),
-        username: signupUsername.trim() || undefined,
+        username: signupUsername.trim(),
         email: signupEmail.trim(),
         password: signupPassword,
       }));
@@ -77,6 +78,16 @@ export function AuthView() {
       <div className="mx-auto flex min-h-screen max-w-6xl items-center px-6 py-10">
         <div className="grid w-full gap-8 lg:grid-cols-[1.1fr_0.9fr]">
           <section className="rounded-[28px] border border-border/50 bg-card/70 p-8 shadow-2xl shadow-black/10 backdrop-blur">
+            <div className="relative mb-8 flex justify-center overflow-hidden rounded-[32px] border border-cyan-400/15 bg-slate-950/30 px-6 py-8 shadow-[0_24px_80px_rgba(8,47,73,0.3)]">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(34,211,238,0.18),_transparent_58%)]" />
+              <div className="absolute inset-x-10 bottom-4 h-16 rounded-full bg-cyan-400/20 blur-3xl" />
+              <img
+                src={ocpLogo}
+                alt="Offensive Cyber Planner logo"
+                className="relative w-full max-w-[22rem] drop-shadow-[0_18px_40px_rgba(34,211,238,0.28)] animate-[bounce_3.6s_ease-in-out_infinite]"
+              />
+            </div>
+
             <div className="mb-8 max-w-xl">
               <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-400">
                 <Shield size={12} />
@@ -162,8 +173,9 @@ export function AuthView() {
                   <input
                     value={signupUsername}
                     onChange={(event) => setSignupUsername(event.target.value)}
+                    onKeyDown={(event) => event.key === 'Enter' && handleSignup()}
                     className="input-field mt-2"
-                    placeholder="Optional username"
+                    placeholder="Required username"
                     autoComplete="username"
                   />
                 </div>
@@ -174,7 +186,7 @@ export function AuthView() {
                     onChange={(event) => setSignupEmail(event.target.value)}
                     className="input-field mt-2"
                     placeholder="analyst@example.com"
-                    autoComplete="username"
+                    autoComplete="email"
                   />
                 </div>
                 <div>

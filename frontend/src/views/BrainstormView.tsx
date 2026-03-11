@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import type { PlanningProfile } from '@/types';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
+import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
+import { formatContextPreset } from '@/utils/contextPresets';
 import toast from 'react-hot-toast';
 import { Brain, Send, Loader2, Trash2, Sparkles, Copy, Crosshair, Network, ShieldCheck, Route, Target } from 'lucide-react';
 import { MarkdownContent } from '@/components/MarkdownContent';
@@ -109,7 +112,7 @@ function buildContextPackets(
 ): string[] {
   const packets: string[] = [];
   if (currentProject?.context_preset) {
-    packets.push(`Environment preset: ${currentProject.context_preset}`);
+    packets.push(`Environment preset: ${formatContextPreset(currentProject.context_preset)}`);
   }
   if (currentProject?.workspace_mode) {
     packets.push(`Workspace mode: ${currentProject.workspace_mode}`);
@@ -175,6 +178,7 @@ export function BrainstormView() {
   const [providers, setProviders] = useState<any[]>([]);
   const [providerId, setProviderId] = useState('');
   const [focusMode, setFocusMode] = useState<FocusMode>('broad');
+  const [planningProfile, setPlanningProfile] = useState<PlanningProfile>('planning_first');
   const [technicalDepth, setTechnicalDepth] = useState<TechnicalDepth>(recommendedTechnicalDepth(currentProject?.context_preset));
   const [includeTreeContext, setIncludeTreeContext] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -199,6 +203,10 @@ export function BrainstormView() {
   const activeFocus = useMemo(
     () => FOCUS_OPTIONS.find(option => option.id === focusMode) || FOCUS_OPTIONS[0],
     [focusMode],
+  );
+  const selectedPlanningProfile = useMemo(
+    () => getPlanningProfileOption(planningProfile),
+    [planningProfile],
   );
   const treeContext = useMemo(() => buildTreeContext(nodes), [nodes]);
   const contextPackets = useMemo(() => buildContextPackets(currentProject, nodes), [currentProject, nodes]);
@@ -231,6 +239,7 @@ export function BrainstormView() {
         root_objective: currentProject?.root_objective ?? '',
         context_preset: currentProject?.context_preset ?? '',
         workspace_mode: currentProject?.workspace_mode ?? '',
+        planning_profile: planningProfile,
         focus_mode: focusMode,
         technical_depth: technicalDepth,
         tree_context: includeTreeContext ? treeContext : '',
@@ -248,7 +257,7 @@ export function BrainstormView() {
     } finally {
       setLoading(false);
     }
-  }, [providerId, input, messages, currentProject, focusMode, technicalDepth, includeTreeContext, treeContext, contextPackets]);
+  }, [providerId, input, messages, currentProject, planningProfile, focusMode, technicalDepth, includeTreeContext, treeContext, contextPackets]);
 
   const startSession = useCallback((starter?: string) => {
     setMessages([]);
@@ -307,6 +316,15 @@ export function BrainstormView() {
               >
                 {FOCUS_OPTIONS.map(option => (
                   <option key={option.id} value={option.id}>{option.label}</option>
+                ))}
+              </select>
+              <select
+                value={planningProfile}
+                onChange={e => setPlanningProfile(e.target.value as PlanningProfile)}
+                className="text-xs bg-background border border-border rounded-md px-2 py-1.5"
+              >
+                {PLANNING_PROFILE_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
               <select
@@ -373,7 +391,7 @@ export function BrainstormView() {
                 </div>
                 <h2 className="text-lg font-bold mb-1">Start a Focused Brainstorming Session</h2>
                 <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
-                  The assistant will adapt to the chosen focus mode, technical depth, and current workspace context.
+                  The assistant will adapt to the chosen focus mode, planning profile, technical depth, and current workspace context.
                   {currentProject ? (
                     <> This session is grounded in the <span className="text-foreground font-medium">{workspaceLabel}</span> workspace <span className="text-foreground font-medium">{currentProject.name}</span>.</>
                   ) : (
@@ -410,9 +428,7 @@ export function BrainstormView() {
                   <div>
                     <div className="text-sm font-semibold">Session Context</div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      {includeTreeContext && nodes.length
-                        ? `Using ${Math.min(nodes.length, 12)} prioritised tree branches as context`
-                        : 'Tree context is disabled for this session'}
+                      {selectedPlanningProfile.label}: {selectedPlanningProfile.description}
                     </div>
                   </div>
                   <button
@@ -494,6 +510,7 @@ export function BrainstormView() {
           <div className="flex items-center justify-between gap-3 flex-wrap text-[11px] text-muted-foreground">
             <span>{activeFocus.description}</span>
             <span>
+              Planning: <span className="text-foreground font-medium">{selectedPlanningProfile.label}</span> ·{' '}
               Depth: <span className="text-foreground font-medium">{technicalDepth === 'deep_technical' ? 'Deep Technical' : 'Standard'}</span>
               {includeTreeContext && nodes.length > 0 && <> · {Math.min(nodes.length, 12)} tree nodes in context</>}
             </span>

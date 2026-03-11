@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import type { PlanningProfile } from '@/types';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
 import { StandaloneLanding } from '@/components/StandaloneLanding';
+import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
 import toast from 'react-hot-toast';
 import {
   Route, Plus, Trash2, Brain, Loader2, Sparkles, Clock,
@@ -50,6 +52,17 @@ interface Recommendation {
   effort?: string;
 }
 
+interface KillChainAnalysisMetadata {
+  generation_warnings: string[];
+  generation_strategy?: string;
+  generation_status?: string;
+  current_stage?: string;
+  chunk_count?: number;
+  pending_chunk_count?: number;
+  pending_chunk_ids: string[];
+  synthesis_status?: string;
+}
+
 interface KillChainData {
   id: string;
   project_id: string;
@@ -65,6 +78,7 @@ interface KillChainData {
   attack_complexity?: string;
   coverage_score?: number;
   critical_path?: string;
+  analysis_metadata: KillChainAnalysisMetadata;
   created_at: string;
 }
 
@@ -154,6 +168,21 @@ function normalizeKillChain(data: any): KillChainData {
     attack_complexity: typeof data?.attack_complexity === 'string' ? data.attack_complexity : undefined,
     coverage_score: typeof data?.coverage_score === 'number' ? data.coverage_score : undefined,
     critical_path: typeof data?.critical_path === 'string' ? data.critical_path : undefined,
+    analysis_metadata: isRecord(data?.analysis_metadata)
+      ? {
+          generation_warnings: stringList(data.analysis_metadata.generation_warnings),
+          generation_strategy: typeof data.analysis_metadata.generation_strategy === 'string' ? data.analysis_metadata.generation_strategy : undefined,
+          generation_status: typeof data.analysis_metadata.generation_status === 'string' ? data.analysis_metadata.generation_status : undefined,
+          current_stage: typeof data.analysis_metadata.current_stage === 'string' ? data.analysis_metadata.current_stage : undefined,
+          chunk_count: typeof data.analysis_metadata.chunk_count === 'number' ? data.analysis_metadata.chunk_count : undefined,
+          pending_chunk_count: typeof data.analysis_metadata.pending_chunk_count === 'number' ? data.analysis_metadata.pending_chunk_count : undefined,
+          pending_chunk_ids: stringList(data.analysis_metadata.pending_chunk_ids),
+          synthesis_status: typeof data.analysis_metadata.synthesis_status === 'string' ? data.analysis_metadata.synthesis_status : undefined,
+        }
+      : {
+          generation_warnings: [],
+          pending_chunk_ids: [],
+        },
   };
 }
 
@@ -218,35 +247,56 @@ export function KillChainView() {
   const [nodesChecked, setNodesChecked] = useState(false);
   const [activeTab, setActiveTab] = useState<'timeline' | 'summary' | 'recommendations'>('timeline');
   const [userGuidance, setUserGuidance] = useState('');
+  const [planningProfile, setPlanningProfile] = useState<PlanningProfile>('planning_first');
   const [showGuidance, setShowGuidance] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const selectedPlanningProfile = useMemo(() => getPlanningProfileOption(planningProfile), [planningProfile]);
 
-  // Load nodes from API when entering this view
+  // Reset project-scoped state and always reload the current project's nodes.
   useEffect(() => {
-    if (currentProject) {
-      if (nodes.length === 0) {
-        api.listNodes(currentProject.id)
-          .then((data) => { if (data.length) setNodes(data); })
-          .catch(() => {})
-          .finally(() => setNodesChecked(true));
-      } else {
-        setNodesChecked(true);
-      }
+    setSelected(null);
+    setKillChains([]);
+    setExpandedPhases(new Set());
+    setActiveTab('timeline');
+    setUserGuidance('');
+    setNodesChecked(false);
+
+    if (!currentProject) {
+      setNodes([]);
+      return;
     }
-  }, [currentProject?.id]);
+    let cancelled = false;
+
+    api.listNodes(currentProject.id)
+      .then((data) => {
+        if (!cancelled) setNodes(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setNodes([]);
+      })
+      .finally(() => {
+        if (!cancelled) setNodesChecked(true);
+      });
+
+    return () => { cancelled = true; };
+  }, [currentProject?.id, setNodes]);
 
   useEffect(() => {
-    if (currentProject) loadKillChains();
-  }, [currentProject?.id]);
-
-  const loadKillChains = async () => {
     if (!currentProject) return;
-    try {
-      const data = await api.listKillChains(currentProject.id);
-      const normalized = Array.isArray(data) ? data.map((kc: any) => normalizeKillChain(kc)) : [];
-      setKillChains(normalized);
-    } catch (e: any) { toast.error(e.message); }
-  };
+
+    let cancelled = false;
+    api.listKillChains(currentProject.id)
+      .then((data) => {
+        if (cancelled) return;
+        const normalized = Array.isArray(data) ? data.map((kc: any) => normalizeKillChain(kc)) : [];
+        setKillChains(normalized);
+      })
+      .catch((e: any) => {
+        if (!cancelled) toast.error(e.message);
+      });
+
+    return () => { cancelled = true; };
+  }, [currentProject?.id]);
 
   const handleCreate = async () => {
     if (!currentProject) { toast('Open a workspace to create kill chains', { icon: '📂' }); return; }
@@ -257,7 +307,7 @@ export function KillChainView() {
         framework: createFramework,
       });
       const normalized = normalizeKillChain(kc);
-      setKillChains([normalized, ...killChains]);
+      setKillChains((prev) => [normalized, ...prev]);
       setSelected(normalized);
       setShowCreate(false);
       setCreateName('');
@@ -267,7 +317,7 @@ export function KillChainView() {
   const handleDelete = async (id: string) => {
     try {
       await api.deleteKillChain(id);
-      setKillChains(killChains.filter(k => k.id !== id));
+      setKillChains((prev) => prev.filter((k) => k.id !== id));
       if (selected?.id === id) setSelected(null);
       toast.success('Kill chain deleted');
     } catch (e: any) { toast.error(e.message); }
@@ -277,10 +327,10 @@ export function KillChainView() {
     if (!selected) return;
     setMapLoading(true);
     try {
-      const result = await api.aiMapKillChain(selected.id, { user_guidance: userGuidance });
+      const result = await api.aiMapKillChain(selected.id, { user_guidance: userGuidance, planning_profile: planningProfile });
       const normalized = normalizeKillChain(result);
       setSelected(normalized);
-      setKillChains(killChains.map(k => k.id === normalized.id ? normalized : k));
+      setKillChains((prev) => prev.map((k) => k.id === normalized.id ? normalized : k));
       setActiveTab('timeline');
       setShowGuidance(false);
       toast.success('Kill chain analysis complete');
@@ -292,9 +342,13 @@ export function KillChainView() {
     if (!currentProject) { toast('Open a workspace to generate AI kill chains', { icon: '📂' }); return; }
     setGenLoading(true);
     try {
-      const result = await api.aiGenerateKillChain(currentProject.id, { framework: createFramework, user_guidance: userGuidance });
+      const result = await api.aiGenerateKillChain(currentProject.id, {
+        framework: createFramework,
+        user_guidance: userGuidance,
+        planning_profile: planningProfile,
+      });
       const normalized = normalizeKillChain(result);
-      setKillChains([normalized, ...killChains]);
+      setKillChains((prev) => [normalized, ...prev]);
       setSelected(normalized);
       setActiveTab('timeline');
       setShowGuidance(false);
@@ -319,6 +373,8 @@ export function KillChainView() {
 
   // Normalize phases
   const phases = useMemo(() => normalizePhases(selected?.phases || []), [selected?.phases]);
+  const analysisMetadata = selected?.analysis_metadata || { generation_warnings: [], pending_chunk_ids: [] };
+  const analysisInProgress = analysisMetadata.generation_status === 'running' || analysisMetadata.generation_status === 'partial';
 
   const expandAll = useCallback(() => {
     setExpandedPhases(new Set(phases.map((_, i) => i)));
@@ -369,14 +425,14 @@ export function KillChainView() {
             setSelected(kc);
             setExpandedPhases(new Set());
           }}
-          className="text-xs bg-transparent border rounded px-2 py-1 max-w-[200px]"
+          className="select-field text-xs px-2 py-1 max-w-[200px]"
         >
           <option value="">Select kill chain...</option>
           {killChains.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
         </select>
 
         <select value={createFramework} onChange={(e) => setCreateFramework(e.target.value)}
-          className="text-xs bg-transparent border rounded px-2 py-1">
+          className="select-field text-xs px-2 py-1">
           {FRAMEWORKS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
         </select>
 
@@ -395,6 +451,16 @@ export function KillChainView() {
 
         <div className="flex-1" />
 
+        <select
+          value={planningProfile}
+          onChange={(e) => setPlanningProfile(e.target.value as PlanningProfile)}
+          className="select-field text-xs px-2 py-1"
+        >
+          {PLANNING_PROFILE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+
         {/* Guidance toggle */}
         <button
           onClick={() => setShowGuidance(!showGuidance)}
@@ -412,7 +478,7 @@ export function KillChainView() {
           <button onClick={handleAiMap} disabled={mapLoading}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-cyan-600 text-white text-xs font-medium hover:bg-cyan-700 disabled:opacity-50">
             {mapLoading ? <Loader2 size={13} className="animate-spin" /> : <Brain size={13} />}
-            {mapLoading ? 'Analysing...' : 'AI Analyse'}
+            {mapLoading ? 'Analysing...' : analysisInProgress ? 'Resume AI Analyse' : 'AI Analyse'}
           </button>
         )}
 
@@ -440,6 +506,7 @@ export function KillChainView() {
             className="flex-1 text-xs bg-transparent border rounded px-3 py-1.5 placeholder:text-muted-foreground/50"
             onKeyDown={e => { if (e.key === 'Enter' && selected) handleAiMap(); else if (e.key === 'Enter') handleAiGenerate(); }}
           />
+          <span className="text-[10px] text-muted-foreground hidden lg:inline">{selectedPlanningProfile.label}: {selectedPlanningProfile.description}</span>
           <span className="text-[10px] text-muted-foreground shrink-0">Press Enter to run</span>
         </div>
       )}
@@ -493,12 +560,16 @@ export function KillChainView() {
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
           <div className="text-center">
             <Brain size={36} className="mx-auto mb-3 text-cyan-500/40" />
-            <p className="text-sm font-medium">No phases mapped yet</p>
-            <p className="text-xs mt-1 mb-4">Click <strong>AI Analyse</strong> to map your attack tree nodes into kill chain phases</p>
+            <p className="text-sm font-medium">{analysisInProgress ? 'Analysis is partially complete' : 'No phases mapped yet'}</p>
+            <p className="text-xs mt-1 mb-4">
+              {analysisInProgress
+                ? 'Resume AI analysis to finish the remaining kill-chain phases.'
+                : <>Click <strong>AI Analyse</strong> to map your attack tree nodes into kill chain phases</>}
+            </p>
             <button onClick={handleAiMap} disabled={mapLoading}
               className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-700 disabled:opacity-50 mx-auto">
               {mapLoading ? <Loader2 size={14} className="animate-spin" /> : <Brain size={14} />}
-              AI Analyse
+              {analysisInProgress ? 'Resume AI Analyse' : 'AI Analyse'}
             </button>
           </div>
         </div>
@@ -547,6 +618,28 @@ export function KillChainView() {
 
           {/* ── Tab Content ── */}
           <div className="flex-1 overflow-auto">
+            {(analysisMetadata.generation_strategy || analysisMetadata.generation_status || analysisMetadata.generation_warnings.length > 0) && (
+              <div className="px-6 pt-4">
+                <div className="rounded-lg border bg-muted/20 p-3 text-xs space-y-2">
+                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Generation Status</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Strategy: {analysisMetadata.generation_strategy || 'standard'}
+                    {analysisMetadata.chunk_count ? `, passes: ${analysisMetadata.chunk_count}` : ''}
+                    {analysisMetadata.generation_status ? `, status: ${analysisMetadata.generation_status}` : ''}
+                    {analysisMetadata.current_stage ? `, stage: ${analysisMetadata.current_stage}` : ''}
+                    {typeof analysisMetadata.pending_chunk_count === 'number' && analysisMetadata.pending_chunk_count > 0
+                      ? `, pending: ${analysisMetadata.pending_chunk_count}`
+                      : ''}
+                    {analysisMetadata.synthesis_status ? `, synthesis: ${analysisMetadata.synthesis_status}` : ''}
+                  </div>
+                  {analysisMetadata.generation_warnings.length > 0 && (
+                    <ul className="list-disc pl-4 space-y-1 text-[11px] text-amber-500">
+                      {analysisMetadata.generation_warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* ═══════ TIMELINE TAB ═══════ */}
             {activeTab === 'timeline' && (

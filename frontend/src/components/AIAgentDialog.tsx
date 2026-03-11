@@ -1,9 +1,16 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/utils/api';
-import type { TemplateInfo } from '@/types';
+import type {
+  LLMAgentGenerationProfile,
+  LLMAgentMode,
+  LLMAgentResponseData,
+  TemplateInfo,
+} from '@/types';
 import toast from 'react-hot-toast';
 import { Bot, Loader2, X, Wand2, FileText, GitBranch } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
+import { formatContextPreset } from '@/utils/contextPresets';
 
 interface AIAgentDialogProps {
   projectId: string;
@@ -12,9 +19,7 @@ interface AIAgentDialogProps {
   onComplete: () => void;
 }
 
-type AgentMode = 'generate' | 'from_template' | 'expand';
-
-const MODE_OPTIONS: { value: AgentMode; label: string; description: string; icon: typeof Wand2 }[] = [
+const MODE_OPTIONS: { value: LLMAgentMode; label: string; description: string; icon: typeof Wand2 }[] = [
   { value: 'generate', label: 'Generate', description: 'Build new tree from scratch with AI', icon: Wand2 },
   { value: 'from_template', label: 'From Template', description: 'Expand a template with AI enrichment', icon: FileText },
   { value: 'expand', label: 'Gap Analysis', description: 'Find missing attack paths in existing tree', icon: GitBranch },
@@ -40,6 +45,8 @@ const PRESET_CATEGORIES = [
       { label: 'Gas Turbine DCS Attack', objective: 'Compromise gas turbine DCS to cause turbine overspeed, compressor surge, or forced shutdown', scope: 'Power generation plant with gas turbines, DCS (GE Mark VIe / Siemens T3000), SIS, and data historian' },
       { label: 'Water / Sewage Plant SCADA', objective: 'Compromise wastewater treatment SCADA to disable disinfection or release untreated sewage', scope: 'Municipal wastewater treatment plant with SCADA HMI, PLCs, chemical dosing, and remote cellular access' },
       { label: 'LNG Terminal DCS/SIS', objective: 'Attack LNG terminal DCS and safety systems to cause overpressure or disable emergency shutdown', scope: 'LNG regasification terminal with Yokogawa/Honeywell DCS, Triconex SIS, cryogenic storage tanks, and BOG compressors' },
+      { label: 'Oil Refinery DCS/SIS', objective: 'Compromise refinery control and safety layers to disrupt production, damage process units, or degrade product quality', scope: 'Oil refinery with process-unit DCS HMIs, SIS logic solvers, tank farm automation, turnaround contractors, and laboratory release workflows' },
+      { label: 'Drilling Rig Well Control', objective: 'Compromise drilling automation and well-control systems to cause operational disruption or unsafe process conditions', scope: 'Offshore or onshore drilling rig with drill-floor HMIs, BOP controls, mud logging, satcom links, and OEM remote support paths' },
     ],
   },
   {
@@ -57,6 +64,16 @@ const PRESET_CATEGORIES = [
       { label: 'IIoT Gateway Compromise', objective: 'Compromise IIoT gateways to pivot between IT/OT networks and manipulate industrial data', scope: 'Industrial IoT gateways bridging Modbus/OPC-UA to MQTT/AMQP cloud platforms with embedded Linux OS' },
       { label: 'Smart Building IoT Botnet', objective: 'Compromise BACnet/KNX building IoT devices to build a botnet or pivot into the corporate network', scope: 'Smart commercial building with BMS (Niagara/Desigo), BACnet/IP controllers, Zigbee sensors, HVAC, lighting, and access control' },
       { label: 'EV Charging Network', objective: 'Compromise EV charging infrastructure to disrupt services or destabilize the local grid', scope: 'EV charging network with OCPP 1.6/2.0 chargers, cloud CSMS, cellular/WiFi connectivity, and payment terminals' },
+      { label: 'Airport Operations', objective: 'Disrupt airport operations by abusing baggage automation, operations systems, or airside support services', scope: 'Airport environment with AODB/FIDS, baggage handling, ground operations, fuel systems, building automation, and airline integration points' },
+      { label: 'Satellite Ground Station', objective: 'Compromise a satellite ground segment to abuse TT&C, mission scheduling, or teleport operations', scope: 'Ground station with antenna control, TT&C processors, uplink/downlink chains, mission-control networks, and WAN backhaul to operator systems' },
+      { label: 'Port / Naval Yard Operations', objective: 'Disrupt dockside or shipyard operations by abusing crane, shore-power, and partner access workflows', scope: 'Shipyard or naval-base environment with dry docks, crane control, dock systems, shore power, maintenance work orders, and partner remote access' },
+    ],
+  },
+  {
+    category: 'Defence & Mission Systems',
+    presets: [
+      { label: 'Military Headquarters', objective: 'Compromise a military headquarters to access mission planning, secure communications, or coalition coordination workflows', scope: 'Military headquarters with SCIF enclaves, secure messaging, identity infrastructure, cross-domain transfer points, and mission support workstations' },
+      { label: 'Defence Manufacturing Plant', objective: 'Sabotage defence manufacturing by abusing production automation, traceability systems, or secure test workflows', scope: 'Defence manufacturing plant with PLCs, robotics, secure production lines, PLM systems, traceability records, and acceptance test rigs' },
     ],
   },
   {
@@ -76,20 +93,22 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   const [scope, setScope] = useState('');
   const [depth, setDepth] = useState(4);
   const [breadth, setBreadth] = useState(5);
-  const [mode, setMode] = useState<AgentMode>('generate');
+  const [mode, setMode] = useState<LLMAgentMode>('generate');
+  const [generationProfile, setGenerationProfile] = useState<LLMAgentGenerationProfile>('balanced');
   const [templateId, setTemplateId] = useState<string>('');
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [result, setResult] = useState<{ nodes_created: number; model_used: string; elapsed_ms: number; passes_completed?: number } | null>(null);
+  const [result, setResult] = useState<LLMAgentResponseData | null>(null);
   const selectedTemplate = templates.find((template) => template.id === templateId);
+  const selectedGenerationProfile = getPlanningProfileOption(generationProfile);
 
   // Load templates for "from_template" mode
   useEffect(() => {
     if (open && templates.length === 0) {
       api.listTemplates().then((res) => setTemplates(res.templates || [])).catch(() => {});
     }
-  }, [open]);
+  }, [open, templates.length]);
 
   // Elapsed timer
   useEffect(() => {
@@ -99,7 +118,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   }, [loading]);
 
   const PROGRESS_STEPS = [
-    'Detecting domain & loading references...',
+    'Detecting domain, planning profile, and templates...',
     'Building attack tree structure (Pass 1)...',
     'Enriching node attributes (Pass 2)...',
     'Mapping MITRE ATT&CK / CAPEC / CWE (Pass 3)...',
@@ -128,6 +147,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
         breadth,
         mode,
         template_id: templateId || undefined,
+        generation_profile: generationProfile,
       });
       setResult(res);
       const passesMsg = res.passes_completed ? ` (${res.passes_completed} passes)` : '';
@@ -149,6 +169,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
   const handleDone = () => {
     setObjective('');
     setScope('');
+    setGenerationProfile('balanced');
     setResult(null);
     onComplete();
     onClose();
@@ -229,7 +250,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                       {selectedTemplate.node_count} nodes
                     </span>
                     <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium">
-                      {selectedTemplate.context_preset}
+                      {formatContextPreset(selectedTemplate.context_preset)}
                     </span>
                     <span className={cn(
                       'inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium',
@@ -278,6 +299,33 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
               </div>
             </div>
           )}
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+              Generation Profile
+            </label>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {PLANNING_PROFILE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setGenerationProfile(option.value)}
+                  disabled={loading}
+                  className={cn(
+                    'rounded-lg border p-3 text-left transition-colors disabled:opacity-50',
+                    generationProfile === option.value
+                      ? 'border-primary bg-primary/5'
+                      : 'hover:bg-accent'
+                  )}
+                >
+                  <div className="text-sm font-medium">{option.label}</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+                    {option.description}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* Objective */}
           <div>
@@ -342,18 +390,21 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
           {/* Info box */}
           <div className="p-3 rounded-lg bg-muted/50 text-xs text-muted-foreground">
             {mode === 'generate' && (
-              <>The AI agent performs <strong>4 passes</strong>: (1) generate tree structure with domain-specific prompting,
+              <>The AI agent performs <strong>4 passes</strong>: (1) generate tree structure with domain-specific prompting and the selected planning profile,
               (2) enrich missing node attributes, (3) map MITRE ATT&amp;CK / CAPEC / CWE references,
               (4) generate mitigations &amp; detections for leaf nodes. A matching template is auto-selected for few-shot guidance.</>
             )}
             {mode === 'from_template' && (
               <>The AI agent takes the selected template as a skeleton and expands it with additional attack paths,
-              enriched descriptions, and risk scores tailored to your specific objective.</>
+              enriched descriptions, and risk scores tailored to your specific objective while keeping the chosen planning profile.</>
             )}
             {mode === 'expand' && (
               <>The AI agent analyses the existing attack tree in this workspace and identifies missing attack paths,
-              uncovered vectors, and gaps in coverage, then generates nodes to fill them.</>
+              uncovered vectors, and gaps in coverage, then generates nodes to fill them according to the selected planning profile.</>
             )}
+            <div className="mt-2">
+              <strong>{selectedGenerationProfile.label}:</strong> {selectedGenerationProfile.description}
+            </div>
           </div>
 
           {/* Progress indicator */}
@@ -405,7 +456,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                 </button>
                 <button
                   onClick={handleGenerate}
-                  disabled={loading || !objective.trim()}
+                  disabled={loading || (mode !== 'expand' && !objective.trim())}
                   className={cn(
                     "flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md",
                     "bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"

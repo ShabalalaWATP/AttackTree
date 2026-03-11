@@ -2,12 +2,15 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/utils/api';
 import { useStore } from '@/stores/useStore';
-import { CONTEXT_PRESETS, type TemplateInfo } from '@/types';
+import { type TemplateInfo } from '@/types';
 import toast from 'react-hot-toast';
 import { Plus, Trash2, FolderOpen, Copy, FileText, GitBranch, Search, X, Sparkles, ChevronRight, Shield, Crosshair, Route, ShieldCheck, FlaskConical, Clock } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { formatContextPreset, getGroupedContextPresets } from '@/utils/contextPresets';
 import ocpLogo from '@/assets/ocp.png';
+
+const CONTEXT_PRESET_GROUPS = getGroupedContextPresets();
 
 export function ProjectsView() {
   const queryClient = useQueryClient();
@@ -257,7 +260,13 @@ export function ProjectsView() {
                 <label className="text-xs font-medium text-muted-foreground">Context Preset</label>
                 <select value={newPreset} onChange={(e) => setNewPreset(e.target.value)}
                   className="w-full mt-1 px-3 py-2.5 rounded-lg border border-border/50 bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                  {CONTEXT_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {CONTEXT_PRESET_GROUPS.map((group) => (
+                    <optgroup key={group.category} label={group.category}>
+                      {group.presets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
               <div className="col-span-2">
@@ -314,7 +323,7 @@ export function ProjectsView() {
                         {t.node_count} nodes
                       </span>
                       <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {t.context_preset}
+                        {formatContextPreset(t.context_preset)}
                       </span>
                       <span className={cn(
                         'inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium',
@@ -398,7 +407,7 @@ export function ProjectsView() {
                 )}>
                   {p.workspace_mode === 'standalone_scan' ? 'Standalone Scan' : 'Project Scan'}
                 </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/50 inline-block">{p.context_preset}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted/50 inline-block">{formatContextPreset(p.context_preset)}</span>
               </div>
             </div>
                 <ChevronRight size={16} className="text-muted-foreground/40 group-hover:text-primary/60 transition-colors" />

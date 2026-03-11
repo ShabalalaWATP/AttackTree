@@ -48,6 +48,7 @@ class LLMAgentRequest(BaseModel):
     breadth: int = 5
     mode: str = "generate"  # generate | from_template | expand
     template_id: Optional[str] = None
+    generation_profile: str = "balanced"  # planning_first | balanced | reference_heavy
 
 
 class LLMAgentResponse(BaseModel):

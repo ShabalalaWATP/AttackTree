@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import type { PlanningProfile } from '@/types';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
 import toast from 'react-hot-toast';
 import {
   Network, Plus, Trash2, Sparkles, Loader2, X, BookOpen,
@@ -23,6 +25,8 @@ interface InfraNode {
   icon_hint: string;
   children_loaded: boolean;
   manually_added: boolean;
+  position_x?: number | null;
+  position_y?: number | null;
 }
 
 interface InfraMapData {
@@ -32,6 +36,17 @@ interface InfraMapData {
   description: string;
   nodes: InfraNode[];
   ai_summary: string;
+  analysis_metadata?: {
+    generation_strategy?: string;
+    generation_status?: string;
+    branch_count?: number;
+    completed_branch_count?: number;
+    failed_branch_count?: number;
+    generation_warnings?: string[];
+    last_generation_strategy?: string;
+    last_generation_status?: string;
+    last_generation_warnings?: string[];
+  };
   created_at: string;
   updated_at: string;
 }
@@ -137,10 +152,34 @@ interface LayoutItem {
 interface LayoutEdge {
   parentId: string;
   childId: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
+}
+
+interface MindMapPosition {
+  x: number;
+  y: number;
+}
+
+interface MindMapViewport {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+interface MindMapDragState {
+  nodeId: string;
+  startClientX: number;
+  startClientY: number;
+  originX: number;
+  originY: number;
+  moved: boolean;
+}
+
+interface MindMapPanState {
+  startClientX: number;
+  startClientY: number;
+  startOffsetX: number;
+  startOffsetY: number;
+  moved: boolean;
 }
 
 function computeMindMapLayout(nodes: InfraNode[], childMap: Map<string, InfraNode[]>) {
@@ -179,10 +218,6 @@ function computeMindMapLayout(nodes: InfraNode[], childMap: Map<string, InfraNod
         edges.push({
           parentId: node.id,
           childId: child.id,
-          x1: x + MM_NODE_W,
-          y1: y + MM_NODE_H / 2,
-          x2: x + MM_NODE_W + MM_H_GAP,
-          y2: childY + MM_NODE_H / 2,
         });
         layout(child, x + MM_NODE_W + MM_H_GAP, cy);
         cy += ch + MM_V_GAP;
@@ -273,6 +308,19 @@ function buildVisibleNodeIds(nodes: InfraNode[], query: string): Set<string> | n
   return visible;
 }
 
+function isFinitePosition(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function extractStoredMindMapPositions(nodes: InfraNode[]): Record<string, MindMapPosition> {
+  return nodes.reduce<Record<string, MindMapPosition>>((acc, node) => {
+    if (isFinitePosition(node.position_x) && isFinitePosition(node.position_y)) {
+      acc[node.id] = { x: node.position_x, y: node.position_y };
+    }
+    return acc;
+  }, {});
+}
+
 /* ───── Component ───── */
 
 export function InfraMapView() {
@@ -286,6 +334,7 @@ export function InfraMapView() {
   const [createName, setCreateName] = useState('');
   const [rootLabel, setRootLabel] = useState('');
   const [userGuidance, setUserGuidance] = useState('');
+  const [planningProfile, setPlanningProfile] = useState<PlanningProfile>('planning_first');
   const [showGuidance, setShowGuidance] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -295,12 +344,36 @@ export function InfraMapView() {
   const [savingNode, setSavingNode] = useState(false);
   const [editDraft, setEditDraft] = useState<InfraNodeDraft | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('tree');
+  const [mindMapViewport, setMindMapViewport] = useState<MindMapViewport>({ scale: 1, offsetX: 24, offsetY: 24 });
+  const [mindMapNodePositions, setMindMapNodePositions] = useState<Record<string, MindMapPosition>>({});
   const mindmapRef = useRef<HTMLDivElement>(null);
+  const dragStateRef = useRef<MindMapDragState | null>(null);
+  const panStateRef = useRef<MindMapPanState | null>(null);
+  const suppressNodeClickRef = useRef(false);
+  const selectedRef = useRef<InfraMapData | null>(null);
+  const nodePositionsRef = useRef<Record<string, MindMapPosition>>({});
+  const selectedPlanningProfile = useMemo(() => getPlanningProfileOption(planningProfile), [planningProfile]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
+  useEffect(() => {
+    nodePositionsRef.current = mindMapNodePositions;
+  }, [mindMapNodePositions]);
 
   // Load maps: project-scoped or standalone
   useEffect(() => {
     loadInfraMaps();
   }, [currentProject?.id]);
+
+  useEffect(() => {
+    setMindMapNodePositions(extractStoredMindMapPositions(selected?.nodes || []));
+  }, [selected?.nodes]);
+
+  useEffect(() => {
+    setMindMapViewport({ scale: 1, offsetX: 24, offsetY: 24 });
+  }, [selected?.id]);
 
   const loadInfraMaps = async () => {
     try {
@@ -319,6 +392,67 @@ export function InfraMapView() {
     } catch (e: any) { toast.error(e.message); }
   };
 
+  const applyMapUpdate = useCallback((result: InfraMapData) => {
+    setSelected(result);
+    setInfraMaps(prev => {
+      const existingIndex = prev.findIndex(map => map.id === result.id);
+      if (existingIndex === -1) {
+        return [result, ...prev];
+      }
+      const next = [...prev];
+      next[existingIndex] = result;
+      return next;
+    });
+  }, []);
+
+  const handleResetMindMapView = useCallback(() => {
+    setMindMapViewport({ scale: 1, offsetX: 24, offsetY: 24 });
+  }, []);
+
+  const handleResetMindMapLayout = useCallback(async () => {
+    if (!selectedRef.current) return;
+    const current = selectedRef.current;
+    const resetNodes = (current.nodes || []).map(({ position_x, position_y, ...node }) => node);
+    try {
+      const result = await api.updateInfraMap(current.id, { nodes: resetNodes });
+      applyMapUpdate(result);
+      setMindMapNodePositions({});
+      toast.success('Mind map layout reset');
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }, [applyMapUpdate]);
+
+  const persistMindMapNodePosition = useCallback(async (nodeId: string, nextPosition: MindMapPosition) => {
+    const current = selectedRef.current;
+    if (!current) return;
+    const target = (current.nodes || []).find(node => node.id === nodeId);
+    if (!target) return;
+    const currentX = isFinitePosition(target.position_x) ? target.position_x : null;
+    const currentY = isFinitePosition(target.position_y) ? target.position_y : null;
+    if (
+      currentX !== null && currentY !== null
+      && Math.abs(currentX - nextPosition.x) < 1
+      && Math.abs(currentY - nextPosition.y) < 1
+    ) {
+      return;
+    }
+
+    const updatedNodes = (current.nodes || []).map(node => (
+      node.id === nodeId
+        ? { ...node, position_x: Math.round(nextPosition.x), position_y: Math.round(nextPosition.y) }
+        : node
+    ));
+
+    try {
+      const result = await api.updateInfraMap(current.id, { nodes: updatedNodes });
+      applyMapUpdate(result);
+    } catch (e: any) {
+      toast.error(e.message);
+      setMindMapNodePositions(extractStoredMindMapPositions(selectedRef.current?.nodes || []));
+    }
+  }, [applyMapUpdate]);
+
   const handleCreate = async () => {
     try {
       const payload: any = { name: createName || 'Infrastructure Map' };
@@ -336,15 +470,17 @@ export function InfraMapView() {
   const handleDelete = async (id: string) => {
     try {
       await api.deleteInfraMap(id);
-      const remainingMaps = infraMaps.filter(m => m.id !== id);
-      setInfraMaps(remainingMaps);
-      if (selected?.id === id) {
-        const nextSelected = remainingMaps[0] || null;
-        setSelected(nextSelected);
-        const rootNode = (nextSelected?.nodes || []).find((n: InfraNode) => !n.parent_id);
-        setExpandedNodes(rootNode ? new Set([rootNode.id]) : new Set());
-        setSelectedNodeId(null);
-      }
+      setInfraMaps(prev => {
+        const remainingMaps = prev.filter(map => map.id !== id);
+        if (selectedRef.current?.id === id) {
+          const nextSelected = remainingMaps[0] || null;
+          setSelected(nextSelected);
+          const rootNode = (nextSelected?.nodes || []).find((n: InfraNode) => !n.parent_id);
+          setExpandedNodes(rootNode ? new Set([rootNode.id]) : new Set());
+          setSelectedNodeId(null);
+        }
+        return remainingMaps;
+      });
       toast.success('Map deleted');
     } catch (e: any) { toast.error(e.message); }
   };
@@ -355,12 +491,12 @@ export function InfraMapView() {
       const genData = {
         root_label: rootLabel || undefined,
         user_guidance: userGuidance || undefined,
+        planning_profile: planningProfile,
       };
       const result = currentProject
         ? await api.aiGenerateInfraMap(currentProject.id, genData)
         : await api.aiGenerateStandaloneInfraMap(genData);
-      setInfraMaps(prev => [result, ...prev]);
-      setSelected(result);
+      applyMapUpdate(result);
       setShowGuidance(false);
       setSelectedNodeId(null);
       setNodeQuery('');
@@ -378,9 +514,9 @@ export function InfraMapView() {
       const result = await api.aiExpandInfraNode(selected.id, {
         node_id: nodeId,
         user_guidance: userGuidance || undefined,
+        planning_profile: planningProfile,
       });
-      setSelected(result);
-      setInfraMaps(prev => prev.map(m => m.id === result.id ? result : m));
+      applyMapUpdate(result);
       setExpandedNodes(prev => new Set([...prev, nodeId]));
       toast.success('Node expanded');
     } catch (e: any) { toast.error(e.message); }
@@ -402,8 +538,7 @@ export function InfraMapView() {
     const updatedNodes = [...(selected.nodes || []), newNode];
     try {
       const result = await api.updateInfraMap(selected.id, { nodes: updatedNodes });
-      setSelected(result);
-      setInfraMaps(prev => prev.map(m => m.id === result.id ? result : m));
+      applyMapUpdate(result);
       setShowAddChild(null);
       setAddChildLabel('');
       setExpandedNodes(prev => new Set([...prev, parentId]));
@@ -423,8 +558,7 @@ export function InfraMapView() {
     const updatedNodes = (selected.nodes || []).filter(n => !toRemove.has(n.id));
     try {
       const result = await api.updateInfraMap(selected.id, { nodes: updatedNodes });
-      setSelected(result);
-      setInfraMaps(prev => prev.map(m => m.id === result.id ? result : m));
+      applyMapUpdate(result);
       if (selectedNodeId === nodeId) setSelectedNodeId(null);
     } catch (e: any) { toast.error(e.message); }
   };
@@ -508,6 +642,14 @@ export function InfraMapView() {
     [rootNodes, visibleNodeIds],
   );
   const visibleNodesCount = visibleNodeIds ? nodes.filter(node => visibleNodeIds.has(node.id)).length : nodes.length;
+  const infraAnalysisMetadata = selected?.analysis_metadata || {};
+  const generationWarnings = useMemo(
+    () => [
+      ...(Array.isArray(infraAnalysisMetadata.generation_warnings) ? infraAnalysisMetadata.generation_warnings : []),
+      ...(Array.isArray(infraAnalysisMetadata.last_generation_warnings) ? infraAnalysisMetadata.last_generation_warnings : []),
+    ].filter((warning): warning is string => typeof warning === 'string' && warning.trim().length > 0),
+    [infraAnalysisMetadata.generation_warnings, infraAnalysisMetadata.last_generation_warnings],
+  );
 
   useEffect(() => {
     if (!selectedNode) {
@@ -530,8 +672,7 @@ export function InfraMapView() {
         node.id === selectedNode.id ? { ...node, ...editDraft } : node,
       );
       const result = await api.updateInfraMap(selected.id, { nodes: updatedNodes });
-      setSelected(result);
-      setInfraMaps(prev => prev.map(map => map.id === result.id ? result : map));
+      applyMapUpdate(result);
       toast.success('Node updated');
     } catch (e: any) {
       toast.error(e.message);
@@ -542,6 +683,152 @@ export function InfraMapView() {
 
   // Mind map layout
   const mmLayout = useMemo(() => computeMindMapLayout(nodes, childMap), [nodes, childMap]);
+  const mmDisplayItems = useMemo(
+    () => mmLayout.items.map(item => {
+      const override = mindMapNodePositions[item.id];
+      return override ? { ...item, x: override.x, y: override.y } : item;
+    }),
+    [mindMapNodePositions, mmLayout.items],
+  );
+  const mmDisplayItemMap = useMemo(
+    () => new Map(mmDisplayItems.map(item => [item.id, item])),
+    [mmDisplayItems],
+  );
+  const mmDisplayEdges = useMemo(() => {
+    const edges: LayoutEdge[] = [];
+    for (const node of nodes) {
+      if (!node.parent_id) continue;
+      const parent = mmDisplayItemMap.get(node.parent_id);
+      const child = mmDisplayItemMap.get(node.id);
+      if (!parent || !child) continue;
+      edges.push({ parentId: parent.id, childId: child.id });
+    }
+    return edges;
+  }, [mmDisplayItemMap, nodes]);
+  const mmCanvas = useMemo(() => {
+    if (mmDisplayItems.length === 0) {
+      return { width: 900, height: 540 };
+    }
+    let maxX = 0;
+    let maxY = 0;
+    for (const item of mmDisplayItems) {
+      maxX = Math.max(maxX, item.x + MM_NODE_W);
+      maxY = Math.max(maxY, item.y + MM_NODE_H);
+    }
+    return {
+      width: Math.max(maxX + MM_PAD * 2, 900),
+      height: Math.max(maxY + MM_PAD * 2, 540),
+    };
+  }, [mmDisplayItems]);
+
+  const handleMindMapWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const container = mindmapRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const cursorX = event.clientX - rect.left;
+    const cursorY = event.clientY - rect.top;
+
+    setMindMapViewport(prev => {
+      const nextScale = Math.min(2.4, Math.max(0.45, prev.scale * (event.deltaY < 0 ? 1.1 : 0.92)));
+      const contentX = (cursorX - prev.offsetX) / prev.scale;
+      const contentY = (cursorY - prev.offsetY) / prev.scale;
+      return {
+        scale: nextScale,
+        offsetX: cursorX - contentX * nextScale,
+        offsetY: cursorY - contentY * nextScale,
+      };
+    });
+  }, []);
+
+  const handleMindMapBackgroundMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-mindmap-node="true"]')) return;
+    panStateRef.current = {
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetX: mindMapViewport.offsetX,
+      startOffsetY: mindMapViewport.offsetY,
+      moved: false,
+    };
+  }, [mindMapViewport.offsetX, mindMapViewport.offsetY]);
+
+  const handleMindMapNodeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>, nodeId: string, x: number, y: number) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, textarea, select')) return;
+    dragStateRef.current = {
+      nodeId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originX: x,
+      originY: y,
+      moved: false,
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const dragState = dragStateRef.current;
+      if (dragState) {
+        const deltaX = (event.clientX - dragState.startClientX) / mindMapViewport.scale;
+        const deltaY = (event.clientY - dragState.startClientY) / mindMapViewport.scale;
+        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+          dragState.moved = true;
+        }
+        const nextPosition = {
+          x: Math.max(8, dragState.originX + deltaX),
+          y: Math.max(8, dragState.originY + deltaY),
+        };
+        setMindMapNodePositions(prev => ({ ...prev, [dragState.nodeId]: nextPosition }));
+        return;
+      }
+
+      const panState = panStateRef.current;
+      if (!panState) return;
+      const deltaX = event.clientX - panState.startClientX;
+      const deltaY = event.clientY - panState.startClientY;
+      if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+        panState.moved = true;
+      }
+      setMindMapViewport(prev => ({
+        ...prev,
+        offsetX: panState.startOffsetX + deltaX,
+        offsetY: panState.startOffsetY + deltaY,
+      }));
+    };
+
+    const handleMouseUp = () => {
+      const dragState = dragStateRef.current;
+      if (dragState) {
+        dragStateRef.current = null;
+        if (dragState.moved) {
+          suppressNodeClickRef.current = true;
+          void persistMindMapNodePosition(dragState.nodeId, nodePositionsRef.current[dragState.nodeId] || {
+            x: dragState.originX,
+            y: dragState.originY,
+          });
+          window.setTimeout(() => {
+            suppressNodeClickRef.current = false;
+          }, 0);
+        }
+      }
+
+      const panState = panStateRef.current;
+      if (panState) {
+        panStateRef.current = null;
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [mindMapViewport.scale, persistMindMapNodePosition]);
 
   // ─── Tree Node Renderer ───
   const renderNode = (node: InfraNode, level: number): React.ReactNode => {
@@ -618,110 +905,132 @@ export function InfraMapView() {
 
   // ─── Mind Map Canvas ───
   const renderMindMap = () => {
-    const filteredItems = visibleNodeIds ? mmLayout.items.filter(item => visibleNodeIds.has(item.id)) : mmLayout.items;
+    const filteredItems = visibleNodeIds ? mmDisplayItems.filter(item => visibleNodeIds.has(item.id)) : mmDisplayItems;
     const filteredEdges = visibleNodeIds
-      ? mmLayout.edges.filter(edge => visibleNodeIds.has(edge.parentId) && visibleNodeIds.has(edge.childId))
-      : mmLayout.edges;
-    const width = mmLayout.width;
-    const height = mmLayout.height;
+      ? mmDisplayEdges.filter(edge => visibleNodeIds.has(edge.parentId) && visibleNodeIds.has(edge.childId))
+      : mmDisplayEdges;
+    const width = mmCanvas.width;
+    const height = mmCanvas.height;
     if (filteredItems.length === 0) return null;
 
     return (
-      <div ref={mindmapRef} className="flex-1 overflow-auto bg-background/50" style={{ position: 'relative' }}>
-        <div style={{ width: `${Math.max(width, 800)}px`, height: `${Math.max(height, 500)}px`, position: 'relative' }}>
-          {/* SVG connection lines */}
-          <svg
-            style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
-          >
-            {filteredEdges.map((e, i) => {
-              const cpX = (e.x1 + e.x2) / 2;
-              const parentNode = filteredItems.find(it => it.id === e.parentId);
-              const color = parentNode ? (CAT_SVG_COLORS[parentNode.node.category] || '#6b7280') : '#6b7280';
+      <div
+        ref={mindmapRef}
+        className={cn(
+          'flex-1 overflow-hidden bg-background/50 select-none',
+          panStateRef.current ? 'cursor-grabbing' : 'cursor-grab',
+        )}
+        style={{ position: 'relative' }}
+        onWheel={handleMindMapWheel}
+        onMouseDown={handleMindMapBackgroundMouseDown}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            transform: `translate(${mindMapViewport.offsetX}px, ${mindMapViewport.offsetY}px) scale(${mindMapViewport.scale})`,
+            transformOrigin: '0 0',
+          }}
+        >
+          <div style={{ width: `${width}px`, height: `${height}px`, position: 'relative' }}>
+            <svg
+              style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+            >
+              {filteredEdges.map((edge, index) => {
+                const parent = mmDisplayItemMap.get(edge.parentId);
+                const child = mmDisplayItemMap.get(edge.childId);
+                if (!parent || !child) return null;
+                const cpX = (parent.x + MM_NODE_W + child.x) / 2;
+                const color = CAT_SVG_COLORS[parent.node.category] || '#6b7280';
+                return (
+                  <path
+                    key={index}
+                    d={`M${parent.x + MM_NODE_W},${parent.y + MM_NODE_H / 2} C${cpX},${parent.y + MM_NODE_H / 2} ${cpX},${child.y + MM_NODE_H / 2} ${child.x},${child.y + MM_NODE_H / 2}`}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={1.5}
+                    strokeOpacity={0.35}
+                  />
+                );
+              })}
+            </svg>
+
+            {filteredItems.map(item => {
+              const node = item.node;
+              const catStyle = CATEGORY_COLORS[node.category] || CATEGORY_COLORS.general;
+              const isSelected = selectedNodeId === node.id;
+              const isExpanding = expandingNode === node.id;
+              const icon = ICON_MAP_SM[node.icon_hint] || <Cog size={11} />;
+              const children = (childMap.get(node.id) || []).filter(child => !visibleNodeIds || visibleNodeIds.has(child.id));
+              const matchesQuery = nodeQuery.trim()
+                ? [node.label, node.description, node.category].join(' ').toLowerCase().includes(nodeQuery.trim().toLowerCase())
+                : false;
+
               return (
-                <path
-                  key={i}
-                  d={`M${e.x1},${e.y1} C${cpX},${e.y1} ${cpX},${e.y2} ${e.x2},${e.y2}`}
-                  fill="none"
-                  stroke={color}
-                  strokeWidth={1.5}
-                  strokeOpacity={0.35}
-                />
+                <div
+                  key={node.id}
+                  data-mindmap-node="true"
+                  className={cn(
+                    'absolute flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-all group',
+                    'bg-card hover:bg-accent/30 shadow-sm hover:shadow-md',
+                    dragStateRef.current?.nodeId === node.id ? 'cursor-grabbing' : 'cursor-grab',
+                    isSelected ? 'ring-2 ring-cyan-500/60 border-cyan-500/40' : catStyle.border,
+                    matchesQuery && !isSelected && 'ring-2 ring-emerald-500/40 border-emerald-500/30',
+                  )}
+                  style={{ left: item.x, top: item.y, width: MM_NODE_W, height: MM_NODE_H }}
+                  onMouseDown={(event) => handleMindMapNodeMouseDown(event, node.id, item.x, item.y)}
+                  onClick={() => {
+                    if (suppressNodeClickRef.current) return;
+                    setSelectedNodeId(isSelected ? null : node.id);
+                  }}
+                >
+                  <div className={cn('p-1 rounded shrink-0', catStyle.bg, catStyle.text)}>{icon}</div>
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="text-[11px] font-medium truncate leading-tight">{node.label}</div>
+                    <div className={cn('text-[8px] leading-tight', catStyle.text)}>{node.category}</div>
+                  </div>
+                  {children.length > 0 && (
+                    <span className="text-[9px] text-muted-foreground shrink-0">{children.length}</span>
+                  )}
+
+                  <div className="absolute -top-2 -right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                    {!isExpanding ? (
+                      <button onClick={(e) => { e.stopPropagation(); handleAiExpand(node.id); }}
+                        className="p-1 rounded-full bg-cyan-600 text-white shadow hover:bg-cyan-700" title="AI expand">
+                        <Sparkles size={10} />
+                      </button>
+                    ) : (
+                      <span className="p-1 rounded-full bg-cyan-600 text-white shadow"><Loader2 size={10} className="animate-spin" /></span>
+                    )}
+                    <button onClick={(e) => { e.stopPropagation(); setShowAddChild(showAddChild === node.id ? null : node.id); setAddChildLabel(''); }}
+                      className="p-1 rounded-full bg-card border shadow text-muted-foreground hover:text-foreground" title="Add child">
+                      <Plus size={10} />
+                    </button>
+                    {node.parent_id && (
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteNode(node.id); }}
+                        className="p-1 rounded-full bg-card border shadow text-muted-foreground hover:text-destructive" title="Delete">
+                        <Trash2 size={9} />
+                      </button>
+                    )}
+                  </div>
+                </div>
               );
             })}
-          </svg>
 
-          {/* Nodes */}
-          {filteredItems.map(item => {
-            const node = item.node;
-            const catStyle = CATEGORY_COLORS[node.category] || CATEGORY_COLORS.general;
-            const isSelected = selectedNodeId === node.id;
-            const isExpanding = expandingNode === node.id;
-            const icon = ICON_MAP_SM[node.icon_hint] || <Cog size={11} />;
-            const children = (childMap.get(node.id) || []).filter(child => !visibleNodeIds || visibleNodeIds.has(child.id));
-            const matchesQuery = nodeQuery.trim()
-              ? [node.label, node.description, node.category].join(' ').toLowerCase().includes(nodeQuery.trim().toLowerCase())
-              : false;
-
-            return (
-              <div
-                key={node.id}
-                className={cn(
-                  'absolute flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border cursor-pointer transition-all group',
-                  'bg-card hover:bg-accent/30 shadow-sm hover:shadow-md',
-                  isSelected ? 'ring-2 ring-cyan-500/60 border-cyan-500/40' : catStyle.border,
-                  matchesQuery && !isSelected && 'ring-2 ring-emerald-500/40 border-emerald-500/30',
-                )}
-                style={{ left: item.x, top: item.y, width: MM_NODE_W, height: MM_NODE_H }}
-                onClick={() => setSelectedNodeId(isSelected ? null : node.id)}
-              >
-                <div className={cn('p-1 rounded shrink-0', catStyle.bg, catStyle.text)}>{icon}</div>
-                <div className="flex-1 min-w-0 overflow-hidden">
-                  <div className="text-[11px] font-medium truncate leading-tight">{node.label}</div>
-                  <div className={cn('text-[8px] leading-tight', catStyle.text)}>{node.category}</div>
+            {showAddChild && filteredItems.find(it => it.id === showAddChild) && (() => {
+              const item = filteredItems.find(it => it.id === showAddChild)!;
+              return (
+                <div className="absolute z-20 flex items-center gap-1 bg-card border rounded-lg shadow-lg p-1.5"
+                  style={{ left: item.x + MM_NODE_W + 8, top: item.y }}>
+                  <input autoFocus value={addChildLabel} onChange={e => setAddChildLabel(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleAddManualChild(showAddChild); if (e.key === 'Escape') setShowAddChild(null); }}
+                    placeholder="New item..." className="text-xs bg-transparent border rounded px-2 py-1 w-32" />
+                  <button onClick={() => handleAddManualChild(showAddChild)} className="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-700">Add</button>
+                  <button onClick={() => setShowAddChild(null)} className="p-0.5 hover:bg-accent rounded"><X size={10} /></button>
                 </div>
-                {children.length > 0 && (
-                  <span className="text-[9px] text-muted-foreground shrink-0">{children.length}</span>
-                )}
-
-                {/* Hover actions */}
-                <div className="absolute -top-2 -right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                  {!isExpanding ? (
-                    <button onClick={(e) => { e.stopPropagation(); handleAiExpand(node.id); }}
-                      className="p-1 rounded-full bg-cyan-600 text-white shadow hover:bg-cyan-700" title="AI expand">
-                      <Sparkles size={10} />
-                    </button>
-                  ) : (
-                    <span className="p-1 rounded-full bg-cyan-600 text-white shadow"><Loader2 size={10} className="animate-spin" /></span>
-                  )}
-                  <button onClick={(e) => { e.stopPropagation(); setShowAddChild(showAddChild === node.id ? null : node.id); setAddChildLabel(''); }}
-                    className="p-1 rounded-full bg-card border shadow text-muted-foreground hover:text-foreground" title="Add child">
-                    <Plus size={10} />
-                  </button>
-                  {node.parent_id && (
-                    <button onClick={(e) => { e.stopPropagation(); handleDeleteNode(node.id); }}
-                      className="p-1 rounded-full bg-card border shadow text-muted-foreground hover:text-destructive" title="Delete">
-                      <Trash2 size={9} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-
-          {/* Inline add-child popover for mind map */}
-          {showAddChild && filteredItems.find(it => it.id === showAddChild) && (() => {
-            const item = filteredItems.find(it => it.id === showAddChild)!;
-            return (
-              <div className="absolute z-20 flex items-center gap-1 bg-card border rounded-lg shadow-lg p-1.5"
-                style={{ left: item.x + MM_NODE_W + 8, top: item.y }}>
-                <input autoFocus value={addChildLabel} onChange={e => setAddChildLabel(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleAddManualChild(showAddChild); if (e.key === 'Escape') setShowAddChild(null); }}
-                  placeholder="New item..." className="text-xs bg-transparent border rounded px-2 py-1 w-32" />
-                <button onClick={() => handleAddManualChild(showAddChild)} className="text-xs px-2 py-1 rounded bg-cyan-600 text-white hover:bg-cyan-700">Add</button>
-                <button onClick={() => setShowAddChild(null)} className="p-0.5 hover:bg-accent rounded"><X size={10} /></button>
-              </div>
-            );
-          })()}
+              );
+            })()}
+          </div>
         </div>
       </div>
     );
@@ -754,7 +1063,7 @@ export function InfraMapView() {
               if (root) setExpandedNodes(new Set([root.id]));
             }
           }}
-          className="text-xs bg-transparent border rounded px-2 py-1 max-w-[200px]"
+          className="select-field text-xs px-2 py-1 max-w-[200px]"
         >
           <option value="">Select map...</option>
           {infraMaps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -801,6 +1110,16 @@ export function InfraMapView() {
 
         <div className="border-l h-5 mx-1" />
 
+        <select
+          value={planningProfile}
+          onChange={(e) => setPlanningProfile(e.target.value as PlanningProfile)}
+          className="select-field text-xs px-2 py-1"
+        >
+          {PLANNING_PROFILE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+
         {/* Guidance toggle */}
         <button
           onClick={() => setShowGuidance(!showGuidance)}
@@ -843,6 +1162,7 @@ export function InfraMapView() {
             placeholder="Additional guidance: e.g. 'Focus on OT/ICS systems', 'Include cloud infrastructure'..."
             className="flex-1 text-xs bg-transparent border rounded px-3 py-1.5 placeholder:text-muted-foreground/50"
             onKeyDown={e => { if (e.key === 'Enter') handleAiGenerate(); }} />
+          <span className="text-[10px] text-muted-foreground hidden xl:inline">{selectedPlanningProfile.label}: {selectedPlanningProfile.description}</span>
           <span className="text-[10px] text-muted-foreground shrink-0">Enter to generate</span>
         </div>
       )}
@@ -870,6 +1190,35 @@ export function InfraMapView() {
               )}
               {selected.ai_summary && (
                 <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{selected.ai_summary}</p>
+              )}
+              {(infraAnalysisMetadata.generation_strategy || generationWarnings.length > 0) && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {infraAnalysisMetadata.generation_strategy && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 font-medium">
+                      {infraAnalysisMetadata.generation_strategy === 'multi_pass' ? 'Multi-pass AI' : infraAnalysisMetadata.generation_strategy}
+                    </span>
+                  )}
+                  {(infraAnalysisMetadata.generation_status || infraAnalysisMetadata.last_generation_status) && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                      {infraAnalysisMetadata.generation_status || infraAnalysisMetadata.last_generation_status}
+                    </span>
+                  )}
+                  {typeof infraAnalysisMetadata.branch_count === 'number' && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {infraAnalysisMetadata.completed_branch_count ?? 0} / {infraAnalysisMetadata.branch_count} branches detailed
+                    </span>
+                  )}
+                </div>
+              )}
+              {generationWarnings.length > 0 && (
+                <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                  <div className="text-[10px] font-semibold text-amber-500 mb-1">Coverage notes</div>
+                  <div className="space-y-1">
+                    {generationWarnings.slice(0, 3).map((warning, index) => (
+                      <p key={`${warning}-${index}`} className="text-[11px] text-muted-foreground leading-relaxed">{warning}</p>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
 
@@ -979,12 +1328,16 @@ export function InfraMapView() {
             <>
               {/* Stats ribbon for mind map too */}
               <div className="flex flex-col flex-1 overflow-hidden">
-                <div className="flex items-center gap-4 px-4 py-2 border-b text-[10px] text-muted-foreground bg-card/50 shrink-0">
+                <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b text-[10px] text-muted-foreground bg-card/50 shrink-0">
                   <span>{totalNodes} nodes</span>
                   {nodeQuery && <span>{visibleNodesCount} visible</span>}
                   <span>{depth} levels deep</span>
                   <span>{describedNodes} described</span>
                   <span>{manualNodes} manual</span>
+                  <span>{Math.round(mindMapViewport.scale * 100)}% zoom</span>
+                  <span>Wheel to zoom</span>
+                  <span>Drag canvas to pan</span>
+                  <span>Drag nodes to reposition</span>
                   {Object.entries(categories).slice(0, 6).map(([cat, count]) => {
                     const style = CATEGORY_COLORS[cat] || CATEGORY_COLORS.general;
                     return (
@@ -994,6 +1347,20 @@ export function InfraMapView() {
                       </span>
                     );
                   })}
+                  <div className="ml-auto flex items-center gap-2">
+                    <button
+                      onClick={handleResetMindMapView}
+                      className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
+                    >
+                      Reset View
+                    </button>
+                    <button
+                      onClick={() => { void handleResetMindMapLayout(); }}
+                      className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
+                    >
+                      Auto Layout
+                    </button>
+                  </div>
                 </div>
                 {renderMindMap()}
               </div>
@@ -1041,7 +1408,7 @@ export function InfraMapView() {
                         <select
                           value={editDraft.category}
                           onChange={(e) => setEditDraft(prev => prev ? { ...prev, category: e.target.value } : prev)}
-                          className="w-full text-xs bg-transparent border rounded px-2 py-1.5"
+                          className="select-field w-full text-xs px-2 py-1.5"
                         >
                           {CATEGORY_OPTIONS.map(category => (
                             <option key={category} value={category}>{category}</option>
@@ -1053,7 +1420,7 @@ export function InfraMapView() {
                         <select
                           value={editDraft.icon_hint}
                           onChange={(e) => setEditDraft(prev => prev ? { ...prev, icon_hint: e.target.value } : prev)}
-                          className="w-full text-xs bg-transparent border rounded px-2 py-1.5"
+                          className="select-field w-full text-xs px-2 py-1.5"
                         >
                           {ICON_OPTIONS.map(iconHint => (
                             <option key={iconHint} value={iconHint}>{iconHint}</option>

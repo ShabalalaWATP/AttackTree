@@ -18,6 +18,13 @@ class KillChain(Base):
     ai_summary = Column(Text, default="")
     phases = Column(JSON, default=list)  # [{phase, name, description, node_ids[], detection_window, dwell_time}]
     recommendations = Column(JSON, default=list)
+    total_estimated_time = Column(String(100), default="")
+    weakest_links = Column(JSON, default=list)
+    overall_risk_rating = Column(String(20), default="")
+    attack_complexity = Column(String(20), default="")
+    coverage_score = Column(Float, nullable=True)
+    critical_path = Column(Text, default="")
+    analysis_metadata = Column(JSON, default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

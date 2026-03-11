@@ -40,6 +40,9 @@ async def init_db():
         if "sqlite" in settings.DATABASE_URL:
             await _migrate_scenarios_table(conn)
             await _migrate_multi_user_tables(conn)
+            await _migrate_infra_maps_table(conn)
+            await _migrate_threat_models_table(conn)
+            await _migrate_kill_chains_table(conn)
 
     admin_user_id = await _ensure_seed_users()
     if "sqlite" in settings.DATABASE_URL:
@@ -218,6 +221,26 @@ async def _migrate_multi_user_tables(conn) -> None:
     await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_scenarios_user_id ON scenarios (user_id)")
     await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_infra_maps_user_id ON infra_maps (user_id)")
     await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_tags_user_id ON tags (user_id)")
+
+
+async def _migrate_threat_models_table(conn) -> None:
+    await _ensure_column(conn, "threat_models", "dfd_metadata", "JSON")
+    await _ensure_column(conn, "threat_models", "analysis_metadata", "JSON")
+    await _ensure_column(conn, "threat_models", "deep_dive_cache", "JSON")
+
+
+async def _migrate_infra_maps_table(conn) -> None:
+    await _ensure_column(conn, "infra_maps", "analysis_metadata", "JSON")
+
+
+async def _migrate_kill_chains_table(conn) -> None:
+    await _ensure_column(conn, "kill_chains", "total_estimated_time", "VARCHAR(100)")
+    await _ensure_column(conn, "kill_chains", "weakest_links", "JSON")
+    await _ensure_column(conn, "kill_chains", "overall_risk_rating", "VARCHAR(20)")
+    await _ensure_column(conn, "kill_chains", "attack_complexity", "VARCHAR(20)")
+    await _ensure_column(conn, "kill_chains", "coverage_score", "FLOAT")
+    await _ensure_column(conn, "kill_chains", "critical_path", "TEXT")
+    await _ensure_column(conn, "kill_chains", "analysis_metadata", "JSON")
 
 
 async def _ensure_column(conn, table_name: str, column_name: str, column_type: str) -> None:

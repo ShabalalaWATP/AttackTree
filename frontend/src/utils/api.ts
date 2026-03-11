@@ -2,8 +2,13 @@ import type {
   AttackNodeData,
   AuthLoginResponseData,
   AuthUserData,
+  EnvironmentCatalogData,
+  EnvironmentCatalogSummary,
+  LLMAgentRequestData,
+  LLMAgentResponseData,
   LLMSuggestRequestData,
   LLMSuggestResponseData,
+  PlanningProfile,
   ProjectData,
   TemplateData,
   TemplateInfo,
@@ -81,7 +86,7 @@ export const api = {
   // Auth
   login: (data: { identifier: string; password: string }) =>
     request<AuthLoginResponseData>('/auth/login', { method: 'POST', body: JSON.stringify(data), noAuth: true }),
-  signup: (data: { name: string; email: string; username?: string; password: string }) =>
+  signup: (data: { name: string; email: string; username: string; password: string }) =>
     request<AuthLoginResponseData>('/auth/signup', { method: 'POST', body: JSON.stringify(data), noAuth: true }),
   getCurrentUser: () => request<AuthUserData>('/auth/me'),
   changePassword: (data: { current_password: string; new_password: string }) =>
@@ -142,6 +147,8 @@ export const api = {
     if (filter) params.set('filter', filter);
     return request<{ framework: string; total: number; count: number; items: any[]; filter_field: string | null; filter_options: string[] }>(`/references/browse/${framework}?${params.toString()}`);
   },
+  listEnvironmentCatalogs: () => request<{ total: number; catalogs: EnvironmentCatalogSummary[] }>('/references/environment-catalogs'),
+  getEnvironmentCatalog: (catalogId: string) => request<EnvironmentCatalogData>(`/references/environment-catalogs/${catalogId}`),
 
   // Comments
   listComments: (nodeId: string) => request<any[]>(`/comments/node/${nodeId}`),
@@ -187,7 +194,7 @@ export const api = {
   testProvider: (id: string) => request<any>(`/llm/providers/${id}/test`, { method: 'POST' }),
   suggestBranches: (data: LLMSuggestRequestData) => request<LLMSuggestResponseData>('/llm/suggest', { method: 'POST', body: JSON.stringify(data) }),
   generateSummary: (data: any) => request<any>('/llm/summarize', { method: 'POST', body: JSON.stringify(data) }),
-  agentGenerateTree: (data: any) => request<any>('/llm/agent', { method: 'POST', body: JSON.stringify(data) }),
+  agentGenerateTree: (data: LLMAgentRequestData) => request<LLMAgentResponseData>('/llm/agent', { method: 'POST', body: JSON.stringify(data) }),
 
   // Scenarios
   listScenarios: (projectId?: string, scope = projectId ? 'project' : 'standalone') => {
@@ -207,9 +214,9 @@ export const api = {
   updateScenario: (id: string, data: any) => request<any>(`/scenarios/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteScenario: (id: string) => request<void>(`/scenarios/${id}`, { method: 'DELETE' }),
   simulateScenario: (id: string, data: any) => request<any>(`/scenarios/${id}/simulate`, { method: 'POST', body: JSON.stringify(data) }),
-  aiAnalyzeScenario: (id: string, data: any) => request<any>(`/scenarios/${id}/ai-analyze`, { method: 'POST', body: JSON.stringify(data) }),
+  aiAnalyzeScenario: (id: string, data: { question?: string; planning_profile?: PlanningProfile }) => request<any>(`/scenarios/${id}/ai-analyze`, { method: 'POST', body: JSON.stringify(data) }),
   aiGenerateScenarios: (projectId: string) => request<any>(`/scenarios/project/${projectId}/ai-generate`, { method: 'POST' }),
-  generateScenarioSuggestions: (data: { project_id?: string; focus?: string; count?: number }) =>
+  generateScenarioSuggestions: (data: { project_id?: string; focus?: string; count?: number; planning_profile?: PlanningProfile }) =>
     request<any>('/scenarios/ai-generate', { method: 'POST', body: JSON.stringify(data) }),
 
   // Kill Chains
@@ -217,8 +224,8 @@ export const api = {
   createKillChain: (data: any) => request<any>('/kill-chains', { method: 'POST', body: JSON.stringify(data) }),
   getKillChain: (id: string) => request<any>(`/kill-chains/${id}`),
   deleteKillChain: (id: string) => request<void>(`/kill-chains/${id}`, { method: 'DELETE' }),
-  aiMapKillChain: (id: string, data: any) => request<any>(`/kill-chains/${id}/ai-map`, { method: 'POST', body: JSON.stringify(data) }),
-  aiGenerateKillChain: (projectId: string, data?: any) => request<any>(`/kill-chains/project/${projectId}/ai-generate`, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  aiMapKillChain: (id: string, data: { user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/kill-chains/${id}/ai-map`, { method: 'POST', body: JSON.stringify(data) }),
+  aiGenerateKillChain: (projectId: string, data?: { framework?: string; user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/kill-chains/project/${projectId}/ai-generate`, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
 
   // Threat Models
   listThreatModels: (projectId: string) => request<any[]>(`/threat-models/project/${projectId}`),
@@ -226,11 +233,11 @@ export const api = {
   getThreatModel: (id: string) => request<any>(`/threat-models/${id}`),
   updateThreatModel: (id: string, data: any) => request<any>(`/threat-models/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteThreatModel: (id: string) => request<void>(`/threat-models/${id}`, { method: 'DELETE' }),
-  aiGenerateDFD: (id: string, data: any) => request<any>(`/threat-models/${id}/ai-generate-dfd`, { method: 'POST', body: JSON.stringify(data) }),
-  aiGenerateThreats: (id: string, data: any) => request<any>(`/threat-models/${id}/ai-generate-threats`, { method: 'POST', body: JSON.stringify(data) }),
-  aiDeepDiveThreat: (tmId: string, data: { threat_id: string }) => request<any>(`/threat-models/${tmId}/ai-deep-dive`, { method: 'POST', body: JSON.stringify(data) }),
+  aiGenerateDFD: (id: string, data: { system_description: string; user_guidance?: string; methodology?: string; name?: string; planning_profile?: PlanningProfile; refresh?: boolean }) => request<any>(`/threat-models/${id}/ai-generate-dfd`, { method: 'POST', body: JSON.stringify(data) }),
+  aiGenerateThreats: (id: string, data: { user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/threat-models/${id}/ai-generate-threats`, { method: 'POST', body: JSON.stringify(data) }),
+  aiDeepDiveThreat: (tmId: string, data: { threat_id: string; refresh?: boolean }) => request<any>(`/threat-models/${tmId}/ai-deep-dive`, { method: 'POST', body: JSON.stringify(data) }),
   linkThreatsToTree: (id: string, data: any) => request<any>(`/threat-models/${id}/link-to-tree`, { method: 'POST', body: JSON.stringify(data) }),
-  aiFullThreatModel: (projectId: string, data: any) => request<any>(`/threat-models/project/${projectId}/ai-full-analysis`, { method: 'POST', body: JSON.stringify(data) }),
+  aiFullThreatModel: (projectId: string, data: { system_description: string; user_guidance?: string; methodology?: string; name?: string; planning_profile?: PlanningProfile }) => request<any>(`/threat-models/project/${projectId}/ai-full-analysis`, { method: 'POST', body: JSON.stringify(data) }),
 
   // AI Chat (Brainstorm, Advisor, Challenger)
   aiBrainstorm: (data: {
@@ -239,6 +246,7 @@ export const api = {
     root_objective?: string;
     context_preset?: string;
     workspace_mode?: string;
+    planning_profile?: PlanningProfile;
     technical_depth?: string;
     focus_mode?: string;
     tree_context?: string;
@@ -258,7 +266,7 @@ export const api = {
   getInfraMap: (id: string) => request<any>(`/infra-maps/${id}`),
   updateInfraMap: (id: string, data: any) => request<any>(`/infra-maps/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteInfraMap: (id: string) => request<void>(`/infra-maps/${id}`, { method: 'DELETE' }),
-  aiExpandInfraNode: (id: string, data: { node_id: string; user_guidance?: string }) => request<any>(`/infra-maps/${id}/ai-expand`, { method: 'POST', body: JSON.stringify(data) }),
-  aiGenerateInfraMap: (projectId: string, data?: { root_label?: string; user_guidance?: string }) => request<any>(`/infra-maps/project/${projectId}/ai-generate`, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
-  aiGenerateStandaloneInfraMap: (data?: { root_label?: string; user_guidance?: string }) => request<any>('/infra-maps/standalone/ai-generate', { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  aiExpandInfraNode: (id: string, data: { node_id: string; user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/infra-maps/${id}/ai-expand`, { method: 'POST', body: JSON.stringify(data) }),
+  aiGenerateInfraMap: (projectId: string, data?: { root_label?: string; user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/infra-maps/project/${projectId}/ai-generate`, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
+  aiGenerateStandaloneInfraMap: (data?: { root_label?: string; user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>('/infra-maps/standalone/ai-generate', { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
 };

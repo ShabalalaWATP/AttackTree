@@ -32,7 +32,7 @@ class LoginResponse(BaseModel):
 class SignupRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     email: str
-    username: Optional[str] = Field(default=None, min_length=3, max_length=100)
+    username: str = Field(..., min_length=3, max_length=100)
     password: str = Field(..., min_length=8, max_length=128)
 
 

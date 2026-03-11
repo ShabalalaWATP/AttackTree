@@ -135,6 +135,18 @@
   body {
     @apply bg-background text-foreground;
   }
+  select {
+    color: hsl(var(--foreground));
+    color-scheme: light;
+  }
+  .dark select {
+    color-scheme: dark;
+  }
+  select option,
+  select optgroup {
+    background-color: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
+  }
 }
 
 /* ===== Global form controls ===== */
@@ -144,6 +156,13 @@
       placeholder:text-muted-foreground transition-colors;
   }
   .input-field:focus {
+    @apply outline-none ring-2 ring-ring/30 border-ring;
+  }
+
+  .select-field {
+    @apply rounded-md border border-border bg-background text-foreground transition-colors;
+  }
+  .select-field:focus {
     @apply outline-none ring-2 ring-ring/30 border-ring;
   }
 

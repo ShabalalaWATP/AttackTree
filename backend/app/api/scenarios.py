@@ -22,6 +22,7 @@ from ..services.access_control import (
 )
 from ..services.auth import get_current_user_id
 from ..services import llm_service
+from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
 from ..services.risk_engine import compute_inherent_risk, compute_residual_risk
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -148,12 +149,34 @@ class SimulateRequest(BaseModel):
 
 class AIAnalyzeRequest(BaseModel):
     question: str = ""
+    planning_profile: str = "balanced"
 
 
 class AIGenerateRequest(BaseModel):
     project_id: Optional[str] = None
     focus: str = ""
     count: int = Field(default=6, ge=1, le=12)
+    planning_profile: str = "balanced"
+
+
+def _scenario_planning_context(planning_profile: str, objective: str, scope: str, context_preset: str = "") -> tuple[str, str, str, str]:
+    normalized_profile = llm_service.normalize_planning_profile(planning_profile)
+    domain = llm_service.detect_planning_domain(objective, scope, context_preset)
+    profile_label = llm_service.get_planning_profile_label(normalized_profile)
+    guidance = "\n".join(
+        section for section in [
+            llm_service.get_domain_decomposition_guidance(domain),
+            llm_service.get_planning_profile_guidance(normalized_profile, domain),
+            build_environment_catalog_outline_for_context(objective, scope, context_preset),
+            (
+                "Scenario planning workflow:\n"
+                "- Start by framing the scenario across people, physical, technical, supply-chain, and process dependencies where they matter.\n"
+                "- Identify decisive trust-boundary crossings, enabling conditions, and defender assumptions before writing detailed phase actions.\n"
+                "- Use ATT&CK, CAPEC, CWE, and CVE references only as enrichment once a path is concrete enough to justify them."
+            ),
+        ] if section
+    )
+    return normalized_profile, profile_label, domain, guidance
 
 
 @router.get("")
@@ -413,10 +436,38 @@ async def ai_analyze_scenario(scenario_id: str, data: AIAnalyzeRequest, db: Asyn
         f"surface:{n.attack_surface or 'n/a'} platform:{n.platform or 'n/a'})"
         for n in nodes[:80]
     ) if nodes else "(No linked attack tree nodes. Analyse this as a standalone planning scenario.)"
+    _, planning_label, planning_domain, planning_guidance = _scenario_planning_context(
+        data.planning_profile,
+        " ".join(
+            part for part in [
+                project.root_objective if project else "",
+                scenario.operation_goal,
+                scenario.name,
+            ] if part
+        ),
+        " ".join(
+            part for part in [
+                project.description if project else "",
+                scenario.description,
+                scenario.target_profile,
+                scenario.target_environment,
+                scenario.assumptions or "",
+                " ".join(scenario.entry_vectors or []),
+                " ".join(scenario.campaign_phases or []),
+                " ".join(scenario.constraints or []),
+                data.question,
+            ] if part
+        ),
+        getattr(project, "context_preset", "") if project else "",
+    )
 
     prompt = f"""You are a senior cyber operations planner and cyber security risk analyst.
 
 Produce a deep planning brief for this scenario in valid JSON.
+
+**Planning Profile:** {planning_label}
+**Detected Planning Domain:** {planning_domain}
+{planning_guidance}
 
 **Scenario Name:** {scenario.name}
 **Scope:** {scenario.scope}
@@ -527,6 +578,17 @@ async def ai_generate_scenarios(data: AIGenerateRequest, db: AsyncSession = Depe
         for n in nodes[:50]
     ) if nodes else "(No project tree context supplied. Generate a diverse standalone scenario set.)"
     focus_text = data.focus or (f"{project.root_objective}. {project.description}" if project else "General cyber operations planning")
+    _, planning_label, planning_domain, planning_guidance = _scenario_planning_context(
+        data.planning_profile,
+        focus_text,
+        " ".join(
+            part for part in [
+                project.description if project else "",
+                nodes_text,
+            ] if part
+        ),
+        getattr(project, "context_preset", "") if project else "",
+    )
 
     prompt = f"""Generate {data.count} diverse cyber operation planning scenarios.
 
@@ -534,11 +596,17 @@ Cover a wide spread of operation types rather than repeating the same intrusion 
 Mix objectives such as collection, disruption, credential access, insider abuse, supply-chain compromise,
 cloud control-plane abuse, identity attacks, ransomware, coercive impact, and tabletop / response exercises where relevant.
 
+**Planning Profile:** {planning_label}
+**Detected Planning Domain:** {planning_domain}
+{planning_guidance}
+
 **Project:** {project.name if project else 'Standalone Scenario Workspace'}
 **Root Objective:** {project.root_objective if project else ''}
 **Focus:** {focus_text}
 **Tree Context:**
 {nodes_text}
+
+First diversify the scenario set across meaningful attack-surface domains, actor paths, and operation families before varying lower-level TTP details.
 
 Return ONLY a valid JSON array. Each item must contain:
 {{

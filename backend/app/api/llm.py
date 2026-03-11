@@ -264,12 +264,22 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
             template_data = _json.loads(tpl_path.read_text(encoding="utf-8"))
     elif data.mode == "generate":
         # Auto-find best matching template for few-shot prompting
-        template_data = llm_service.find_best_template_for_objective(data.objective, data.scope)
+        template_data = llm_service.find_best_template_for_objective(
+            data.objective,
+            data.scope,
+            context_preset=project.context_preset,
+        )
 
     # ── PASS 1: Structure Generation ────────────────────────────────
     if data.mode == "from_template" and template_data:
         messages = llm_service.build_template_expand_prompt(
-            template_data, data.objective, data.scope, data.depth, data.breadth,
+            template_data,
+            data.objective,
+            data.scope,
+            data.depth,
+            data.breadth,
+            generation_profile=data.generation_profile,
+            context_preset=project.context_preset,
         )
     elif data.mode == "expand":
         # Load existing tree for gap analysis
@@ -282,13 +292,22 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
             for n in existing_nodes
         ]
         messages = llm_service.build_gap_analysis_prompt(
-            existing_summary, data.objective, data.scope,
+            existing_summary,
+            data.objective,
+            data.scope,
+            generation_profile=data.generation_profile,
+            context_preset=project.context_preset,
         )
     else:
         # Default: generate with domain-aware few-shot prompting
         messages = llm_service.build_agent_tree_prompt(
-            data.objective, data.scope, data.depth, data.breadth,
+            data.objective,
+            data.scope,
+            data.depth,
+            data.breadth,
             template_example=template_data,
+            generation_profile=data.generation_profile,
+            context_preset=project.context_preset,
         )
 
     response = await llm_service.chat_completion(

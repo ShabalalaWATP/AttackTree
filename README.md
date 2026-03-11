@@ -1,111 +1,202 @@
-# OCP - Offensive Cyber Planner
+# OCP
 
-OCP is an offline-first cyber operations planning platform built around attack trees, workspace-based analysis, and optional AI assistance. The current app is login-gated, multi-user aware, and organized around two workspace modes:
+OCP is an offline-first cyber operations planning platform for building attack trees, scenarios, threat models, kill chains, and infrastructure maps inside isolated user workspaces. It supports fully manual workflows, optional AI assistance through OpenAI-compatible providers, local SQLite storage by default, and authenticated multi-user access.
 
-- `Standalone Scan`: an ad hoc workspace for one-off research, exploratory planning, and rapid assessment
-- `Project Scan`: a persistent workspace for a client, product, campaign, or engagement
+## What the App Does
 
-Every major analysis surface now works inside that workspace model: Attack Tree, Brainstorm, Scenarios, Kill Chain, Threat Model, Infra Map, and Dashboard.
+- Builds and edits attack trees with risk scoring, mitigations, detections, references, tags, snapshots, and comments
+- Supports two workspace modes:
+  - `Project Scan` for persistent engagements, targets, products, or clients
+  - `Standalone Scan` for ad hoc research and one-off analysis
+- Provides AI-assisted tools for:
+  - attack-tree generation and expansion
+  - brainstorming
+  - scenario design
+  - infrastructure mapping
+  - kill-chain analysis
+  - threat modeling
+- Includes environment catalogs and starter templates for enterprise, software, industrial, telecoms, energy, transport, and defence-oriented contexts
+- Exports planning data to JSON, Markdown, CSV, and PDF where supported
+- Isolates projects, standalone work, provider configuration, scenarios, and maps per authenticated user
 
-## Current State
+## Architecture
 
-The app is no longer a single-user MVP. The checked-in build currently includes:
+### High-Level Stack
 
-- Login, signup, and session-gated UI
-- Admin/user role model with in-app user management
-- Per-user data isolation for workspaces, scenarios, infra maps, provider settings, and tags
-- Standalone and project scan workflows across the planner
-- Portfolio dashboard when no workspace is open, and workspace-specific analytics when one is open
-- Infra Map as a full planning feature, not a placeholder
-- Software-focused and reverse-engineering-oriented templates and AI prompt profiles
-- Research metadata and vulnerability-card capture directly on attack-tree nodes
+- Frontend: React 18, TypeScript, Vite, Zustand, TanStack Query, Radix UI, Tailwind CSS
+- Backend: FastAPI, Pydantic v2, SQLAlchemy async
+- Database: SQLite by default
+- AI integration: server-side OpenAI-compatible chat completions client
 
-## Major Capabilities
+### Runtime Layout
 
-### Workspace Model
+- The frontend runs as a browser SPA during development on `http://localhost:5173`
+- The backend API runs on `http://localhost:8001` during development
+- In Docker, FastAPI serves the bundled frontend and the app is exposed on `http://localhost:8001`
 
-- Create either a `Standalone Scan` or `Project Scan`
-- Launch the same toolset from either workspace type
-- Keep portfolio-level visibility from the global dashboard
-- Import/export workspaces through JSON, plus Markdown, PDF, and CSV reporting where applicable
+### Backend Responsibilities
 
-### Attack Tree
+- Authentication, authorization, and per-user data isolation
+- CRUD APIs for projects, nodes, scenarios, infra maps, threat models, kill chains, references, tags, and snapshots
+- Risk calculation and export/import logic
+- AI provider management, provider health checks, and server-side request proxying
+- Prompt construction, environment matching, template selection, and staged AI workflows
 
-- Visual attack-tree editor with AND, OR, and SEQUENCE logic
-- Rich node metadata for scoring, mitigations, detections, mappings, comments, tags, and analyst notes
-- Risk roll-up through the tree with inherent and residual scoring
-- Snapshot support and local undo/redo
-- AI branch, mitigation, detection, and mapping suggestions
-- Full AI agent flow to generate a tree from a high-level objective
+### Frontend Responsibilities
 
-### Brainstorm
+- Workspace creation and switching
+- Visual editing for attack trees and supporting artifacts
+- Tool-specific views for planning, simulation, mapping, and modeling
+- Session state, tool navigation, dialogs, reporting actions, and provider management
 
-- Workspace-aware AI brainstorming, not just generic chat
-- Focus modes and context injection from the active workspace
-- Deep-technical output options for software research and vulnerability work
-- Better software research framing for reverse engineering and investigation tasks
+### Repository Layout
 
-### Scenarios
+```text
+backend/
+  app/
+    api/              FastAPI routers
+    models/           SQLAlchemy models
+    schemas/          Pydantic request/response schemas
+    services/         auth, LLM, export, risk, environment catalog logic
+    reference_data/   bundled reference content
+    templates_data/   bundled project templates
+frontend/
+  src/
+    components/       reusable UI building blocks
+    stores/           Zustand app state
+    utils/            API client, presets, helpers
+    views/            main planner screens
+Dockerfile
+docker-compose.yml
+start-dev.bat
+README.md
+```
 
-- Broader scenario coverage for cyber operations planning
-- Standalone planning libraries or project-linked operational scenarios
-- Adversary, access, tempo, stealth, and objective framing
-- Control disablement and detection degradation modeling
-- AI planning briefs and scenario suggestion generation
+## Requirements
 
-### Kill Chain
+- Python 3.12+
+- Node.js 20+
+- npm
 
-- MITRE ATT&CK, Cyber Kill Chain, and Unified-style campaign analysis
-- AI generation and AI mapping from the current workspace context
-- Detection windows, dwell time, break opportunities, coverage notes, and recommendations
-- Hardened against malformed or partial generated payloads
+## Local Setup
 
-### Threat Model
+### Windows
 
-- STRIDE, PASTA, and LINDDUN workflows
-- AI-generated DFDs, threats, summaries, and tree-linking
-- Threat matrix and component-level summaries
-- Hardened normalization for generated/imported threat-model payloads
+1. Clone the repository and open a PowerShell session in the repo root.
+2. Create and activate a virtual environment:
 
-### Infra Map
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-- Works in standalone and project workspaces
-- AI generation and node expansion
-- Tree and mind-map layouts
-- Search, filter, coverage metrics, and node detail editing
-- Better validation and normalization on the backend and frontend
+3. Install backend dependencies:
 
-### Dashboard
+```powershell
+pip install -r backend\requirements.txt
+```
 
-- Portfolio view across all of a user's workspaces
-- Workspace-scoped view when a workspace is open
-- Risk posture, coverage, artifact counts, top risks, recent activity, and workspace context stats
-- Defensive normalization so legacy or incomplete records do not crash the view
+4. Install frontend dependencies:
 
-### Software Research and Vulnerability Analysis
+```powershell
+cd frontend
+npm install
+cd ..
+```
 
-- Bundled templates for software reverse engineering, patch diffing, updater abuse, parser memory corruption, and embedded firmware research
-- Deep-technical AI prompt profiles for software-specific analysis
-- Research fields on nodes for investigation summaries, prompt profile, and research domain
-- Structured vulnerability cards for team findings
-- CVE and investigation context preserved through import/export
+5. Start the app:
 
-### User Management and Auth
+Option A: use the launcher
 
-- Login with username or email
-- Self-signup with name, email, username, and password
-- Admins can:
-  - create users
-  - promote or demote roles
-  - disable users
-  - reset passwords
-  - delete users
-- Each user has isolated provider settings and workspace data
-- Main planner UI stays hidden until authentication succeeds
+```powershell
+.\start-dev.bat
+```
 
-## Bootstrap Accounts
+Option B: run backend and frontend manually
 
-On first startup the app seeds placeholder users for local evaluation. Rotate or delete them before exposing the app beyond a trusted environment.
+```powershell
+python -m uvicorn backend.app.main:app --reload --port 8001
+```
+
+Open a second terminal:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+6. Open `http://localhost:5173`
+
+### Linux
+
+1. Clone the repository and open a shell in the repo root.
+2. Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3. Install backend dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+4. Install frontend dependencies:
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+5. Start the backend:
+
+```bash
+python -m uvicorn backend.app.main:app --reload --port 8001
+```
+
+6. Start the frontend in a second terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+7. Open `http://localhost:5173`
+
+## Docker Setup
+
+Build and run the containerized app:
+
+```bash
+docker compose up --build
+```
+
+The app is then available at `http://localhost:8001`
+
+Docker uses:
+
+- `./data` for the SQLite database
+- `./uploads` for generated artifacts and uploads
+
+## Configuration
+
+Primary environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ATB_DATABASE_URL` | `sqlite+aiosqlite:///./attacktree.db` | Application database |
+| `ATB_SECRET_KEY` | `change-me-in-production-use-a-real-secret` | Secret material for auth and encryption helpers |
+| `ATB_CORS_ORIGINS` | `["http://localhost:5173","http://localhost:3000"]` | Allowed browser origins |
+| `ATB_LOG_LEVEL` | `INFO` | Backend log verbosity |
+
+For Docker, the compose file sets the database path to `sqlite+aiosqlite:///./data/attacktree.db`.
+
+## Authentication
+
+The app is login-gated. The initial database seeds placeholder local accounts for evaluation.
 
 | Role | Username | Password |
 |---|---|---|
@@ -119,156 +210,134 @@ On first startup the app seeds placeholder users for local evaluation. Rotate or
 
 Login also accepts the seeded emails under `@attacktree.local`.
 
-## Architecture
+For real use:
 
-Current high-level stack:
+- rotate or remove the placeholder credentials
+- set a strong `ATB_SECRET_KEY`
+- use a persistent data volume or external database strategy appropriate for the deployment
 
-- Frontend: React 18, TypeScript, Vite 6, Zustand, TanStack Query, Radix UI, Tailwind CSS
-- Backend: FastAPI, Pydantic v2, SQLAlchemy async
-- Database: SQLite by default
-- LLM integration: server-side proxy for OpenAI-compatible APIs
+## AI Provider Setup
 
-Repository scale in the current tree:
+AI features are optional. The app remains usable without a configured provider.
 
-- 18 FastAPI routers
-- 16 SQLAlchemy model files
-- 58 bundled starter templates
+To enable AI:
 
-## Key Features by Area
+1. Sign in
+2. Open provider settings
+3. Add an OpenAI-compatible endpoint
+4. Set the base URL, model, and optional API key
+5. Test the connection
+6. Mark the provider active
 
-### Analyst Workflow
+Provider settings are stored server-side and isolated per user.
 
-- Workspace landing and creation flow
-- Project home with tool launcher cards and saved work
-- Auth-aware top bar and admin dialogs
-- Audit trail and references browser
+## How to Use the App
 
-### AI Workflow
+### 1. Create or Open a Workspace
 
-- Provider configuration per user
-- Server-side provider test flow
-- Tree generation, branch suggestions, scenario analysis, brainstorming, kill-chain generation, threat modeling, and advisor-style outputs
-- Technical-depth controls for more software-focused output
+- Use `Project Scan` when the work belongs to a named target, product, environment, client, or operation
+- Use `Standalone Scan` for exploratory work, reference building, or independent modeling
 
-### Reporting and Data Movement
+Each workspace becomes the shared context for the planning tools.
 
-- Export: JSON, CSV, Markdown, PDF
-- Import: JSON workspace import
-- Risk recalculation endpoint
-- API docs at `/api/docs`
+### 2. Build the Core Attack Tree
 
-## Running Locally
+The attack tree is the central planning surface.
 
-### Prerequisites
+Use it to:
 
-- Python 3.12+
-- Node.js 20+
-- npm
+- define objectives and sub-goals
+- model preconditions, attack steps, assumptions, assets, trust boundaries, weaknesses, mitigations, and detections
+- score likelihood, impact, effort, exploitability, detectability, confidence, and residual risk
+- add evidence, tags, mappings, comments, and analyst notes
+- snapshot the tree over time
 
-### Development
+### 3. Use Supporting Planning Tools
 
-Backend:
+#### Brainstorm
+
+Use Brainstorm to generate hypotheses, attack ideas, analyst questions, pivot directions, and technical deep dives based on the active workspace context.
+
+#### Scenarios
+
+Use Scenarios to define concrete operational situations, assumptions, degraded controls, tempo, access conditions, and AI-assisted planning narratives.
+
+#### Infra Map
+
+Use Infra Map to model the environment as a hierarchical dependency map.
+
+- Generate maps with AI or build them manually
+- Switch between tree and mind-map layouts
+- Search branches and edit node details
+- In mind-map mode, use the mouse wheel to zoom, drag the canvas to pan, and drag nodes to persist custom positions
+
+#### Kill Chain
+
+Use Kill Chain to map campaigns against Cyber Kill Chain, MITRE ATT&CK-oriented, or unified-style phase structures.
+
+- Generate analysis from the workspace
+- resume partial AI runs when needed
+- review campaign summaries, coverage, break opportunities, weakest links, and recommendations
+
+#### Threat Model
+
+Use Threat Model to build DFDs and generate threats with STRIDE, PASTA, or LINDDUN-oriented workflows.
+
+- generate staged DFDs
+- resume incomplete DFD or threat runs
+- inspect summaries, highest-risk areas, attack-surface scoring, and deep-dive analysis
+
+#### References
+
+Use References to browse bundled frameworks and environment catalogs for planning anchors and reusable decomposition guides.
+
+#### Dashboard
+
+Use Dashboard for portfolio-level and workspace-level visibility across risk posture, recent activity, counts, and artifact coverage.
+
+### 4. Export or Import Data
+
+Available flows include:
+
+- JSON export/import for workspace portability
+- Markdown export for narrative sharing
+- CSV export for tabular review
+- PDF export where supported
+
+### 5. Manage Users and Roles
+
+Admins can:
+
+- create users
+- set or reset passwords
+- promote or demote roles
+- disable users
+- delete users
+
+Regular users only see their own data and providers.
+
+## API and Developer Endpoints
+
+- API docs: `http://localhost:8001/api/docs`
+- Health check: `http://localhost:8001/api/health`
+
+## Verification Commands
+
+Backend tests:
 
 ```bash
-cd backend
-pip install -r requirements.txt
-cd ..
-python -m uvicorn backend.app.main:app --reload --port 8001
+python -m pytest backend/tests/test_api.py -q
 ```
 
-Frontend:
+Frontend production build:
 
 ```bash
 cd frontend
-npm install
-npm run dev
+npm run build
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+## Notes for Deployment
 
-The frontend dev server proxies API traffic to the backend on port `8001`.
-
-### Docker
-
-```bash
-docker compose up --build
-```
-
-Open [http://localhost:8001](http://localhost:8001).
-
-The Docker image builds the frontend and serves it from the FastAPI container.
-
-## Configuration
-
-Primary environment variables:
-
-| Variable | Default | Notes |
-|---|---|---|
-| `ATB_DATABASE_URL` | `sqlite+aiosqlite:///./attacktree.db` | Default app database |
-| `ATB_SECRET_KEY` | `change-me-in-production-use-a-real-secret` | Used for encryption and auth-related secrets |
-| `ATB_CORS_ORIGINS` | `["http://localhost:5173","http://localhost:3000"]` | Allowed browser origins |
-| `ATB_LOG_LEVEL` | `INFO` | Backend logging level |
-
-Docker compose overrides the database path to `sqlite+aiosqlite:///./data/attacktree.db`.
-
-## LLM Providers
-
-The app supports OpenAI-compatible chat-completions endpoints, including hosted APIs and local model gateways.
-
-- Provider settings are stored per user
-- API keys are kept server-side and encrypted at rest
-- The app remains usable without configuring an LLM provider
-
-## Current Deployment Notes
-
-- The bundled and tested path is SQLite
-- The app now supports isolated multi-user sessions, but the checked-in deployment is still SQLite-backed
-- If you are planning sustained concurrent VM use for a larger team, treat database hardening and load validation as part of deployment work, not as already-finished platform work
-- Seeded placeholder accounts must be rotated or removed before real use
-
-## Repo Layout
-
-```text
-backend/
-  app/
-    api/          FastAPI routers
-    models/       SQLAlchemy models
-    schemas/      Pydantic schemas
-    services/     Risk, auth, access control, LLM, export logic
-    reference_data/
-    templates_data/
-frontend/
-  src/
-    components/
-    views/
-    stores/
-    utils/
-README.md
-Dockerfile
-docker-compose.yml
-```
-
-## Verification
-
-Useful verification commands:
-
-```bash
-python -m pytest backend/tests
-cd frontend
-npm run lint
-npx tsc --noEmit
-npx vite build
-```
-
-## API Docs
-
-When the backend is running:
-
-- Swagger UI: [http://localhost:8001/api/docs](http://localhost:8001/api/docs)
-- ReDoc: [http://localhost:8001/api/redoc](http://localhost:8001/api/redoc)
-
-## Notes
-
-- This repository is designed for offline-first use and bundles local reference data
-- The frontend is auth-gated: users do not see planner content until they log in
-- The current README reflects the current checked-in application state rather than the earlier single-user MVP design
+- SQLite is the default storage backend and is suitable for local use, demos, labs, and small-team setups
+- For multi-user production use, plan storage, backup, and concurrency strategy explicitly
+- The application stores AI provider settings per user and proxies requests from the backend, so browser clients do not call provider APIs directly

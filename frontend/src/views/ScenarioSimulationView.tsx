@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { PlanningProfile } from '@/types';
 import {
   AlertTriangle,
   BadgeAlert,
@@ -23,6 +24,8 @@ import toast from 'react-hot-toast';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
+import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
+import { formatContextPreset, getContextPresetOption, getEnvironmentContextPresets } from '@/utils/contextPresets';
 
 interface ScenarioData {
   id: string;
@@ -134,6 +137,10 @@ function normalizeImpactSummary(value: unknown): Record<string, any> {
 
 function normalizeScenario(value: any): ScenarioData {
   const scope = value?.scope === 'project' ? 'project' : 'standalone';
+  const targetEnvironment =
+    typeof value?.target_environment === 'string'
+      ? (getContextPresetOption(value.target_environment)?.name || value.target_environment)
+      : '';
   return {
     ...value,
     project_id: typeof value?.project_id === 'string' ? value.project_id : null,
@@ -145,7 +152,7 @@ function normalizeScenario(value: any): ScenarioData {
     scenario_type: typeof value?.scenario_type === 'string' ? value.scenario_type : 'campaign',
     operation_goal: typeof value?.operation_goal === 'string' ? value.operation_goal : '',
     target_profile: typeof value?.target_profile === 'string' ? value.target_profile : '',
-    target_environment: typeof value?.target_environment === 'string' ? value.target_environment : '',
+    target_environment: targetEnvironment,
     execution_tempo: typeof value?.execution_tempo === 'string' ? value.execution_tempo : 'balanced',
     stealth_level: typeof value?.stealth_level === 'string' ? value.stealth_level : 'balanced',
     access_level: typeof value?.access_level === 'string' ? value.access_level : 'external',
@@ -197,6 +204,7 @@ const RESOURCE_LEVELS = ['Low', 'Medium', 'High', 'Unlimited'];
 const TEMPO_OPTIONS = ['deliberate', 'balanced', 'rapid'];
 const STEALTH_OPTIONS = ['covert', 'balanced', 'aggressive'];
 const ACCESS_OPTIONS = ['external', 'partner', 'insider', 'privileged'];
+const ENVIRONMENT_PRESET_OPTIONS = getEnvironmentContextPresets();
 
 const SCENARIO_PRESETS = [
   {
@@ -255,6 +263,7 @@ export function ScenarioSimulationView() {
   const [aiLoading, setAiLoading] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [question, setQuestion] = useState('');
+  const [planningProfile, setPlanningProfile] = useState<PlanningProfile>('planning_first');
   const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedPatchIdRef = useRef<string | null>(null);
   const queuedPatchRef = useRef<Partial<ScenarioData>>({});
@@ -262,6 +271,10 @@ export function ScenarioSimulationView() {
   const selected = useMemo(
     () => scenarios.find((scenario) => scenario.id === selectedId) ?? null,
     [scenarios, selectedId]
+  );
+  const selectedPlanningProfile = useMemo(
+    () => getPlanningProfileOption(planningProfile),
+    [planningProfile],
   );
 
   useEffect(() => {
@@ -397,7 +410,7 @@ export function ScenarioSimulationView() {
       scenario_type: preset?.scenario_type || 'campaign',
       operation_goal: preset?.operation_goal || currentProject?.root_objective || '',
       target_profile: preset?.target_profile || currentProject?.name || '',
-      target_environment: preset?.target_environment || currentProject?.context_preset || '',
+      target_environment: preset?.target_environment || (currentProject?.context_preset ? formatContextPreset(currentProject.context_preset) : ''),
       execution_tempo: preset?.execution_tempo || 'balanced',
       stealth_level: preset?.stealth_level || 'balanced',
       access_level: preset?.access_level || 'external',
@@ -468,7 +481,7 @@ export function ScenarioSimulationView() {
     setAiLoading(true);
     try {
       await flushScenarioPatch(selected.id);
-      const result = await api.aiAnalyzeScenario(selected.id, { question });
+      const result = await api.aiAnalyzeScenario(selected.id, { question, planning_profile: planningProfile });
       syncScenario(normalizeScenario(result));
       toast.success('AI planning brief ready');
     } catch (error: any) {
@@ -485,6 +498,7 @@ export function ScenarioSimulationView() {
         project_id: currentProject?.id,
         focus: selected?.operation_goal || currentProject?.root_objective || '',
         count: 6,
+        planning_profile: planningProfile,
       });
       const suggestions = result.suggestions || [];
       const created = await Promise.all(suggestions.map((suggestion: any) => api.createScenario(suggestion)));
@@ -668,6 +682,20 @@ export function ScenarioSimulationView() {
                     </div>
                   </div>
 
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">AI Planning Mode</div>
+                    <select
+                      value={planningProfile}
+                      onChange={(event) => setPlanningProfile(event.target.value as PlanningProfile)}
+                      className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
+                    >
+                      {PLANNING_PROFILE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <p className="mt-2 text-xs text-muted-foreground leading-relaxed">{selectedPlanningProfile.description}</p>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-2">
                     <MetricCard label="Coverage" value={profile.coverage_score} />
                     <MetricCard label="Complexity" value={profile.complexity_score} />
@@ -721,11 +749,29 @@ export function ScenarioSimulationView() {
                     <div className="md:col-span-2">
                       <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Target Environment</label>
                       <input
+                        list="scenario-environment-presets"
                         value={selected.target_environment}
                         onChange={(event) => patchScenarioText({ target_environment: event.target.value })}
                         placeholder="Environment, estate, terrain, or business context"
                         className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
                       />
+                      <datalist id="scenario-environment-presets">
+                        {ENVIRONMENT_PRESET_OPTIONS.map((preset) => (
+                          <option key={preset.id} value={preset.name} />
+                        ))}
+                      </datalist>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                        {currentProject?.context_preset ? (
+                          <button
+                            type="button"
+                            onClick={() => patchScenario({ target_environment: formatContextPreset(currentProject.context_preset) })}
+                            className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
+                          >
+                            Use workspace preset: {formatContextPreset(currentProject.context_preset)}
+                          </button>
+                        ) : null}
+                        <span>Start with a known environment label, then refine it if the terrain is more specific.</span>
+                      </div>
                     </div>
                   </div>
                 </Panel>

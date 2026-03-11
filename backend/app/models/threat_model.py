@@ -22,6 +22,9 @@ class ThreatModel(Base):
     # AI-generated threats
     threats = Column(JSON, default=list)       # [{id, component_id, category, title, description, severity, mitigation, linked_node_id}]
     ai_summary = Column(Text, default="")
+    dfd_metadata = Column(JSON, default=dict)
+    analysis_metadata = Column(JSON, default=dict)
+    deep_dive_cache = Column(JSON, default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

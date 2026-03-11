@@ -21,10 +21,37 @@ def _strip_thinking(text: str) -> str:
 import httpx
 
 from ..services.crypto import decrypt_value
+from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates_data"
+
+
+def _model_prefers_max_completion_tokens(model: str) -> bool:
+    model_lower = model.lower()
+    return any(tag in model_lower for tag in ("o1", "o3", "o4", "gpt-5"))
+
+
+def _apply_token_budget(payload: dict, max_tokens: int | None, *, use_max_completion_tokens: bool) -> dict:
+    request_payload = dict(payload)
+    request_payload.pop("max_tokens", None)
+    request_payload.pop("max_completion_tokens", None)
+    if max_tokens:
+        if use_max_completion_tokens:
+            request_payload["max_completion_tokens"] = max_tokens
+        else:
+            request_payload["max_tokens"] = max_tokens
+    return request_payload
+
+
+def _should_retry_with_alternate_token_param(response_text: str, *, used_max_completion_tokens: bool) -> bool:
+    lowered = response_text.lower()
+    if "unsupported parameter" not in lowered:
+        return False
+    if used_max_completion_tokens:
+        return "max_completion_tokens" in lowered and "max_tokens" in lowered
+    return "max_tokens" in lowered and "max_completion_tokens" in lowered
 
 
 def _build_ssl_context(config: dict) -> Optional[ssl.SSLContext]:
@@ -108,13 +135,12 @@ async def chat_completion(config: dict, messages: list[dict], temperature: float
         "messages": messages,
         "temperature": temperature,
     }
-    if max_tokens:
-        # Newer OpenAI models (o1, o3, etc.) require max_completion_tokens
-        model_lower = model.lower()
-        if any(tag in model_lower for tag in ("o1", "o3", "o4")):
-            payload["max_completion_tokens"] = max_tokens
-        else:
-            payload["max_tokens"] = max_tokens
+    use_max_completion_tokens = _model_prefers_max_completion_tokens(model)
+    request_payload = _apply_token_budget(
+        payload,
+        max_tokens,
+        use_max_completion_tokens=use_max_completion_tokens,
+    )
 
     start = time.time()
     try:
@@ -122,8 +148,23 @@ async def chat_completion(config: dict, messages: list[dict], temperature: float
             resp = await client.post(
                 f"{base_url}/chat/completions",
                 headers=headers,
-                json=payload,
+                json=request_payload,
             )
+            if resp.status_code == 400 and _should_retry_with_alternate_token_param(
+                resp.text,
+                used_max_completion_tokens=use_max_completion_tokens,
+            ):
+                use_max_completion_tokens = not use_max_completion_tokens
+                request_payload = _apply_token_budget(
+                    payload,
+                    max_tokens,
+                    use_max_completion_tokens=use_max_completion_tokens,
+                )
+                resp = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=request_payload,
+                )
             elapsed = int((time.time() - start) * 1000)
 
             if resp.status_code == 200:
@@ -309,9 +350,10 @@ def build_branch_suggestion_prompt(
     if required_skill:
         context_lines.append(f"Required Skill Level: {required_skill}")
     if project_context:
+        preset_label = _context_preset_label(project_context.get("context_preset", ""))
         context_lines.append(
             "Workspace Context: "
-            f"{project_context.get('name', '')} | preset={project_context.get('context_preset', 'general')} | "
+            f"{project_context.get('name', '')} | preset={preset_label or project_context.get('context_preset', 'general')} | "
             f"objective={project_context.get('root_objective', '')}"
         )
     if effective_profile and effective_profile != "standard":
@@ -529,9 +571,42 @@ Deep technical generation requirements:
 """.strip()
 
 
+_GENERATION_PROFILE_LABELS = {
+    "planning_first": "Planning-first",
+    "balanced": "Balanced",
+    "reference_heavy": "Reference-heavy",
+}
+
+
+def normalize_planning_profile(value: str) -> str:
+    return _normalize_generation_profile(value)
+
+
+def get_planning_profile_label(value: str) -> str:
+    return _GENERATION_PROFILE_LABELS.get(normalize_planning_profile(value), "Balanced")
+
+
+def get_context_preset_label(value: str) -> str:
+    return _context_preset_label(value)
+
+
+def detect_planning_domain(objective: str, scope: str = "", context_preset: str = "") -> str:
+    return _detect_domain(objective, scope, context_preset)
+
+
+def get_domain_decomposition_guidance(domain: str) -> str:
+    return _get_domain_decomposition_guidance(domain)
+
+
+def get_planning_profile_guidance(planning_profile: str, domain: str) -> str:
+    return _get_generation_profile_guidance(normalize_planning_profile(planning_profile), domain)
+
+
 def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int,
                             template_example: dict | None = None,
-                            reference_arch: str = "") -> list[dict]:
+                            reference_arch: str = "",
+                            generation_profile: str = "balanced",
+                            context_preset: str = "") -> list[dict]:
     """Build a prompt for the AI Agent to generate a full attack tree.
 
     Args:
@@ -541,21 +616,34 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
         breadth: Max children per parent
         template_example: Optional template dict to use as few-shot example
         reference_arch: Optional reference architecture description
+        generation_profile: planning_first | balanced | reference_heavy
+        context_preset: Project workspace context preset
     """
     # --- Domain detection for specialised system prompts ---
-    domain = _detect_domain(objective, scope)
+    generation_profile = _normalize_generation_profile(generation_profile)
+    domain = _detect_domain(objective, scope, context_preset)
     system = _get_domain_system_prompt(domain)
+    profile_label = _GENERATION_PROFILE_LABELS.get(generation_profile, "Balanced")
+    deep_guidance_added = False
+    context_label = _context_preset_label(context_preset)
 
     # --- Build user prompt ---
     user_parts = [f"""Generate a complete attack tree for the following objective.
 
 **Attacker Objective:** {objective}
 **Scope / Target Description:** {scope}
-**Tree Depth:** up to {depth} levels deep
+**Generation Profile:** {profile_label}
+{f"**Workspace Context Preset:** {context_label}\n" if context_label else ""}**Tree Depth:** up to {depth} levels deep
 **Breadth:** up to {breadth} child nodes per parent"""]
+    user_parts.append(_get_domain_decomposition_guidance(domain))
+    user_parts.append(_get_generation_profile_guidance(generation_profile, domain))
+    environment_catalog_context = build_environment_catalog_outline_for_context(objective, scope, context_preset)
+    if environment_catalog_context:
+        user_parts.append(environment_catalog_context)
 
     if domain == "software_research":
         user_parts.append(_build_technical_generation_guidance())
+        deep_guidance_added = True
 
     # --- Reference architecture context ---
     if reference_arch:
@@ -572,8 +660,9 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
         metadata_lines = _template_metadata_lines(template_example)
         if metadata_lines:
             user_parts.append("\n**Template metadata:**\n" + "\n".join(metadata_lines))
-        if _template_needs_deep_guidance(template_example):
+        if _template_needs_deep_guidance(template_example) and not deep_guidance_added:
             user_parts.append(_build_technical_generation_guidance())
+            deep_guidance_added = True
         user_parts.append(f"""
 **Example structure** (use this as a reference for quality, depth, and field population — do NOT copy it verbatim, generate original content for the given objective):
 ```json
@@ -582,8 +671,8 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
 
     user_parts.append("""
 Return a single JSON object representing the root node. Every node MUST have ALL of these fields:
-- "title": concise but specific attack step title (include the technique name, e.g. "Kerberoast Service Account Hashes" not just "Credential Theft")
-- "description": detailed 4-8 sentence technical description written from the attacker's perspective. Include: what the attacker does step-by-step, specific tools or scripts used (e.g. Impacket, Rubeus, sqlmap, Burp Suite, Cobalt Strike, Metasploit), the exact vulnerability class or misconfiguration exploited, what the attacker gains on success, real-world CVEs or APT campaigns where applicable, and why this step is effective. Write as if briefing a red team operator.
+- "title": concise but specific node title that reflects the concrete action, trust boundary, actor path, or domain branch (e.g. "Abuse Remote Hands Contractor Access" or "Kerberoast Service Account Hashes")
+- "description": detailed 4-8 sentence technical description written from the attacker's perspective. For higher-level branches, explain the attack surface, why it matters, and the main technical avenues beneath it. For concrete attack steps, include what the attacker does step-by-step, specific tools or scripts used (e.g. Impacket, Rubeus, sqlmap, Burp Suite, Cobalt Strike, Metasploit), the exact vulnerability class or misconfiguration exploited if one exists, what the attacker gains on success, and real-world CVEs or APT campaigns where applicable. Write as if briefing a red team operator.
 - "node_type": one of "goal", "sub_goal", "attack_step", "precondition", "weakness", "pivot_point"
 - "logic_type": "AND" or "OR" (AND = all children required in sequence, OR = any one suffices)
 - "status": one of "draft", "validated", "mitigated", "accepted" — set "validated" for well-known TTPs, "draft" for speculative paths
@@ -602,17 +691,18 @@ Return a single JSON object representing the root node. Every node MUST have ALL
 
 Rules:
 1. The root node must be node_type "goal" with logic_type "OR"
-2. Second-level nodes should be "sub_goal" representing distinct attack paths
-3. Deeper nodes should be "attack_step", "precondition", or "weakness"
+2. Second-level nodes should be "sub_goal" nodes representing distinct attack-surface domains, trust boundaries, actor groups, or operational attack paths
+3. Third-level and deeper nodes should move from conceptual branches into specific attack_step, precondition, weakness, or pivot_point nodes
 4. Use AND logic where multiple steps are ALL required in sequence
 5. Use OR logic where alternative approaches exist
-6. Be specific and realistic — reference real TTPs, tools, vulnerability classes, CVEs, and attack techniques
+6. Be specific and realistic. Use real TTPs, tools, vulnerability classes, CVEs, and attack techniques once a branch is concrete enough to justify them
 7. Cover diverse attack vectors: network, physical, social engineering, supply chain, insider threat where applicable
 8. Leaf nodes should be concrete, actionable attack steps with enough detail for a red team operator to execute
 9. Every single field listed above MUST be populated for every node — no empty strings, no nulls
 10. Platform and attack_surface must be specific to each node's context, not generic
 11. Descriptions must read like a red team playbook — include tools, techniques, evasion methods, and expected outcomes
-12. Reference real CVEs, MITRE ATT&CK technique IDs, or named malware/APT campaigns where relevant
+12. Reference real CVEs, MITRE ATT&CK technique IDs, CAPEC patterns, or named malware/APT campaigns where relevant, but use them as enrichment and evidence rather than the primary structure for the first layers of the tree
+13. Do not use raw CWE, CAPEC, ATT&CK technique IDs, or CVE identifiers as second-level nodes
 
 Return ONLY the JSON object. Do not wrap in markdown code blocks.""")
 
@@ -623,9 +713,13 @@ Return ONLY the JSON object. Do not wrap in markdown code blocks.""")
 
 
 def build_template_expand_prompt(template: dict, objective: str, scope: str,
-                                  depth: int, breadth: int) -> list[dict]:
+                                  depth: int, breadth: int,
+                                  generation_profile: str = "balanced",
+                                  context_preset: str = "") -> list[dict]:
     """Build a prompt that takes a template skeleton and asks the AI to expand and customise it."""
-    domain = _detect_domain(objective, scope)
+    generation_profile = _normalize_generation_profile(generation_profile)
+    domain_context = context_preset or str(template.get("context_preset", ""))
+    domain = _detect_domain(objective, scope, domain_context)
     system = _get_domain_system_prompt(domain)
     metadata_lines = _template_metadata_lines(template)
     deep_guidance = (
@@ -633,13 +727,21 @@ def build_template_expand_prompt(template: dict, objective: str, scope: str,
         if domain == "software_research" or _template_needs_deep_guidance(template)
         else ""
     )
+    profile_label = _GENERATION_PROFILE_LABELS.get(generation_profile, "Balanced")
 
     # Convert template to a simplified tree structure for the prompt
     template_tree = json.dumps(_template_nodes_to_tree(template), indent=2)
     metadata_block = ""
     if metadata_lines:
         metadata_block = "\n**Template metadata:**\n" + "\n".join(metadata_lines)
+    reference_arch = _get_reference_architecture(domain)
+    reference_block = f"\n**Reference Architecture:**\n{reference_arch}" if reference_arch else ""
+    decomposition_guidance = _get_domain_decomposition_guidance(domain)
+    profile_guidance = _get_generation_profile_guidance(generation_profile, domain)
+    environment_catalog_context = build_environment_catalog_outline_for_context(objective, scope, domain_context)
+    environment_catalog_block = f"\n{environment_catalog_context}" if environment_catalog_context else ""
     deep_guidance_block = f"\n{deep_guidance}" if deep_guidance else ""
+    context_label = _context_preset_label(domain_context)
 
     user_prompt = f"""You are given an existing attack tree template as a starting skeleton. Your job is to:
 1. Keep the overall structure but EXPAND each branch with {breadth-1} to {breadth} additional child nodes per parent
@@ -650,9 +752,14 @@ def build_template_expand_prompt(template: dict, objective: str, scope: str,
 
 **Attacker Objective:** {objective}
 **Scope / Target Description:** {scope}
-**Expand to Depth:** {depth} levels
+**Generation Profile:** {profile_label}
+{f"**Workspace Context Preset:** {context_label}\n" if context_label else ""}**Expand to Depth:** {depth} levels
 **Expand to Breadth:** {breadth} children per parent
 {metadata_block}
+{reference_block}
+{decomposition_guidance}
+{profile_guidance}
+{environment_catalog_block}
 {deep_guidance_block}
 
 **Starting Template (skeleton — expand this, do NOT just copy it):**
@@ -665,6 +772,8 @@ Return a single JSON object representing the expanded root node with the same fi
   "threat_category", "required_access", "required_privileges", "required_skill",
   "likelihood" (1-10), "impact" (1-10), "effort" (1-10), "exploitability" (1-10),
   "detectability" (1-10), "children" (array of child nodes, recursively)
+- Preserve a planning-useful top structure. Add missing attack-surface domains, actor paths, trust boundaries, or operational layers if the template is too narrow.
+- Do not replace the first layers with a flat list of CWE, CAPEC, ATT&CK, or CVE references.
 
 Return ONLY the JSON object. No markdown, no commentary."""
 
@@ -674,9 +783,14 @@ Return ONLY the JSON object. No markdown, no commentary."""
     ]
 
 
-def build_gap_analysis_prompt(existing_nodes: list[dict], objective: str, scope: str) -> list[dict]:
+def build_gap_analysis_prompt(existing_nodes: list[dict], objective: str, scope: str,
+                              generation_profile: str = "balanced",
+                              context_preset: str = "") -> list[dict]:
     """Build a prompt to analyse an existing tree and suggest missing attack paths."""
-    domain = _detect_domain(objective, scope)
+    generation_profile = _normalize_generation_profile(generation_profile)
+    domain = _detect_domain(objective, scope, context_preset)
+    profile_label = _GENERATION_PROFILE_LABELS.get(generation_profile, "Balanced")
+    context_label = _context_preset_label(context_preset)
 
     # Summarise existing tree
     node_lines = []
@@ -699,11 +813,18 @@ def build_gap_analysis_prompt(existing_nodes: list[dict], objective: str, scope:
             "You identify missing exploit-development tasks, reversing steps, trust-boundary abuses, and coverage blind spots. "
             "Respond ONLY with valid JSON — no markdown, no commentary."
         )
+    environment_catalog_context = build_environment_catalog_outline_for_context(objective, scope, context_preset)
 
     user_prompt = f"""Analyse the following attack tree and identify MISSING attack paths, vectors, and weaknesses that are NOT yet covered.
 
 **Attacker Objective:** {objective}
 **Scope:** {scope}
+**Generation Profile:** {profile_label}
+{f"**Workspace Context Preset:** {context_label}\n" if context_label else ""}
+
+{_get_domain_decomposition_guidance(domain)}
+{_get_generation_profile_guidance(generation_profile, domain)}
+{environment_catalog_context}
 
 **Existing attack tree nodes:**
 {tree_text}
@@ -716,11 +837,12 @@ Generate ONLY the NEW nodes that should be added to fill gaps. Return a JSON arr
 - "attach_to": title of the existing node this branch should be added under (use the root goal title if it's a new top-level path)
 
 Focus on:
-1. Attack vectors not covered (e.g., if only network attacks exist, add physical/social/supply-chain)
-2. Missing preconditions and weaknesses
-3. Alternative techniques for existing attack steps
-4. Detection evasion paths
-5. Persistence and lateral movement gaps
+1. Missing attack-surface domains, trust boundaries, actor groups, or operational layers
+2. Attack vectors not covered (e.g., if only network attacks exist, add physical/social/supply-chain)
+3. Missing preconditions and weaknesses
+4. Alternative techniques for existing attack steps
+5. Detection evasion, persistence, and lateral movement gaps
+6. Reference-heavy technical branches only after checking whether the conceptual coverage is already complete
 
 Return ONLY the JSON array. No markdown, no commentary."""
 
@@ -967,12 +1089,132 @@ def _repair_truncated_json(raw: str) -> str | None:
     return raw + "".join(closers)
 
 
+_CONTEXT_PRESET_DOMAIN_MAP = {
+    "general": "general",
+    "web_application": "web_app",
+    "api_microservice": "web_app",
+    "android_application": "software_research",
+    "thick_client": "software_research",
+    "software_reverse_engineering": "software_research",
+    "vulnerability_research": "software_research",
+    "embedded_firmware_research": "software_research",
+    "enterprise": "enterprise",
+    "cloud_iam": "cloud",
+    "data_centre": "data_centre",
+    "data_center": "data_centre",
+    "telecoms_base_station": "telecommunications",
+    "telecoms_5g_core": "telecommunications",
+    "satellite_ground_station": "telecommunications",
+    "airport": "ot_ics",
+    "ot_ics": "ot_ics",
+    "hybrid_it_ot": "ot_ics",
+    "electrical_substation": "power_energy",
+    "water_treatment_plant": "ot_ics",
+    "manufacturing_facility": "ot_ics",
+    "defence_manufacturing_plant": "ot_ics",
+    "pharma_manufacturing_plant": "ot_ics",
+    "ev_charging_network": "ot_ics",
+    "military_headquarters": "enterprise",
+    "oil_refinery": "ot_ics",
+    "drilling_rig": "ot_ics",
+    "shipyard_naval_base": "ot_ics",
+    "lng_terminal": "ot_ics",
+    "port_maritime_terminal": "ot_ics",
+    "oil_gas_pipeline": "ot_ics",
+    "power_station": "power_energy",
+    "nuclear_power_plant": "power_energy",
+    "ai_llm": "cloud",
+    "supply_chain": "enterprise",
+}
+
+_CONTEXT_PRESET_LABEL_MAP = {
+    "general": "General",
+    "web_application": "Web Application",
+    "api_microservice": "API / Microservice",
+    "android_application": "Android Application",
+    "thick_client": "Thick Client / Desktop",
+    "software_reverse_engineering": "Software Reverse Engineering",
+    "vulnerability_research": "Vulnerability Research",
+    "embedded_firmware_research": "Embedded Firmware Research",
+    "enterprise": "Enterprise / Active Directory",
+    "cloud_iam": "Cloud / IAM / Kubernetes",
+    "data_centre": "Data Centre / Facilities",
+    "data_center": "Data Centre / Facilities",
+    "telecoms_base_station": "Telecoms Base Station",
+    "telecoms_5g_core": "Telecoms 5G Core",
+    "satellite_ground_station": "Satellite Ground Station",
+    "airport": "Airport",
+    "ot_ics": "OT / ICS",
+    "hybrid_it_ot": "Hybrid IT/OT",
+    "electrical_substation": "Electrical Substation",
+    "water_treatment_plant": "Water Treatment Plant",
+    "manufacturing_facility": "Manufacturing Facility",
+    "defence_manufacturing_plant": "Defence Manufacturing Plant",
+    "pharma_manufacturing_plant": "Pharma Manufacturing Plant",
+    "ev_charging_network": "EV Charging Network",
+    "military_headquarters": "Military Headquarters",
+    "oil_refinery": "Oil Refinery",
+    "drilling_rig": "Drilling Rig",
+    "shipyard_naval_base": "Shipyard / Naval Base",
+    "lng_terminal": "LNG Terminal",
+    "port_maritime_terminal": "Port / Maritime Terminal",
+    "oil_gas_pipeline": "Oil and Gas Pipeline / Compressor Station",
+    "power_station": "Power Station / Generation Plant",
+    "nuclear_power_plant": "Nuclear Power Plant",
+    "ai_llm": "AI / LLM / Agentic System",
+    "supply_chain": "Supply Chain / Third Party",
+}
+
+_CONTEXT_PRESET_TEMPLATE_HINTS = {
+    "data_centre": ("data_centre_disruption", "physical_intrusion_cyber"),
+    "telecoms_5g_core": ("telecom_5g_core",),
+    "satellite_ground_station": ("satellite_ground_station",),
+    "airport": ("port_maritime_terminal", "building_automation_hijack", "data_centre_disruption"),
+    "electrical_substation": ("electrical_substation_ied", "power_grid_relay_manipulation"),
+    "water_treatment_plant": ("water_treatment_poisoning", "sewage_treatment_scada", "water_dam_scada"),
+    "manufacturing_facility": ("pharma_manufacturing", "ot_process_manipulation", "iiot_gateway_compromise"),
+    "defence_manufacturing_plant": ("pharma_manufacturing", "ot_process_manipulation", "iiot_gateway_compromise"),
+    "pharma_manufacturing_plant": ("pharma_manufacturing",),
+    "ev_charging_network": ("ev_charging_network", "grid_derms_attack"),
+    "military_headquarters": ("enterprise_phishing", "ad_privilege_escalation", "business_email_compromise"),
+    "oil_refinery": ("ot_process_manipulation", "lng_terminal_dcs", "gas_turbine_dcs"),
+    "drilling_rig": ("oil_gas_pipeline_scada", "maritime_vessel_ot", "ot_process_manipulation"),
+    "shipyard_naval_base": ("port_maritime_terminal", "maritime_vessel_ot", "physical_intrusion_cyber"),
+    "lng_terminal": ("lng_terminal_dcs", "ot_process_manipulation"),
+    "port_maritime_terminal": ("port_maritime_terminal", "maritime_vessel_ot"),
+    "oil_gas_pipeline": ("oil_gas_pipeline_scada", "ot_process_manipulation"),
+    "power_station": ("gas_turbine_dcs", "ot_process_manipulation"),
+    "nuclear_power_plant": ("nuclear_facility_override", "gas_turbine_dcs"),
+}
+
+
 _DOMAIN_KEYWORDS = {
+    "data_centre": [
+        "data centre", "data center", "colocation", "colo", "server room",
+        "rack", "row", "cold aisle", "hot aisle", "remote hands", "dcim",
+        "crac", "crah", "ups", "pdu", "generator", "ipmi", "bmc", "idrac",
+        "ilo", "out-of-band", "management plane", "esxi", "vcenter",
+        "hypervisor", "top of rack", "leaf switch", "spine switch",
+    ],
+    "telecommunications": [
+        "telecom", "telecommunications", "carrier", "mobile network", "ran",
+        "base station", "cell site", "gnodeb", "enodeb", "5g core", "ims",
+        "amf", "smf", "upf", "udm", "udr", "diameter", "ss7", "roaming",
+        "network slice", "lawful intercept", "oam", "oss", "bss",
+        "satellite", "ground station", "teleport", "tt&c", "uplink", "downlink",
+    ],
     "ot_ics": [
         "scada", "plc", "hmi", "rtu", "dcs", "ics", "ot ", "ot/", "industrial",
         "modbus", "dnp3", "iec 61850", "bacnet", "profinet", "opc-ua", "opc ua",
         "safety instrumented", "sis ", "triconex", "turbine", "compressor",
         "valve", "reactor", "boiler", "furnace", "centrifuge",
+        "manufacturing", "production line", "assembly line", "mes",
+        "batch control", "cleanroom", "lims", "ev charging", "charging station",
+        "ocpp", "lng", "regasification", "cryogenic",
+        "airport", "baggage handling", "aodb", "fids", "airside",
+        "refinery", "crude unit", "hydrocracker", "tank farm", "loading rack",
+        "drilling rig", "bop", "blowout preventer", "well control", "mud logging",
+        "defence manufacturing", "defense manufacturing", "shipyard", "naval base", "dry dock",
     ],
     "power_energy": [
         "grid", "substation", "inverter", "solar farm", "wind farm", "wind turbine",
@@ -996,6 +1238,8 @@ _DOMAIN_KEYWORDS = {
         "active directory", "domain controller", "windows domain", "exchange",
         "office 365", "m365", "ransomware", "phishing", "vpn", "endpoint",
         "edr", "siem", "corporate", "enterprise",
+        "military headquarters", "defence headquarters", "defense headquarters",
+        "command headquarters", "scif", "cross-domain", "coalition network",
     ],
     "web_app": [
         "web app", "api ", "rest api", "graphql", "oauth", "jwt", "xss",
@@ -1013,16 +1257,187 @@ _DOMAIN_KEYWORDS = {
 }
 
 
-def _detect_domain(objective: str, scope: str) -> str:
+def _normalize_identifier(value: str) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace("/", "_").replace(" ", "_")
+
+
+def _context_preset_label(context_preset: str) -> str:
+    normalized = _normalize_identifier(context_preset)
+    if not normalized:
+        return ""
+    if normalized in _CONTEXT_PRESET_LABEL_MAP:
+        return _CONTEXT_PRESET_LABEL_MAP[normalized]
+    if str(context_preset or "").strip():
+        return str(context_preset).strip()
+    return normalized.replace("_", " ").title()
+
+
+def _preferred_template_hints(context_preset: str) -> tuple[str, ...]:
+    normalized = _normalize_identifier(context_preset)
+    if not normalized:
+        return ()
+    return _CONTEXT_PRESET_TEMPLATE_HINTS.get(normalized, ())
+
+
+def _normalize_generation_profile(value: str) -> str:
+    normalized = _normalize_identifier(value)
+    aliases = {
+        "": "balanced",
+        "planning": "planning_first",
+        "planning_first": "planning_first",
+        "planningfirst": "planning_first",
+        "strategy_first": "planning_first",
+        "balanced": "balanced",
+        "default": "balanced",
+        "reference_heavy": "reference_heavy",
+        "referenceheavy": "reference_heavy",
+        "reference_focused": "reference_heavy",
+        "references_first": "reference_heavy",
+    }
+    return aliases.get(normalized, "balanced")
+
+
+def _context_preset_to_domain(context_preset: str) -> str:
+    normalized = _normalize_identifier(context_preset)
+    if not normalized:
+        return ""
+    return _CONTEXT_PRESET_DOMAIN_MAP.get(normalized, normalized)
+
+
+_DOMAIN_DECOMPOSITION_GUIDANCE = {
+    "data_centre": [
+        "People and Trusted Roles (operators, remote hands, vendors, security guards, cleaners, facilities staff)",
+        "Physical Infrastructure and Facility Access (perimeter, loading bays, cages, racks, console access, removable media handling)",
+        "Information Technology and Management Plane (AD, vCenter, storage, backup, BMC/IPMI, DCIM, jump hosts, orchestration)",
+        "Operational Technology / BMS / Power / Cooling (HVAC, chillers, CRAC/CRAH, UPS, PDUs, generators, EPMS, fire suppression)",
+        "Remote Access, Vendors, and Supply Chain (VPN, MSP tooling, vendor tunnels, field-service laptops, firmware and hardware dependencies)",
+        "Detection, Response, and Process Weaknesses (monitoring gaps, maintenance windows, change control, failover, incident response)",
+    ],
+    "telecommunications": [
+        "Carrier Operations, Trusted Vendors, and Inter-Operator Relationships",
+        "RAN, Transport, and Core-Network Boundaries",
+        "Subscriber Identity, Policy, and Sensitive Mediation Services",
+        "Cloud-Native Management, OAM, and Orchestration Planes",
+        "Roaming, Signalling, and External Interconnect Exposure",
+        "Monitoring, Service Assurance, and Emergency Change or Outage Process",
+    ],
+    "software_research": [
+        "Externally Reachable Entry Points and Attacker-Controlled Inputs",
+        "Trust Boundaries and Privileged Transitions",
+        "File, Protocol, Parser, IPC, and Serialization Surfaces",
+        "Updater, Plugin, Extension, and Supply-Chain Trust Paths",
+        "Post-Compromise Objectives such as code execution, persistence, data access, or stealth",
+        "Telemetry, Logging, and Defensive Blind Spots",
+    ],
+    "ot_ics": [
+        "People, Remote Maintenance Roles, and Trusted Vendors",
+        "Enterprise IT to OT Boundary and Shared Services",
+        "Supervisory Control, Engineering Workstations, and Historians",
+        "Controllers, Safety Systems, and Field Networks",
+        "Physical Process Manipulation and Operational Impact",
+        "Detection, Safety, and Recovery Constraints",
+    ],
+    "power_energy": [
+        "Operators, Vendors, and Utility Coordination Paths",
+        "Corporate IT, Control Centres, and Inter-Control-Centre Links",
+        "Substations, Generation, and Distributed Energy Control Systems",
+        "Communications Infrastructure and Remote Access",
+        "Protective Relays, Safety, and Physical Process Effects",
+        "Recovery, Grid Stability, and Monitoring Gaps",
+    ],
+    "iot": [
+        "Users, Installers, Vendors, and Supply Chain",
+        "Cloud Platforms, Device Management, and APIs",
+        "Gateways, Mobile Apps, and Local Management Interfaces",
+        "Wireless, Mesh, and Edge Networking Layers",
+        "Device Firmware, Boot, Update, and Hardware Debug Paths",
+        "Monitoring, Logging, and Operational Blind Spots",
+    ],
+    "cloud": [
+        "Human Roles, Third Parties, and Federated Identities",
+        "Internet Edge, Public Services, and External Exposure",
+        "Identity, Control Plane, and Management Paths",
+        "Workloads, Data Stores, and Network Segmentation",
+        "Supply Chain, CI/CD, and Infrastructure-as-Code",
+        "Logging, Detection, and Response Coverage",
+    ],
+    "enterprise": [
+        "People, Insider, and Social Engineering Paths",
+        "Internet Edge, Remote Access, and Email Surfaces",
+        "Identity, Active Directory, and Privileged Management",
+        "Endpoints, Servers, SaaS, and Lateral Movement Paths",
+        "Third Parties, Vendors, and Supply Chain",
+        "Detection, Backup, and Response Weaknesses",
+    ],
+    "web_app": [
+        "Users, Admins, Support Roles, and Third Parties",
+        "Internet Edge, CDN, WAF, and Reverse Proxy Layers",
+        "Authentication, Session, and Authorization Boundaries",
+        "Application Logic, APIs, Jobs, and Background Workers",
+        "Data Stores, Secrets, Integrations, and Supply Chain",
+        "Observability, Logging, and Abuse Detection Gaps",
+    ],
+    "general": [
+        "People, Privileged Roles, and Trusted Relationships",
+        "External Exposure and Initial Access Surfaces",
+        "Management Planes, Core Platforms, and Internal Boundaries",
+        "Third Parties, Supply Chain, and Dependency Paths",
+        "Physical or Environmental Dependencies where relevant",
+        "Detection, Response, and Process Weaknesses",
+    ],
+}
+
+
+def _get_domain_decomposition_guidance(domain: str) -> str:
+    axes = _DOMAIN_DECOMPOSITION_GUIDANCE.get(domain, _DOMAIN_DECOMPOSITION_GUIDANCE["general"])
+    lines = "\n".join(f"- {axis}" for axis in axes)
+    return (
+        "Attack-surface decomposition guidance:\n"
+        "- Start with meaningful operational domains, trust boundaries, actor groups, or attack-surface layers before drilling into specific weaknesses.\n"
+        "- For this target, likely top-level or second-level branches include:\n"
+        f"{lines}"
+    )
+
+
+def _get_generation_profile_guidance(generation_profile: str, domain: str) -> str:
+    if generation_profile == "planning_first":
+        return (
+            "Generation profile guidance:\n"
+            "- Planning-first means the first two layers must decompose the target into attack-surface domains, trust boundaries, actor groups, or operational layers.\n"
+            "- Do not use raw CWE, CAPEC, ATT&CK technique IDs, or CVE identifiers as second-level nodes.\n"
+            "- Add references, exploit classes, CVEs, and ATT&CK mappings only once a branch is specific enough to justify them.\n"
+            "- Preserve broad planning coverage across people, physical, technical, supply-chain, and defensive-process branches where they matter."
+        )
+    if generation_profile == "reference_heavy":
+        return (
+            "Generation profile guidance:\n"
+            "- Keep the first layer structurally useful and domain-oriented.\n"
+            "- You may align lower layers earlier with ATT&CK tactics, CAPEC patterns, CWE classes, and real CVEs once the branch is anchored to a meaningful attack path.\n"
+            "- Do not let the tree collapse into a flat taxonomy dump. References should support the structure, not replace it.\n"
+            f"- For the {domain.replace('_', ' ')} domain, keep the conceptual branches usable for planning and operator discussion."
+        )
+    return (
+        "Generation profile guidance:\n"
+        "- Balanced mode means the first layer should stay conceptually useful, and the next layers should turn each branch into concrete attack paths.\n"
+        "- References, exploit classes, CVEs, and ATT&CK mappings should appear once a node is specific enough to benefit from them.\n"
+        "- Keep coverage broad across operational, human, physical, technical, and supply-chain angles where applicable."
+    )
+
+
+def _detect_domain(objective: str, scope: str, context_preset: str = "") -> str:
     """Detect the domain from objective and scope text."""
-    text = f"{objective} {scope}".lower()
+    context_label = _context_preset_label(context_preset)
+    text = f"{objective} {scope} {context_label}".lower()
+    preset_domain = _context_preset_to_domain(context_preset)
     scores: dict[str, int] = {}
     for domain, keywords in _DOMAIN_KEYWORDS.items():
         score = sum(1 for kw in keywords if kw in text)
         if score > 0:
             scores[domain] = score
+    if preset_domain and preset_domain != "general":
+        scores[preset_domain] = scores.get(preset_domain, 0) + 4
     if not scores:
-        return "general"
+        return preset_domain or "general"
     return max(scores, key=scores.get)
 
 
@@ -1037,6 +1452,21 @@ def _get_domain_system_prompt(domain: str) -> str:
             "PROFINET, EtherNet/IP). You understand the Purdue Model for ICS network architecture, "
             "IT/OT convergence risks, and real-world ICS attacks (Stuxnet, TRITON/TRISIS, Industroyer, "
             "CRASHOVERRIDE, Pipedream/Incontroller). Reference ICS-specific MITRE ATT&CK techniques. "
+        ),
+        "telecommunications": (
+            "You specialise in telecommunications and carrier-network security across RAN, transport, and core environments. "
+            "You understand 4G/5G architecture, SS7 and Diameter interconnect risks, service-based 5G core functions, "
+            "lawful intercept systems, OSS/BSS and OAM planes, timing dependencies, and roaming-partner trust. "
+            "Reference realistic telecom attack paths involving subscriber data, signalling abuse, cloud-native network functions, "
+            "and operational outage impact. "
+        ),
+        "data_centre": (
+            "You specialise in data centre, colocation, and cyber-physical infrastructure security. "
+            "You understand facility access control, remote hands workflows, racks and console access, "
+            "BMC/IPMI and hypervisor management planes, storage fabrics, backup and orchestration systems, "
+            "and building-management dependencies such as HVAC, chillers, UPS, PDUs, generators, and DCIM. "
+            "You can reason about people, physical infrastructure, management-plane compromise, OT/BMS pivoting, "
+            "vendor access, and operational process failure as one integrated attack surface. "
         ),
         "power_energy": (
             "You specialise in power grid and energy sector cyber security including generation, "
@@ -1083,13 +1513,31 @@ def _get_domain_system_prompt(domain: str) -> str:
         base + expertise +
         "You generate comprehensive, realistic attack trees in structured JSON. "
         "Write every description as a detailed red team briefing — include specific tools, "
-        "exploitation techniques, evasion methods, real CVEs, and step-by-step attacker actions. "
+        "exploitation techniques, trust boundaries, evasion methods, real CVEs where applicable, and step-by-step attacker actions. "
         "Be thorough and technical. A penetration tester should be able to use your output as an operational playbook. "
         "Respond ONLY with valid JSON — no markdown, no commentary."
     )
 
 
 _REFERENCE_ARCHITECTURES = {
+    "data_centre": """Data centre / colocation architecture:
+- People and roles: operators, facilities engineers, remote hands, MSPs, security, cleaning and maintenance contractors
+- Physical layer: perimeter, loading bays, mantraps, cages, racks, crash carts, console access, removable media workflows
+- IT management layer: AD, vCenter/ESXi, BMC/IPMI/iDRAC/iLO, storage and backup platforms, orchestration, DCIM
+- OT / facilities layer: HVAC, chillers, CRAC/CRAH, UPS, PDUs, generators, EPMS, fire suppression, BMS head-end
+- Remote access layer: VPNs, bastions, vendor remote support tunnels, field-service laptops, out-of-band management
+- Key boundaries: internet-to-remote-access edge, corporate IT-to-management plane, IT-to-BMS/OT, physical perimeter-to-rack row
+- Common weaknesses: over-trusted contractors, exposed BMCs, flat management networks, weak vendor remote access, poor BMS segregation, weak failover procedures""",
+
+    "telecommunications": """Telecommunications carrier architecture:
+- Operations and trust: NOC, SOC, roaming partners, lawful-intercept staff, OEMs, managed-service providers
+- RAN and transport: base stations, DU/CU, microwave or fibre backhaul, timing and synchronisation
+- Core layer: AMF, SMF, UPF, NRF, PCF, AUSF, UDM/UDR, IMS and messaging services
+- Management layer: OSS/BSS, EMS/OAM, API gateways, subscriber administration, CI/CD and orchestration
+- Interconnect layer: SS7, Diameter, SIP, roaming exchanges, peering, network exposure functions
+- Key boundaries: roaming-partner-to-core, RAN-to-core, OAM-to-production, subscriber-data-to-operations
+- Common weaknesses: over-trusted interconnects, exposed OAM, weak API auth, flat management access, sensitive LI or subscriber stores""",
+
     "ot_ics": """Purdue Model / IEC 62443 architecture:
 - Level 5: Enterprise Network (ERP, email, internet)
 - Level 4: Business Planning (MES, production scheduling)
@@ -1184,25 +1632,35 @@ def _template_nodes_to_tree(template: dict) -> dict:
     return _template_to_tree_example(template)
 
 
-def find_best_template_for_objective(objective: str, scope: str) -> dict | None:
+def find_best_template_for_objective(objective: str, scope: str, context_preset: str = "") -> dict | None:
     """Find the most relevant template for a given objective by keyword matching."""
     if not TEMPLATES_DIR.exists():
         return None
 
-    text = f"{objective} {scope}".lower()
-    domain = _detect_domain(objective, scope)
+    context_label = _context_preset_label(context_preset).lower()
+    text = f"{objective} {scope} {context_label}".lower()
+    domain = _detect_domain(objective, scope, context_preset)
+    requested_preset = _normalize_identifier(context_preset)
+    hint_order = _preferred_template_hints(context_preset)
+    preferred_template_hints = {
+        template_id: max(1, (len(hint_order) - index) * 4)
+        for index, template_id in enumerate(hint_order)
+    }
     best_score = 0
     best_template = None
 
     for f in TEMPLATES_DIR.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
+            template_id = f.stem
             name = data.get("name", "").lower()
             desc = data.get("description", "").lower()
             obj = data.get("root_objective", "").lower()
-            context_preset = data.get("context_preset", "").lower()
+            template_context_preset = data.get("context_preset", "").lower()
             template_family = data.get("template_family", "").lower()
             technical_profile = data.get("technical_profile", "").lower()
+            template_domain = _context_preset_to_domain(template_context_preset)
+            template_context_label = _context_preset_label(template_context_preset).lower()
             focus_areas = " ".join(str(item) for item in data.get("focus_areas", [])).lower()
             prompt_hints = " ".join(str(item) for item in data.get("prompt_hints", [])).lower()
             node_titles = " ".join(
@@ -1211,7 +1669,7 @@ def find_best_template_for_objective(objective: str, scope: str) -> dict | None:
                 if isinstance(node, dict)
             ).lower()
             template_text = (
-                f"{name} {desc} {obj} {context_preset} {template_family} "
+                f"{name} {desc} {obj} {template_context_preset} {template_context_label} {template_family} "
                 f"{technical_profile} {focus_areas} {prompt_hints} {node_titles}"
             )
 
@@ -1219,8 +1677,11 @@ def find_best_template_for_objective(objective: str, scope: str) -> dict | None:
             words = set(re.findall(r'\b\w{4,}\b', text))
             template_words = set(re.findall(r'\b\w{4,}\b', template_text))
             overlap = len(words & template_words)
+            if requested_preset and template_context_preset == requested_preset:
+                overlap += 3
+            overlap += preferred_template_hints.get(template_id, 0)
             if domain != "general" and (
-                context_preset == domain or template_family == domain or domain in template_text
+                template_context_preset == domain or template_family == domain or template_domain == domain or domain in template_text
             ):
                 overlap += 2
             if domain == "software_research" and technical_profile in {

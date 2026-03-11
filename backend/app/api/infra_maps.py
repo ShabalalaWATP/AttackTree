@@ -5,7 +5,7 @@ import json
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -19,6 +19,7 @@ from ..services.access_control import (
     require_project_access,
 )
 from ..services.auth import get_current_user_id
+from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
 from ..services import llm_service
 
 router = APIRouter(prefix="/infra-maps", tags=["infra_maps"])
@@ -70,11 +71,50 @@ class InfraMapUpdate(BaseModel):
 class AIExpandRequest(BaseModel):
     node_id: str
     user_guidance: str = ""
+    planning_profile: str = "balanced"
 
 
 class AIGenerateRequest(BaseModel):
     root_label: str = ""
     user_guidance: str = ""
+    planning_profile: str = "balanced"
+
+
+def _infra_map_planning_context(planning_profile: str, objective: str, scope: str, context_preset: str = "") -> tuple[str, str, str, str]:
+    normalized_profile = llm_service.normalize_planning_profile(planning_profile)
+    domain = llm_service.detect_planning_domain(objective, scope, context_preset)
+    profile_label = llm_service.get_planning_profile_label(normalized_profile)
+
+    if normalized_profile == "planning_first":
+        artifact_guidance = (
+            "Infrastructure-map planning workflow:\n"
+            "- Use the first two layers to decompose the environment into meaningful operational domains, management planes, actor groups, and trust boundaries before listing specific products.\n"
+            "- Prefer categories that help planners reason about dependencies, choke points, shared services, and blast radius.\n"
+            "- Add concrete technologies deeper in each branch once the structure is useful for discussion."
+        )
+    elif normalized_profile == "reference_heavy":
+        artifact_guidance = (
+            "Infrastructure-map planning workflow:\n"
+            "- Keep the top structure domain-oriented and planning-useful.\n"
+            "- Move into specific technologies, product families, and notable control platforms earlier in each branch when the context is concrete.\n"
+            "- Do not let the map collapse into a flat product inventory with no meaningful operating structure."
+        )
+    else:
+        artifact_guidance = (
+            "Infrastructure-map planning workflow:\n"
+            "- Keep the first layer domain-oriented and useful for planning.\n"
+            "- Use the next layers to turn each branch into concrete systems, platforms, dependencies, and security-relevant infrastructure.\n"
+            "- Maintain coverage across management, identity, networking, storage, monitoring, remote access, and third-party dependencies where they matter."
+        )
+
+    guidance = "\n".join(
+        section for section in [
+            llm_service.get_domain_decomposition_guidance(domain),
+            build_environment_catalog_outline_for_context(objective, scope, context_preset),
+            artifact_guidance,
+        ] if section
+    )
+    return normalized_profile, profile_label, domain, guidance
 
 
 # --- Helpers ---
@@ -95,6 +135,7 @@ def _to_dict(im: InfraMap) -> dict:
         "description": im.description,
         "nodes": im.nodes or [],
         "ai_summary": im.ai_summary or "",
+        "analysis_metadata": im.analysis_metadata or {},
         "created_at": im.created_at.isoformat() if im.created_at else None,
         "updated_at": im.updated_at.isoformat() if im.updated_at else None,
     }
@@ -118,6 +159,20 @@ def _normalize_icon(icon_hint: str | None, category: str) -> str:
     return CATEGORY_DEFAULT_ICONS.get(category, "cog")
 
 
+def _normalize_position(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and abs(float(value)) <= 100000:
+        return int(round(float(value)))
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if abs(parsed) > 100000:
+        return None
+    return int(round(parsed))
+
+
 def _normalize_node(node: dict, *, parent_id: str | None = None, manually_added: Optional[bool] = None) -> dict:
     category = _normalize_category(node.get("category"))
     label = str(node.get("label") or "Unnamed node").strip() or "Unnamed node"
@@ -130,6 +185,8 @@ def _normalize_node(node: dict, *, parent_id: str | None = None, manually_added:
         "icon_hint": _normalize_icon(node.get("icon_hint"), category),
         "children_loaded": bool(node.get("children_loaded", False)),
         "manually_added": bool(node.get("manually_added", False)) if manually_added is None else manually_added,
+        "position_x": _normalize_position(node.get("position_x")),
+        "position_y": _normalize_position(node.get("position_y")),
     }
 
 
@@ -173,6 +230,563 @@ def _dedupe_children(nodes: list[dict], parent_id: str, raw_children: list[dict]
         new_children.append(child)
 
     return new_children
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+
+def _node_structure_signature(nodes: list[dict]) -> str:
+    signature_rows = []
+    for raw_node in _normalize_nodes(nodes or []):
+        signature_rows.append({
+            "id": raw_node["id"],
+            "parent_id": raw_node.get("parent_id"),
+            "label": raw_node.get("label"),
+            "category": raw_node.get("category"),
+            "icon_hint": raw_node.get("icon_hint"),
+            "children_loaded": bool(raw_node.get("children_loaded")),
+            "manually_added": bool(raw_node.get("manually_added")),
+        })
+    signature_rows.sort(key=lambda item: item["id"])
+    return _compact_json(signature_rows)
+
+
+def _provider_to_config(provider: LLMProviderConfig) -> dict[str, Any]:
+    return {
+        "base_url": provider.base_url,
+        "api_key_encrypted": provider.api_key_encrypted,
+        "model": provider.model,
+        "timeout": provider.timeout or 120,
+        "custom_headers": provider.custom_headers or {},
+        "tls_verify": provider.tls_verify,
+        "ca_bundle_path": provider.ca_bundle_path or "",
+        "client_cert_path": provider.client_cert_path or "",
+        "client_key_path": provider.client_key_path or "",
+    }
+
+
+async def _request_json_object_with_retries(
+    config: dict[str, Any],
+    messages: list[dict[str, str]],
+    *,
+    temperature: float,
+    max_tokens: int,
+    timeout_override: int,
+    required_keys: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], str]:
+    last_error = "LLM returned malformed or incomplete JSON"
+    for attempt in range(3):
+        attempt_messages = messages
+        if attempt:
+            attempt_messages = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": (
+                        "The previous response was missing required structure or valid JSON. "
+                        "Retry and return only valid JSON with all requested keys populated."
+                    ),
+                },
+            ]
+        response = await llm_service.chat_completion(
+            config,
+            attempt_messages,
+            temperature=max(0.2, temperature - (attempt * 0.1)),
+            max_tokens=max_tokens,
+            timeout_override=timeout_override,
+        )
+        if response.get("status") != "success":
+            last_error = response.get("message", "LLM request failed")
+            continue
+        parsed = llm_service.parse_json_object_response(response.get("content", ""))
+        if not required_keys or all(key in parsed for key in required_keys):
+            return parsed, ""
+        last_error = "LLM returned malformed or incomplete JSON"
+    return {}, last_error
+
+
+DEFAULT_INFRA_BRANCHES = [
+    {"label": "Identity and Access", "category": "security", "description": "Directory services, authentication paths, privileged access, and remote administration.", "icon_hint": "lock"},
+    {"label": "Compute and Workloads", "category": "hardware", "description": "Server, virtualization, application hosting, and control-plane workloads.", "icon_hint": "server"},
+    {"label": "Network and Segmentation", "category": "networking", "description": "Routing, switching, perimeter controls, segmentation, and remote connectivity.", "icon_hint": "network"},
+    {"label": "Data, Storage, and Recovery", "category": "storage", "description": "Datastores, storage fabric, backup systems, and recovery dependencies.", "icon_hint": "database"},
+    {"label": "Monitoring and Security Tooling", "category": "security", "description": "Logging, telemetry, monitoring, EDR, SIEM, and defensive tooling.", "icon_hint": "shield"},
+    {"label": "Endpoints, Users, and Third Parties", "category": "endpoint", "description": "Operator endpoints, remote access clients, partner integrations, and user-facing systems.", "icon_hint": "monitor"},
+]
+
+
+def _fallback_overview(root_label: str) -> dict[str, Any]:
+    branches = []
+    for index, branch in enumerate(DEFAULT_INFRA_BRANCHES, start=1):
+        branches.append({
+            "temp_id": f"BRANCH_{index}",
+            **branch,
+        })
+    return {
+        "root": {
+            "label": root_label,
+            "category": "infrastructure",
+            "description": f"Operational infrastructure map for {root_label}.",
+        },
+        "branches": branches,
+        "ai_summary": f"{root_label} decomposed into core operational domains for infrastructure and attack-surface planning.",
+    }
+
+
+def _normalize_overview_payload(parsed: dict[str, Any], root_label: str) -> dict[str, Any]:
+    fallback = _fallback_overview(root_label)
+    root_raw = parsed.get("root") if isinstance(parsed.get("root"), dict) else {}
+    root = {
+        "label": _normalize_text(root_raw.get("label")) or root_label,
+        "category": "infrastructure",
+        "description": _normalize_text(root_raw.get("description")) or fallback["root"]["description"],
+    }
+
+    normalized_branches: list[dict[str, str]] = []
+    seen_labels: set[str] = set()
+    for index, raw_branch in enumerate(parsed.get("branches", []), start=1):
+        if not isinstance(raw_branch, dict):
+            continue
+        label = _normalize_text(raw_branch.get("label"))
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen_labels:
+            continue
+        seen_labels.add(key)
+        category = _normalize_category(raw_branch.get("category"))
+        normalized_branches.append({
+            "temp_id": _normalize_text(raw_branch.get("temp_id")) or f"BRANCH_{index}",
+            "label": label[:160],
+            "category": category,
+            "description": _normalize_text(raw_branch.get("description")) or f"{label} systems and dependencies.",
+            "icon_hint": _normalize_icon(raw_branch.get("icon_hint"), category),
+        })
+
+    if len(normalized_branches) < 3:
+        normalized_branches = fallback["branches"]
+
+    return {
+        "root": root,
+        "branches": normalized_branches[:8],
+        "ai_summary": _normalize_text(parsed.get("ai_summary")) or fallback["ai_summary"],
+    }
+
+
+def _normalize_branch_detail_payload(
+    parsed: dict[str, Any],
+    branch: dict[str, str],
+) -> tuple[list[dict[str, str]], str]:
+    nodes: list[dict[str, str]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    seen_temp_ids = {branch["temp_id"]}
+
+    for index, raw_node in enumerate(parsed.get("nodes", []), start=1):
+        if not isinstance(raw_node, dict):
+            continue
+        label = _normalize_text(raw_node.get("label"))
+        if not label:
+            continue
+        temp_id = _normalize_text(raw_node.get("temp_id")) or f"{branch['temp_id']}_NODE_{index}"
+        parent_temp_id = _normalize_text(raw_node.get("parent_temp_id")) or branch["temp_id"]
+        if parent_temp_id not in seen_temp_ids:
+            parent_temp_id = branch["temp_id"]
+        dedupe_key = (parent_temp_id, label.lower())
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        category = _normalize_category(raw_node.get("category"))
+        nodes.append({
+            "temp_id": temp_id,
+            "parent_temp_id": parent_temp_id,
+            "label": label[:160],
+            "category": category,
+            "description": _normalize_text(raw_node.get("description")) or f"{label} within {branch['label']}.",
+            "icon_hint": _normalize_icon(raw_node.get("icon_hint"), category),
+        })
+        seen_temp_ids.add(temp_id)
+
+    branch_summary = _normalize_text(parsed.get("branch_summary") or parsed.get("summary"))
+    return nodes[:18], branch_summary
+
+
+def _normalize_branch_children_payload(parsed: dict[str, Any], branch: dict[str, str]) -> tuple[list[dict[str, str]], str]:
+    nodes: list[dict[str, str]] = []
+    seen_labels: set[str] = set()
+    for index, raw_node in enumerate(parsed.get("children", []), start=1):
+        if not isinstance(raw_node, dict):
+            continue
+        label = _normalize_text(raw_node.get("label"))
+        if not label or label.lower() in seen_labels:
+            continue
+        seen_labels.add(label.lower())
+        category = _normalize_category(raw_node.get("category"))
+        nodes.append({
+            "temp_id": f"{branch['temp_id']}_CHILD_{index}",
+            "parent_temp_id": branch["temp_id"],
+            "label": label[:160],
+            "category": category,
+            "description": _normalize_text(raw_node.get("description")) or f"{label} within {branch['label']}.",
+            "icon_hint": _normalize_icon(raw_node.get("icon_hint"), category),
+        })
+    branch_summary = _normalize_text(parsed.get("summary"))
+    return nodes[:8], branch_summary
+
+
+def _build_overview_messages(
+    *,
+    root_label: str,
+    project_name: str,
+    objective: str,
+    description: str,
+    environment_label: str,
+    workspace_mode: str,
+    planning_label: str,
+    planning_domain: str,
+    planning_guidance: str,
+    operator_guidance: str,
+) -> list[dict[str, str]]:
+    system_msg = (
+        "You are a senior infrastructure architect and security consultant. "
+        "Plan the top-level structure of an infrastructure mind map for security assessment and attack-surface analysis."
+    )
+    user_msg = f"""Create the top-level plan for an infrastructure mind map.
+
+**Root / Top-level:** "{root_label}"
+**Project context:** {project_name} — {objective}
+**Environment type:** {environment_label}
+**Workspace mode:** {workspace_mode}
+**Description:** {description or 'No additional description provided'}
+**Planning Profile:** {planning_label}
+**Detected Planning Domain:** {planning_domain}
+"""
+    if operator_guidance:
+        user_msg += f"\n**Operator guidance:** {operator_guidance}\n"
+    user_msg += planning_guidance + """
+
+Return a JSON object:
+{
+  "root": {
+    "label": "root label",
+    "category": "infrastructure",
+    "description": "brief description of the infrastructure scope"
+  },
+  "branches": [
+    {
+      "temp_id": "BRANCH_1",
+      "label": "top-level branch name",
+      "category": "one of: infrastructure|hardware|software|networking|security|ot_ics|cloud|service|endpoint|storage|physical|personnel|process",
+      "description": "1-2 sentence description",
+      "icon_hint": "one of: server|database|monitor|network|shield|cloud|lock|cpu|hard-drive|radio|building|users|cog|globe|terminal|wifi|camera|printer|phone|router|firewall|switch"
+    }
+  ],
+  "ai_summary": "2-3 sentence overview of the environment and the key security-relevant infrastructure domains"
+}
+
+Requirements:
+- Produce 5-8 top-level branches.
+- Make the branches planning-useful and mutually distinct.
+- Cover identity, compute/workloads, networking, data/recovery, monitoring/security, and user/third-party dependencies where they matter.
+- Return ONLY valid JSON.
+"""
+    return [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
+
+
+def _build_branch_messages(
+    *,
+    root_label: str,
+    branch: dict[str, str],
+    sibling_labels: list[str],
+    overview_summary: str,
+    planning_label: str,
+    planning_domain: str,
+    planning_guidance: str,
+    operator_guidance: str,
+) -> list[dict[str, str]]:
+    system_msg = (
+        "You are a senior infrastructure architect and security consultant. "
+        "Expand one branch of an infrastructure mind map into concrete child systems, dependencies, and management paths."
+    )
+    user_msg = f"""Expand a branch in an infrastructure mind map.
+
+**Root / Top-level:** "{root_label}"
+**Branch:** "{branch['label']}"
+**Branch category:** {branch['category']}
+**Branch description:** {branch['description']}
+**Sibling branches (avoid duplication):** {json.dumps(sibling_labels) if sibling_labels else '[]'}
+**Current map summary:** {overview_summary or 'No summary yet'}
+**Planning Profile:** {planning_label}
+**Detected Planning Domain:** {planning_domain}
+"""
+    if operator_guidance:
+        user_msg += f"\n**Operator guidance:** {operator_guidance}\n"
+    user_msg += planning_guidance + f"""
+
+Return a JSON object:
+{{
+  "nodes": [
+    {{
+      "temp_id": "{branch['temp_id']}_NODE_1",
+      "parent_temp_id": "{branch['temp_id']}",
+      "label": "child node",
+      "category": "one of: infrastructure|hardware|software|networking|security|ot_ics|cloud|service|endpoint|storage|physical|personnel|process",
+      "description": "1-2 sentence description",
+      "icon_hint": "one of: server|database|monitor|network|shield|cloud|lock|cpu|hard-drive|radio|building|users|cog|globe|terminal|wifi|camera|printer|phone|router|firewall|switch"
+    }}
+  ],
+  "branch_summary": "one sentence on what this branch covers"
+}}
+
+Requirements:
+- Generate 6-16 nodes total for this branch.
+- Use 2-3 levels of depth under the branch when it adds planning value.
+- Include management planes, trust boundaries, telemetry, remote access, third-party dependencies, and recovery elements when they belong in this branch.
+- Avoid duplicating the sibling branches.
+- Return ONLY valid JSON.
+"""
+    return [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
+
+
+def _build_branch_fallback_messages(
+    *,
+    root_label: str,
+    branch: dict[str, str],
+    overview_summary: str,
+    planning_guidance: str,
+) -> list[dict[str, str]]:
+    system_msg = (
+        "You are a senior infrastructure architect and security consultant. "
+        "Return a small set of direct children for one infrastructure branch."
+    )
+    user_msg = f"""Return only direct children for this branch.
+
+**Root / Top-level:** "{root_label}"
+**Branch:** "{branch['label']}"
+**Branch description:** {branch['description']}
+**Current map summary:** {overview_summary or 'No summary yet'}
+
+{planning_guidance}
+
+Return a JSON object:
+{{
+  "children": [
+    {{
+      "label": "direct child",
+      "category": "one of: infrastructure|hardware|software|networking|security|ot_ics|cloud|service|endpoint|storage|physical|personnel|process",
+      "description": "1-2 sentence description",
+      "icon_hint": "one of: server|database|monitor|network|shield|cloud|lock|cpu|hard-drive|radio|building|users|cog|globe|terminal|wifi|camera|printer|phone|router|firewall|switch"
+    }}
+  ],
+  "summary": "one sentence on what this branch covers"
+}}
+
+Requirements:
+- Generate 4-8 direct children only.
+- Return ONLY valid JSON.
+"""
+    return [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
+
+
+async def _generate_branch_nodes(
+    config: dict[str, Any],
+    *,
+    root_label: str,
+    branch: dict[str, str],
+    overview_summary: str,
+    sibling_labels: list[str],
+    planning_label: str,
+    planning_domain: str,
+    planning_guidance: str,
+    operator_guidance: str,
+) -> tuple[list[dict[str, str]], str, list[str]]:
+    warnings: list[str] = []
+    messages = _build_branch_messages(
+        root_label=root_label,
+        branch=branch,
+        sibling_labels=sibling_labels,
+        overview_summary=overview_summary,
+        planning_label=planning_label,
+        planning_domain=planning_domain,
+        planning_guidance=planning_guidance,
+        operator_guidance=operator_guidance,
+    )
+    parsed, error_message = await _request_json_object_with_retries(
+        config,
+        messages,
+        temperature=0.4,
+        max_tokens=4096,
+        timeout_override=120,
+        required_keys=("nodes",),
+    )
+    nodes, branch_summary = _normalize_branch_detail_payload(parsed, branch)
+    if nodes:
+        return nodes, branch_summary, warnings
+
+    warnings.append(
+        f"Branch '{branch['label']}' fell back to direct-child generation: {error_message or 'empty response'}"
+    )
+    fallback_messages = _build_branch_fallback_messages(
+        root_label=root_label,
+        branch=branch,
+        overview_summary=overview_summary,
+        planning_guidance=planning_guidance,
+    )
+    fallback_parsed, fallback_error = await _request_json_object_with_retries(
+        config,
+        fallback_messages,
+        temperature=0.3,
+        max_tokens=2048,
+        timeout_override=90,
+        required_keys=("children",),
+    )
+    fallback_nodes, fallback_summary = _normalize_branch_children_payload(fallback_parsed, branch)
+    if not fallback_nodes:
+        warnings.append(
+            f"Branch '{branch['label']}' remained top-level only: {fallback_error or 'empty response'}"
+        )
+    return fallback_nodes, fallback_summary, warnings
+
+
+def _build_generated_nodes(root: dict[str, Any], branches: list[dict[str, str]], branch_nodes: dict[str, list[dict[str, str]]]) -> list[dict]:
+    root_id = str(uuid.uuid4())
+    id_map = {"root": root_id}
+    generated_nodes = [_normalize_node({
+        "id": root_id,
+        "parent_id": None,
+        "label": root["label"],
+        "category": root.get("category", "infrastructure"),
+        "description": root.get("description", ""),
+        "icon_hint": "building",
+        "children_loaded": True,
+        "manually_added": False,
+    })]
+
+    for branch in branches:
+        id_map[branch["temp_id"]] = str(uuid.uuid4())
+    for branch in branches:
+        generated_nodes.append(_normalize_node({
+            "id": id_map[branch["temp_id"]],
+            "parent_id": root_id,
+            "label": branch["label"],
+            "category": branch["category"],
+            "description": branch["description"],
+            "icon_hint": branch["icon_hint"],
+            "children_loaded": bool(branch_nodes.get(branch["temp_id"])),
+            "manually_added": False,
+        }))
+
+    all_branch_nodes = [node for nodes in branch_nodes.values() for node in nodes]
+    for raw_node in all_branch_nodes:
+        id_map[raw_node["temp_id"]] = str(uuid.uuid4())
+
+    child_parent_ids = {raw_node["parent_temp_id"] for raw_node in all_branch_nodes}
+    for raw_node in all_branch_nodes:
+        generated_nodes.append(_normalize_node({
+            "id": id_map[raw_node["temp_id"]],
+            "parent_id": id_map.get(raw_node["parent_temp_id"], root_id),
+            "label": raw_node["label"],
+            "category": raw_node["category"],
+            "description": raw_node["description"],
+            "icon_hint": raw_node["icon_hint"],
+            "children_loaded": raw_node["temp_id"] in child_parent_ids,
+            "manually_added": False,
+        }))
+
+    return _normalize_nodes(generated_nodes)
+
+
+async def _generate_infra_map_payload(
+    config: dict[str, Any],
+    *,
+    root_label: str,
+    project_name: str,
+    objective: str,
+    description: str,
+    environment_label: str,
+    workspace_mode: str,
+    planning_label: str,
+    planning_domain: str,
+    planning_guidance: str,
+    operator_guidance: str,
+) -> tuple[str, str, list[dict], str, dict[str, Any]]:
+    warnings: list[str] = []
+    overview_messages = _build_overview_messages(
+        root_label=root_label,
+        project_name=project_name,
+        objective=objective,
+        description=description,
+        environment_label=environment_label,
+        workspace_mode=workspace_mode,
+        planning_label=planning_label,
+        planning_domain=planning_domain,
+        planning_guidance=planning_guidance,
+        operator_guidance=operator_guidance,
+    )
+    overview_parsed, overview_error = await _request_json_object_with_retries(
+        config,
+        overview_messages,
+        temperature=0.4,
+        max_tokens=4096,
+        timeout_override=120,
+        required_keys=("branches",),
+    )
+    overview = _normalize_overview_payload(overview_parsed, root_label)
+    if not overview_parsed:
+        warnings.append(f"Infra-map overview generation fell back to default branch plan: {overview_error or 'empty response'}")
+
+    branch_nodes: dict[str, list[dict[str, str]]] = {}
+    branch_summaries: list[str] = []
+    completed_branches: list[str] = []
+    failed_branches: list[str] = []
+
+    for branch in overview["branches"]:
+        sibling_labels = [other["label"] for other in overview["branches"] if other["temp_id"] != branch["temp_id"]]
+        generated_nodes, branch_summary, branch_warnings = await _generate_branch_nodes(
+            config,
+            root_label=overview["root"]["label"],
+            branch=branch,
+            overview_summary=overview["ai_summary"],
+            sibling_labels=sibling_labels,
+            planning_label=planning_label,
+            planning_domain=planning_domain,
+            planning_guidance=planning_guidance,
+            operator_guidance=operator_guidance,
+        )
+        if generated_nodes:
+            branch_nodes[branch["temp_id"]] = generated_nodes
+            completed_branches.append(branch["label"])
+        else:
+            failed_branches.append(branch["label"])
+        if branch_summary:
+            branch_summaries.append(f"{branch['label']}: {branch_summary}")
+        warnings.extend(branch_warnings)
+
+    if not completed_branches and not overview["branches"]:
+        raise HTTPException(502, "Unable to generate a usable infra-map structure")
+
+    ai_summary = overview["ai_summary"]
+    if branch_summaries:
+        ai_summary = " ".join([ai_summary, " ".join(branch_summaries[:3])]).strip()
+    if warnings:
+        ai_summary = f"{ai_summary} Coverage note: some branches required fallback generation."
+
+    metadata = {
+        "generation_strategy": "multi_pass",
+        "generation_status": "partial" if failed_branches else "completed",
+        "branch_count": len(overview["branches"]),
+        "completed_branch_count": len(completed_branches),
+        "failed_branch_count": len(failed_branches),
+        "completed_branches": completed_branches,
+        "failed_branches": failed_branches,
+        "generation_warnings": warnings,
+    }
+    nodes = _build_generated_nodes(overview["root"], overview["branches"], branch_nodes)
+    return overview["root"]["label"], overview["root"]["description"], nodes, ai_summary, metadata
 
 
 # --- Endpoints ---
@@ -221,7 +835,12 @@ async def update_infra_map(im_id: str, data: InfraMapUpdate, db: AsyncSession = 
     im = await _get_or_404(im_id, db)
     update_data = data.model_dump(exclude_unset=True)
     if "nodes" in update_data:
-        update_data["nodes"] = _normalize_nodes(update_data["nodes"] or [])
+        existing_signature = _node_structure_signature(im.nodes or [])
+        normalized_nodes = _normalize_nodes(update_data["nodes"] or [])
+        update_data["nodes"] = normalized_nodes
+        if _node_structure_signature(normalized_nodes) != existing_signature:
+            update_data["ai_summary"] = ""
+            update_data["analysis_metadata"] = {}
     for key, value in update_data.items():
         setattr(im, key, value)
     await db.commit()
@@ -262,6 +881,19 @@ async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = D
     path_labels = _build_path(nodes, data.node_id)
     existing_children = [n.get("label", "") for n in nodes if n.get("parent_id") == data.node_id]
     sibling_labels = [n.get("label", "") for n in nodes if n.get("parent_id") == target_node.get("parent_id") and n.get("id") != data.node_id]
+    _, planning_label, planning_domain, planning_guidance = _infra_map_planning_context(
+        data.planning_profile,
+        (project.root_objective if project else "") or target_node.get("label", "") or im.name,
+        "\n".join(
+            part for part in [
+                project.description if project else "",
+                " → ".join(path_labels),
+                target_node.get("description", ""),
+                data.user_guidance,
+            ] if part
+        ),
+        getattr(project, "context_preset", "") if project else "",
+    )
 
     system_msg = (
         "You are a senior infrastructure architect and security consultant. "
@@ -273,7 +905,9 @@ async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = D
 
 **Workspace mode:** {_workspace_mode(project)}
 **Project context:** {project.name if project else 'Standalone infra map'} — {project.root_objective if project else 'Independent infrastructure planning'}
-**Environment preset:** {project.context_preset if project else 'infer from node path and operator guidance'}
+**Environment preset:** {llm_service.get_context_preset_label(project.context_preset) if project else 'infer from node path and operator guidance'}
+**Planning Profile:** {planning_label}
+**Detected Planning Domain:** {planning_domain}
 **Map name:** {im.name}
 **Map summary:** {im.ai_summary or 'No summary yet'}
 **Node path (root → current):** {' → '.join(path_labels)}
@@ -281,6 +915,8 @@ async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = D
 **Category:** {target_node.get('category', 'general')}
 **Sibling nodes near this branch (avoid duplication):** {json.dumps(sibling_labels) if sibling_labels else 'None'}
 **Existing children (don't duplicate):** {json.dumps(existing_children) if existing_children else 'None yet'}
+
+{planning_guidance}
 """
     if data.user_guidance:
         user_msg += f"\n**Operator guidance:** {data.user_guidance}\n"
@@ -314,33 +950,22 @@ Return a JSON object:
 Return ONLY valid JSON, no markdown fences.
 """
 
-    config = {
-        "base_url": provider.base_url,
-        "api_key_encrypted": provider.api_key_encrypted,
-        "model": provider.model,
-        "timeout": provider.timeout or 120,
-        "custom_headers": provider.custom_headers or {},
-        "tls_verify": provider.tls_verify,
-        "ca_bundle_path": provider.ca_bundle_path or "",
-        "client_cert_path": provider.client_cert_path or "",
-        "client_key_path": provider.client_key_path or "",
-    }
-
-    result = await llm_service.chat_completion(
+    config = _provider_to_config(provider)
+    parsed, error_message = await _request_json_object_with_retries(
         config,
         [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-        temperature=0.5,
+        temperature=0.45,
         max_tokens=4000,
         timeout_override=120,
+        required_keys=("children",),
     )
-
-    if result.get("status") != "success":
-        raise HTTPException(502, f"LLM error: {result.get('message', 'Unknown error')}")
-
-    parsed = llm_service.parse_json_object_response(result["content"])
+    if not parsed:
+        raise HTTPException(502, f"Unable to expand infra-map node: {error_message or 'empty response'}")
     children_raw = parsed.get("children", [])
 
     new_nodes = _dedupe_children(nodes, data.node_id, children_raw)
+    if not new_nodes and not existing_children:
+        raise HTTPException(502, "Infra-map expansion returned no usable child nodes")
 
     # Merge into the map
     updated_nodes = list(nodes)
@@ -354,6 +979,12 @@ Return ONLY valid JSON, no markdown fences.
 
     im.nodes = updated_nodes
     im.ai_summary = parsed.get("summary", im.ai_summary)
+    im.analysis_metadata = {
+        **(im.analysis_metadata or {}),
+        "last_generation_strategy": "branch_expand",
+        "last_generation_status": "completed",
+        "last_generation_warnings": [] if new_nodes else ["Expansion produced no new nodes after deduplication."],
+    }
     await db.commit()
     await db.refresh(im)
 
@@ -370,139 +1001,36 @@ async def ai_generate_infra_map(project_id: str, data: AIGenerateRequest, db: As
     project = await _get_project(project_id, db)
 
     root_label = data.root_label.strip() or project.name or "Infrastructure"
-
-    system_msg = (
-        "You are a senior infrastructure architect and security consultant. "
-        "You are building a hierarchical infrastructure mind-map for security assessment and attack surface analysis. "
-        "The map should cover all major asset categories relevant to the target environment."
+    _, planning_label, planning_domain, planning_guidance = _infra_map_planning_context(
+        data.planning_profile,
+        project.root_objective or root_label,
+        "\n".join(part for part in [project.description or "", root_label, data.user_guidance] if part),
+        getattr(project, "context_preset", ""),
     )
 
-    user_msg = f"""Generate a comprehensive infrastructure mind-map for the following target:
-
-**Root / Top-level:** "{root_label}"
-**Project context:** {project.name} — {project.root_objective or 'No objective specified'}
-**Environment type:** {project.context_preset or 'general'}
-**Workspace mode:** {_workspace_mode(project)}
-**Project description:** {project.description or 'No additional description provided'}
-"""
-    if data.user_guidance:
-        user_msg += f"\n**Operator guidance:** {data.user_guidance}\n"
-
-    user_msg += """
-Generate a **3-4 level deep** infrastructure map with:
-- **Level 1 (5-8 items):** Major categories (e.g. Hardware, Software, Networking, Cloud, OT/ICS, Physical Security, Identity, Monitoring)
-- **Level 2 (3-6 per L1):** Sub-categories within each
-- **Level 3 (2-5 per L2):** Specific systems, technologies, or components
-- **Level 4 (optional on crown-jewel branches):** Important subsystems, dependencies, management planes, or trust-boundary components
-
-Tailor the categories to the context — a data centre has different infrastructure than a web application or OT environment.
-The map must be useful for cyber operations planning, so explicitly cover:
-- compute and workload hosting
-- identity and privileged access paths
-- networking and segmentation
-- data stores, backups, and recovery
-- management/administration planes
-- monitoring, logging, and security tooling
-- remote access and third-party/supply-chain dependencies
-- trust boundaries, choke points, and high-value systems
-
-Avoid vague filler nodes. Prefer specific technologies, protocols, device classes, software roles, and operationally relevant assets.
-
-Return a JSON object:
-{
-  "root": {
-    "label": "root label",
-    "category": "infrastructure",
-    "description": "brief description of the infrastructure scope"
-  },
-  "nodes": [
-    {
-      "temp_id": "L1_1",
-      "parent_temp_id": "root",
-      "label": "short name",
-      "category": "one of: infrastructure|hardware|software|networking|security|ot_ics|cloud|service|endpoint|storage|physical|personnel|process",
-      "description": "1-2 sentence description",
-      "icon_hint": "one of: server|database|monitor|network|shield|cloud|lock|cpu|hard-drive|radio|building|users|cog|globe|terminal|wifi|camera|printer|phone|router|firewall|switch"
-    }
-  ],
-  "ai_summary": "2-3 sentence overview of the infrastructure and key security considerations"
-}
-
-Use temp_id like L1_1, L1_2, L2_1_1, etc. Set parent_temp_id to "root" for level-1 items.
-Return ONLY valid JSON, no markdown fences.
-"""
-
-    config = {
-        "base_url": provider.base_url,
-        "api_key_encrypted": provider.api_key_encrypted,
-        "model": provider.model,
-        "timeout": provider.timeout or 120,
-        "custom_headers": provider.custom_headers or {},
-        "tls_verify": provider.tls_verify,
-        "ca_bundle_path": provider.ca_bundle_path or "",
-        "client_cert_path": provider.client_cert_path or "",
-        "client_key_path": provider.client_key_path or "",
-    }
-
-    result = await llm_service.chat_completion(
+    config = _provider_to_config(provider)
+    map_name, map_description, map_nodes, ai_summary, analysis_metadata = await _generate_infra_map_payload(
         config,
-        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-        temperature=0.5,
-        max_tokens=8000,
-        timeout_override=180,
+        root_label=root_label,
+        project_name=project.name,
+        objective=project.root_objective or "No objective specified",
+        description=project.description or "",
+        environment_label=llm_service.get_context_preset_label(project.context_preset) or "General",
+        workspace_mode=_workspace_mode(project),
+        planning_label=planning_label,
+        planning_domain=planning_domain,
+        planning_guidance=planning_guidance,
+        operator_guidance=data.user_guidance,
     )
-
-    if result.get("status") != "success":
-        raise HTTPException(502, f"LLM error: {result.get('message', 'Unknown error')}")
-
-    parsed = llm_service.parse_json_object_response(result["content"])
-
-    root_data = parsed.get("root", {})
-    root_id = str(uuid.uuid4())
-    map_nodes = [_normalize_node({
-        "id": root_id,
-        "parent_id": None,
-        "label": root_data.get("label", root_label),
-        "category": root_data.get("category", "infrastructure"),
-        "description": root_data.get("description", ""),
-        "icon_hint": "building",
-        "children_loaded": True,
-        "manually_added": False,
-    })]
-
-    # Map temp IDs to real UUIDs
-    id_map = {"root": root_id}
-    raw_nodes = parsed.get("nodes", [])
-
-    for rn in raw_nodes:
-        real_id = str(uuid.uuid4())
-        temp_id = rn.get("temp_id", "")
-        id_map[temp_id] = real_id
-
-    for rn in raw_nodes:
-        temp_id = rn.get("temp_id", "")
-        parent_temp_id = rn.get("parent_temp_id", "root")
-        map_nodes.append(_normalize_node({
-            "id": id_map.get(temp_id, str(uuid.uuid4())),
-            "parent_id": id_map.get(parent_temp_id, root_id),
-            "label": rn.get("label", "Unnamed node"),
-            "category": rn.get("category", "general"),
-            "description": rn.get("description", ""),
-            "icon_hint": rn.get("icon_hint"),
-            "children_loaded": _has_children(temp_id, raw_nodes),
-            "manually_added": False,
-        }))
-
-    # Mark L2 nodes that have L3 children as children_loaded
-    map_nodes = _normalize_nodes(map_nodes)
 
     im = InfraMap(
         user_id=get_current_user_id(),
         project_id=project_id,
-        name=root_data.get("label", root_label),
-        description=root_data.get("description", ""),
+        name=map_name,
+        description=map_description,
         nodes=map_nodes,
-        ai_summary=parsed.get("ai_summary", ""),
+        ai_summary=ai_summary,
+        analysis_metadata=analysis_metadata,
     )
     db.add(im)
     await db.commit()
@@ -519,132 +1047,36 @@ async def ai_generate_standalone_infra_map(data: AIGenerateRequest, db: AsyncSes
         raise HTTPException(400, "No active LLM provider configured")
 
     root_label = data.root_label.strip() or "Infrastructure"
-
-    system_msg = (
-        "You are a senior infrastructure architect and security consultant. "
-        "You are building a hierarchical infrastructure mind-map for security assessment and attack surface analysis. "
-        "The map should cover all major asset categories relevant to the target environment."
+    _, planning_label, planning_domain, planning_guidance = _infra_map_planning_context(
+        data.planning_profile,
+        root_label,
+        "\n".join(part for part in [root_label, data.user_guidance] if part),
+        "",
     )
 
-    user_msg = f"""Generate a comprehensive infrastructure mind-map for the following target:
-
-**Root / Top-level:** "{root_label}"
-"""
-    if data.user_guidance:
-        user_msg += f"\n**Operator guidance:** {data.user_guidance}\n"
-
-    user_msg += """
-Generate a **3-4 level deep** infrastructure map with:
-- **Level 1 (5-8 items):** Major categories (e.g. Hardware, Software, Networking, Cloud, OT/ICS, Physical Security, Identity, Monitoring)
-- **Level 2 (3-6 per L1):** Sub-categories within each
-- **Level 3 (2-5 per L2):** Specific systems, technologies, or components
-- **Level 4 (optional on high-value branches):** Important subsystems, dependencies, management or control-plane components
-
-Infer the environment type from the root concept and operator guidance. The map must be useful for cyber operations planning, so explicitly cover:
-- compute and workload hosting
-- identity and access paths
-- networking and trust boundaries
-- data stores and backups
-- management/administration systems
-- monitoring, logging, and security controls
-- remote access, user endpoints, and third-party dependencies
-- crown-jewel systems and choke points
-
-Avoid vague filler nodes. Prefer concrete technologies, systems, and operationally relevant infrastructure.
-
-Return a JSON object:
-{
-  "root": {
-    "label": "root label",
-    "category": "infrastructure",
-    "description": "brief description of the infrastructure scope"
-  },
-  "nodes": [
-    {
-      "temp_id": "L1_1",
-      "parent_temp_id": "root",
-      "label": "short name",
-      "category": "one of: infrastructure|hardware|software|networking|security|ot_ics|cloud|service|endpoint|storage|physical|personnel|process",
-      "description": "1-2 sentence description",
-      "icon_hint": "one of: server|database|monitor|network|shield|cloud|lock|cpu|hard-drive|radio|building|users|cog|globe|terminal|wifi|camera|printer|phone|router|firewall|switch"
-    }
-  ],
-  "ai_summary": "2-3 sentence overview of the infrastructure and key security considerations"
-}
-
-Use temp_id like L1_1, L1_2, L2_1_1, etc. Set parent_temp_id to "root" for level-1 items.
-Return ONLY valid JSON, no markdown fences.
-"""
-
-    config = {
-        "base_url": provider.base_url,
-        "api_key_encrypted": provider.api_key_encrypted,
-        "model": provider.model,
-        "timeout": provider.timeout or 120,
-        "custom_headers": provider.custom_headers or {},
-        "tls_verify": provider.tls_verify,
-        "ca_bundle_path": provider.ca_bundle_path or "",
-        "client_cert_path": provider.client_cert_path or "",
-        "client_key_path": provider.client_key_path or "",
-    }
-
-    result = await llm_service.chat_completion(
+    config = _provider_to_config(provider)
+    map_name, map_description, map_nodes, ai_summary, analysis_metadata = await _generate_infra_map_payload(
         config,
-        [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-        temperature=0.5,
-        max_tokens=8000,
-        timeout_override=180,
+        root_label=root_label,
+        project_name="Standalone infra map",
+        objective=root_label,
+        description="Independent infrastructure planning",
+        environment_label="General",
+        workspace_mode="standalone",
+        planning_label=planning_label,
+        planning_domain=planning_domain,
+        planning_guidance=planning_guidance,
+        operator_guidance=data.user_guidance,
     )
-
-    if result.get("status") != "success":
-        raise HTTPException(502, f"LLM error: {result.get('message', 'Unknown error')}")
-
-    parsed = llm_service.parse_json_object_response(result["content"])
-
-    root_data = parsed.get("root", {})
-    root_id = str(uuid.uuid4())
-    map_nodes = [_normalize_node({
-        "id": root_id,
-        "parent_id": None,
-        "label": root_data.get("label", root_label),
-        "category": root_data.get("category", "infrastructure"),
-        "description": root_data.get("description", ""),
-        "icon_hint": "building",
-        "children_loaded": True,
-        "manually_added": False,
-    })]
-
-    id_map = {"root": root_id}
-    raw_nodes = parsed.get("nodes", [])
-
-    for rn in raw_nodes:
-        real_id = str(uuid.uuid4())
-        temp_id = rn.get("temp_id", "")
-        id_map[temp_id] = real_id
-
-    for rn in raw_nodes:
-        temp_id = rn.get("temp_id", "")
-        parent_temp_id = rn.get("parent_temp_id", "root")
-        map_nodes.append(_normalize_node({
-            "id": id_map.get(temp_id, str(uuid.uuid4())),
-            "parent_id": id_map.get(parent_temp_id, root_id),
-            "label": rn.get("label", "Unnamed node"),
-            "category": rn.get("category", "general"),
-            "description": rn.get("description", ""),
-            "icon_hint": rn.get("icon_hint"),
-            "children_loaded": _has_children(temp_id, raw_nodes),
-            "manually_added": False,
-        }))
-
-    map_nodes = _normalize_nodes(map_nodes)
 
     im = InfraMap(
         user_id=get_current_user_id(),
         project_id=None,
-        name=root_data.get("label", root_label),
-        description=root_data.get("description", ""),
+        name=map_name,
+        description=map_description,
         nodes=map_nodes,
-        ai_summary=parsed.get("ai_summary", ""),
+        ai_summary=ai_summary,
+        analysis_metadata=analysis_metadata,
     )
     db.add(im)
     await db.commit()

@@ -8,6 +8,10 @@ from ..schemas.reference_mapping import ReferenceMappingCreate, ReferenceMapping
 from ..services.access_control import require_node_access
 from ..services.auth import get_current_user_id
 from ..services.audit import log_event
+from ..services.environment_catalog_service import (
+    get_environment_catalog,
+    list_environment_catalog_summaries,
+)
 
 router = APIRouter(prefix="/references", tags=["references"])
 
@@ -136,3 +140,22 @@ async def browse_reference_data(framework: str, q: str = "", filter: str = ""):
         "filter_field": filter_field,
         "filter_options": filter_options,
     }
+
+
+@router.get("/environment-catalogs")
+async def list_environment_catalogs():
+    """List bundled environment catalogs for planning-first references."""
+    catalogs = list_environment_catalog_summaries()
+    return {
+        "total": len(catalogs),
+        "catalogs": catalogs,
+    }
+
+
+@router.get("/environment-catalogs/{catalog_id}")
+async def get_environment_catalog_detail(catalog_id: str):
+    """Return one bundled environment catalog with its hierarchical nodes."""
+    catalog = get_environment_catalog(catalog_id)
+    if not catalog:
+        raise HTTPException(404, "Environment catalog not found")
+    return catalog

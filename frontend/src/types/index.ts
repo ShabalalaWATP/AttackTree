@@ -243,6 +243,30 @@ export interface LLMSuggestResponseData {
   raw_response: string;
 }
 
+export type LLMAgentMode = 'generate' | 'from_template' | 'expand';
+
+export type PlanningProfile = 'planning_first' | 'balanced' | 'reference_heavy';
+
+export type LLMAgentGenerationProfile = PlanningProfile;
+
+export interface LLMAgentRequestData {
+  project_id: string;
+  objective: string;
+  scope?: string;
+  depth: number;
+  breadth: number;
+  mode: LLMAgentMode;
+  template_id?: string;
+  generation_profile?: LLMAgentGenerationProfile;
+}
+
+export interface LLMAgentResponseData {
+  nodes_created: number;
+  model_used: string;
+  elapsed_ms: number;
+  passes_completed?: number;
+}
+
 export interface ReferenceItem {
   id: string;
   name: string;
@@ -250,6 +274,42 @@ export interface ReferenceItem {
   tactic?: string;
   severity?: string;
   category?: string;
+}
+
+export interface EnvironmentCatalogNode {
+  id: string;
+  parent_id: string | null;
+  label: string;
+  category: string;
+  description: string;
+  attack_surfaces?: string[];
+  telemetry?: string[];
+  management_interfaces?: string[];
+  dependencies?: string[];
+  common_protocols?: string[];
+  example_technologies?: string[];
+}
+
+export interface EnvironmentCatalogSummary {
+  id: string;
+  name: string;
+  sector: string;
+  description: string;
+  context_presets: string[];
+  node_count: number;
+  top_level_count: number;
+  categories: string[];
+}
+
+export interface EnvironmentCatalogData extends EnvironmentCatalogSummary {
+  nodes: EnvironmentCatalogNode[];
+}
+
+export interface ContextPresetOption {
+  id: string;
+  name: string;
+  category: string;
+  isEnvironment?: boolean;
 }
 
 // Node type display configuration
@@ -270,20 +330,39 @@ export const NODE_TYPE_CONFIG: Record<NodeType, { label: string; color: string; 
   note: { label: 'Note', color: '#9ca3af', icon: '📝' },
 };
 
-export const CONTEXT_PRESETS = [
-  { id: 'general', name: 'General' },
-  { id: 'web_application', name: 'Web Application' },
-  { id: 'api_microservice', name: 'API / Microservice' },
-  { id: 'android_application', name: 'Android Application' },
-  { id: 'thick_client', name: 'Thick Client / Desktop' },
-  { id: 'software_reverse_engineering', name: 'Software Reverse Engineering' },
-  { id: 'vulnerability_research', name: 'Vulnerability Research' },
-  { id: 'embedded_firmware_research', name: 'Embedded Firmware Research' },
-  { id: 'enterprise', name: 'Enterprise / Active Directory' },
-  { id: 'cloud_iam', name: 'Cloud / IAM / Kubernetes' },
-  { id: 'data_centre', name: 'Data Centre / Facilities' },
-  { id: 'ot_ics', name: 'OT / ICS' },
-  { id: 'hybrid_it_ot', name: 'Hybrid IT/OT' },
-  { id: 'ai_llm', name: 'AI / LLM / Agentic System' },
-  { id: 'supply_chain', name: 'Supply Chain / Third Party' },
+export const CONTEXT_PRESETS: ContextPresetOption[] = [
+  { id: 'general', name: 'General', category: 'General' },
+  { id: 'web_application', name: 'Web Application', category: 'Applications & APIs' },
+  { id: 'api_microservice', name: 'API / Microservice', category: 'Applications & APIs' },
+  { id: 'android_application', name: 'Android Application', category: 'Applications & APIs' },
+  { id: 'thick_client', name: 'Thick Client / Desktop', category: 'Applications & APIs' },
+  { id: 'ai_llm', name: 'AI / LLM / Agentic System', category: 'Applications & APIs' },
+  { id: 'software_reverse_engineering', name: 'Software Reverse Engineering', category: 'Software Research' },
+  { id: 'vulnerability_research', name: 'Vulnerability Research', category: 'Software Research' },
+  { id: 'embedded_firmware_research', name: 'Embedded Firmware Research', category: 'Software Research' },
+  { id: 'enterprise', name: 'Enterprise / Active Directory', category: 'Enterprise & Cloud' },
+  { id: 'cloud_iam', name: 'Cloud / IAM / Kubernetes', category: 'Enterprise & Cloud' },
+  { id: 'supply_chain', name: 'Supply Chain / Third Party', category: 'Enterprise & Cloud' },
+  { id: 'data_centre', name: 'Data Centre / Facilities', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'ot_ics', name: 'OT / ICS', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'hybrid_it_ot', name: 'Hybrid IT/OT', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'electrical_substation', name: 'Electrical Substation', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'water_treatment_plant', name: 'Water Treatment Plant', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'ev_charging_network', name: 'EV Charging Network', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'oil_refinery', name: 'Oil Refinery', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'drilling_rig', name: 'Drilling Rig', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'lng_terminal', name: 'LNG Terminal', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'oil_gas_pipeline', name: 'Oil and Gas Pipeline / Compressor Station', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'power_station', name: 'Power Station / Generation Plant', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'nuclear_power_plant', name: 'Nuclear Power Plant', category: 'Facilities, Energy & Utilities', isEnvironment: true },
+  { id: 'telecoms_base_station', name: 'Telecoms Base Station', category: 'Telecoms, Space & Transport', isEnvironment: true },
+  { id: 'telecoms_5g_core', name: 'Telecoms 5G Core', category: 'Telecoms, Space & Transport', isEnvironment: true },
+  { id: 'satellite_ground_station', name: 'Satellite Ground Station', category: 'Telecoms, Space & Transport', isEnvironment: true },
+  { id: 'airport', name: 'Airport', category: 'Telecoms, Space & Transport', isEnvironment: true },
+  { id: 'port_maritime_terminal', name: 'Port / Maritime Terminal', category: 'Telecoms, Space & Transport', isEnvironment: true },
+  { id: 'manufacturing_facility', name: 'Manufacturing Facility', category: 'Manufacturing & Industrial', isEnvironment: true },
+  { id: 'pharma_manufacturing_plant', name: 'Pharma Manufacturing Plant', category: 'Manufacturing & Industrial', isEnvironment: true },
+  { id: 'defence_manufacturing_plant', name: 'Defence Manufacturing Plant', category: 'Defence', isEnvironment: true },
+  { id: 'military_headquarters', name: 'Military Headquarters', category: 'Defence', isEnvironment: true },
+  { id: 'shipyard_naval_base', name: 'Shipyard / Naval Base', category: 'Defence', isEnvironment: true },
 ];

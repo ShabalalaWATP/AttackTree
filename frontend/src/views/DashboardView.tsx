@@ -3,6 +3,7 @@ import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { NODE_TYPE_CONFIG, type AttackNodeData, type NodeType, type ProjectData } from '@/types';
 import { cn } from '@/utils/cn';
+import { formatContextPreset } from '@/utils/contextPresets';
 import {
   Activity, AlertTriangle, BarChart3, Clock, Crosshair, Eye, FlaskConical,
   FolderOpen, Layers, Network, RefreshCw, Route, Shield, ShieldCheck, Target, TrendingUp,
@@ -110,7 +111,7 @@ function safeTimestamp(iso: string | undefined): number {
 }
 
 function formatContext(context: string) {
-  return context.trim() || 'unspecified';
+  return formatContextPreset(context.trim() || 'unspecified');
 }
 
 function riskText(risk: number) {
@@ -518,7 +519,7 @@ export function DashboardView() {
                       <div key={bundle.project.id} className="flex items-center justify-between gap-3 py-2 px-2 rounded-lg hover:bg-white/5 text-xs">
                         <div className="min-w-0">
                           <div className="truncate font-medium">{bundle.project.name}</div>
-                          <div className="text-muted-foreground truncate">{formatMode(bundle.project.workspace_mode)} · {bundle.project.context_preset}</div>
+                          <div className="text-muted-foreground truncate">{formatMode(bundle.project.workspace_mode)} · {formatContextPreset(bundle.project.context_preset)}</div>
                         </div>
                         <div className="text-right shrink-0">
                           <div>{formatDate(bundle.project.updated_at)}</div>

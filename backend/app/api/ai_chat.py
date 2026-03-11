@@ -10,7 +10,16 @@ from ..models.llm_config import LLMProviderConfig
 from ..models.node import Node
 from ..services.access_control import require_provider_access
 from ..services.crypto import decrypt_value
-from ..services.llm_service import chat_completion
+from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
+from ..services.llm_service import (
+    chat_completion,
+    detect_planning_domain,
+    get_context_preset_label,
+    get_domain_decomposition_guidance,
+    get_planning_profile_guidance,
+    get_planning_profile_label,
+    normalize_planning_profile,
+)
 
 router = APIRouter(prefix="/ai-chat", tags=["ai-chat"])
 
@@ -27,6 +36,7 @@ class BrainstormRequest(BaseModel):
     root_objective: str = ""
     context_preset: str = ""
     workspace_mode: str = ""
+    planning_profile: str = "balanced"
     technical_depth: str = "standard"
     focus_mode: str = "broad"
     tree_context: str = ""
@@ -87,8 +97,9 @@ BRAINSTORM_SYSTEM = """You are an elite offensive security strategist running a 
 Your job is to explore the attack surface through Socratic dialogue. Ask probing questions, suggest attack vectors, challenge assumptions, and help the user think through:
 - Threat actors and their motivations / capabilities
 - Crown-jewel assets and what an attacker would target
-- Attack surfaces (network, physical, social, supply-chain, insider, wireless, cloud)
-- Realistic attack paths with MITRE ATT&CK references
+- Attack-surface domains and trust boundaries across people, physical, operational, technical, and supply-chain layers
+- Realistic attack paths, pivots, and campaign logic
+- Reference mappings such as MITRE ATT&CK, CAPEC, CWE, and CVEs only when they sharpen a concrete branch
 - Preconditions, pivot points, and chained exploits
 
 Be concise but insightful. When the user provides context, respond with concrete attack scenarios, numbered for reference. Use markdown formatting. Keep each response focused and actionable.
@@ -113,12 +124,43 @@ TECHNICAL_DEPTH_GUIDANCE = {
 }
 
 
+def _brainstorm_domain(req: BrainstormRequest) -> str:
+    scope = "\n".join(
+        part for part in [
+            req.project_name,
+            req.tree_context,
+            *[packet for packet in req.context_packets if packet],
+        ] if part
+    )
+    return detect_planning_domain(req.root_objective, scope, req.context_preset)
+
+
 def _build_brainstorm_system_prompt(req: BrainstormRequest) -> str:
     sections = [BRAINSTORM_SYSTEM]
 
+    planning_profile = normalize_planning_profile(req.planning_profile)
+    planning_label = get_planning_profile_label(planning_profile)
+    planning_domain = _brainstorm_domain(req)
+    catalog_context = build_environment_catalog_outline_for_context(
+        req.root_objective,
+        "\n".join([req.project_name, req.tree_context, *req.context_packets]),
+        req.context_preset,
+    )
     focus = FOCUS_MODE_GUIDANCE.get(req.focus_mode, FOCUS_MODE_GUIDANCE["broad"])
     technical_depth = TECHNICAL_DEPTH_GUIDANCE.get(req.technical_depth, TECHNICAL_DEPTH_GUIDANCE["standard"])
 
+    sections.append(f"Planning Profile: {planning_label}")
+    sections.append(f"Detected Planning Domain: {planning_domain}")
+    sections.append(get_domain_decomposition_guidance(planning_domain))
+    sections.append(get_planning_profile_guidance(planning_profile, planning_domain))
+    if catalog_context:
+        sections.append(catalog_context)
+    sections.append(
+        "Brainstorming workflow:\n"
+        "- Start by surfacing the major domains, trust boundaries, trusted roles, and operational constraints that shape the target.\n"
+        "- Then turn those broad domains into concrete attacker hypotheses, phased attack paths, and investigation questions.\n"
+        "- Attach references, ATT&CK mappings, CVEs, or weakness classes only when a branch is already specific enough to benefit from them."
+    )
     sections.append(f"Focus Mode: {req.focus_mode or 'broad'}")
     sections.append(focus)
     sections.append(f"Technical Depth: {req.technical_depth or 'standard'}")
@@ -135,7 +177,7 @@ def _build_brainstorm_system_prompt(req: BrainstormRequest) -> str:
     if req.workspace_mode:
         sections.append(f"Workspace Mode: {req.workspace_mode}")
     if req.context_preset:
-        sections.append(f"Environment Preset: {req.context_preset}")
+        sections.append(f"Environment Preset: {get_context_preset_label(req.context_preset)}")
     if req.project_name:
         sections.append(f"Project: {req.project_name}")
     if req.root_objective:
@@ -150,6 +192,19 @@ def _build_brainstorm_system_prompt(req: BrainstormRequest) -> str:
 
 def _build_brainstorm_seed(req: BrainstormRequest) -> str:
     seed_parts = ["Start the brainstorming session."]
+    planning_profile = normalize_planning_profile(req.planning_profile)
+    if planning_profile == "planning_first":
+        seed_parts.append(
+            "Open by decomposing the target into major attack-surface domains, trusted roles, trust boundaries, and operational dependencies before drilling into low-level weaknesses or reference mappings."
+        )
+    elif planning_profile == "reference_heavy":
+        seed_parts.append(
+            "Start with a planning-useful domain breakdown, then move quickly into concrete attack paths and the most relevant ATT&CK, CAPEC, CWE, or vulnerability mappings."
+        )
+    else:
+        seed_parts.append(
+            "Start with a broad conceptual breakdown of the environment, then turn the strongest branches into concrete attack hypotheses and technical follow-up questions."
+        )
     if req.focus_mode and req.focus_mode != "broad":
         seed_parts.append(f"Focus first on {req.focus_mode.replace('_', ' ')}.")
     if req.technical_depth == "deep_technical":
