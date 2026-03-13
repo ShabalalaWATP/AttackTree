@@ -39,12 +39,24 @@ async def list_projects(db: AsyncSession = Depends(get_db)):
         .order_by(Project.updated_at.desc())
     )
     projects = result.scalars().all()
+    if not projects:
+        return ProjectListResponse(projects=[], total=0)
 
-    responses = []
-    for p in projects:
-        count_result = await db.execute(select(func.count(Node.id)).where(Node.project_id == p.id))
-        node_count = count_result.scalar() or 0
-        responses.append(_to_project_response(p, node_count))
+    project_ids = [project.id for project in projects]
+    node_count_result = await db.execute(
+        select(Node.project_id, func.count(Node.id))
+        .where(Node.project_id.in_(project_ids))
+        .group_by(Node.project_id)
+    )
+    node_counts = {
+        project_id: count
+        for project_id, count in node_count_result.all()
+    }
+
+    responses = [
+        _to_project_response(project, node_counts.get(project.id, 0) or 0)
+        for project in projects
+    ]
 
     return ProjectListResponse(projects=responses, total=len(responses))
 

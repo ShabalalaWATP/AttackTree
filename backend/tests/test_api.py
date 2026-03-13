@@ -642,6 +642,118 @@ async def test_project_crud(authed_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_project_list_reports_node_counts(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Node Count A"})
+    assert resp.status_code == 201, resp.text
+    project_a = resp.json()["id"]
+
+    resp = await authed_client.post("/api/projects", json={"name": "Node Count B"})
+    assert resp.status_code == 201, resp.text
+    project_b = resp.json()["id"]
+
+    for title in ("A-Root", "A-Child"):
+        resp = await authed_client.post("/api/nodes", json={
+            "project_id": project_a,
+            "title": title,
+            "node_type": "attack_step",
+        })
+        assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_b,
+        "title": "B-Only",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.get("/api/projects")
+    assert resp.status_code == 200, resp.text
+    projects = {project["id"]: project for project in resp.json()["projects"]}
+    assert projects[project_a]["node_count"] == 2
+    assert projects[project_b]["node_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_portfolio_dashboard_aggregates_workspace_data(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Project Scan Workspace",
+        "context_preset": "web_application",
+        "workspace_mode": "project_scan",
+    })
+    assert resp.status_code == 201, resp.text
+    project_scan_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Standalone Workspace",
+        "context_preset": "telecoms_base_station",
+        "workspace_mode": "standalone_scan",
+    })
+    assert resp.status_code == 201, resp.text
+    standalone_id = resp.json()["id"]
+
+    created_nodes: dict[str, list[str]] = {project_scan_id: [], standalone_id: []}
+    for project_id, title in (
+        (project_scan_id, "Web foothold"),
+        (project_scan_id, "API abuse"),
+        (standalone_id, "Timing disruption"),
+    ):
+        resp = await authed_client.post("/api/nodes", json={
+            "project_id": project_id,
+            "title": title,
+            "node_type": "attack_step",
+            "status": "validated",
+            "likelihood": 7,
+            "impact": 7,
+            "effort": 4,
+            "exploitability": 7,
+            "detectability": 4,
+        })
+        assert resp.status_code == 201, resp.text
+        created_nodes[project_id].append(resp.json()["id"])
+
+    resp = await authed_client.post("/api/mitigations", json={
+        "node_id": created_nodes[project_scan_id][0],
+        "title": "Add edge controls",
+        "effectiveness": 0.7,
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/scenarios", json={
+        "project_id": project_scan_id,
+        "name": "Web application scenario",
+        "operation_goal": "Validate project scan coverage",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/infra-maps", json={
+        "project_id": standalone_id,
+        "name": "Standalone infra map",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.get("/api/dashboard/portfolio")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    workspaces = {workspace["project"]["id"]: workspace for workspace in body["workspaces"]}
+
+    assert len(body["workspaces"]) == 2
+    assert body["project_scans"] == 1
+    assert body["standalone_scans"] == 1
+    assert body["contexts"] == {
+        "web_application": 1,
+        "telecoms_base_station": 1,
+    }
+    assert body["aggregate"]["total_nodes"] == 3
+    assert body["artifact_totals"]["scenarios"] == 1
+    assert body["artifact_totals"]["infra_maps"] == 1
+    assert workspaces[project_scan_id]["project"]["node_count"] == 2
+    assert workspaces[project_scan_id]["total_artifacts"] == 1
+    assert workspaces[project_scan_id]["analysis"]["mitigation_pct"] == 50.0
+    assert workspaces[standalone_id]["project"]["node_count"] == 1
+    assert workspaces[standalone_id]["total_artifacts"] == 1
+
+
+@pytest.mark.asyncio
 async def test_node_crud(authed_client: AsyncClient):
     # Create project first
     resp = await authed_client.post("/api/projects", json={"name": "Node Test"})

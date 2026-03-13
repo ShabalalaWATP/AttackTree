@@ -9,7 +9,7 @@ from starlette.responses import JSONResponse
 
 from .config import settings
 from .database import async_session_factory, init_db
-from .api import auth, projects, nodes, mitigations, detections, references, snapshots, comments, llm, export, templates, tags, audit, scenarios, kill_chains, threat_models, ai_chat, infra_maps
+from .api import auth, projects, nodes, mitigations, detections, references, snapshots, comments, llm, export, templates, tags, audit, scenarios, kill_chains, threat_models, ai_chat, infra_maps, dashboard
 from .models.user import User
 from .services.auth import AuthContext, decode_access_token, reset_auth_context, set_auth_context
 
@@ -90,6 +90,7 @@ async def authenticate_api_requests(request: Request, call_next):
 # API routes
 app.include_router(auth.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
 app.include_router(nodes.router, prefix="/api")
 app.include_router(mitigations.router, prefix="/api")
 app.include_router(detections.router, prefix="/api")

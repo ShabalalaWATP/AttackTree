@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
-import { NODE_TYPE_CONFIG, type AttackNodeData, type NodeType, type ProjectData } from '@/types';
+import {
+  NODE_TYPE_CONFIG,
+  type ArtifactCountsData,
+  type AttackNodeData,
+  type DashboardAnalysisData,
+  type DashboardNodeSummaryData,
+  type DashboardPortfolioData,
+  type DashboardWorkspaceSummaryData,
+  type NodeType,
+  type ProjectData,
+} from '@/types';
 import { cn } from '@/utils/cn';
 import { formatContextPreset } from '@/utils/contextPresets';
 import {
@@ -20,8 +30,9 @@ interface ArtifactCounts {
 
 interface WorkspaceBundle {
   project: ProjectData;
-  nodes: AttackNodeData[];
   artifacts: ArtifactCounts;
+  analysis: NodeAnalysis;
+  totalArtifacts: number;
 }
 
 interface NodeAnalysis {
@@ -64,31 +75,18 @@ const EMPTY_ANALYSIS: NodeAnalysis = {
     { label: 'Critical', count: 0, color: 'bg-red-500' },
   ],
 };
+const EMPTY_PORTFOLIO = {
+  metrics: [] as WorkspaceBundle[],
+  aggregate: EMPTY_ANALYSIS,
+  totalArtifacts: { ...EMPTY_ARTIFACTS },
+  workspaceCount: 0,
+  projectScans: 0,
+  standaloneScans: 0,
+  contexts: {} as Record<string, number>,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
-}
-
-function normalizeWorkspaceMode(mode: unknown): ProjectData['workspace_mode'] {
-  return mode === 'standalone_scan' ? 'standalone_scan' : 'project_scan';
-}
-
-function normalizeProjectList(value: unknown): ProjectData[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((project): project is Record<string, unknown> => isRecord(project) && typeof project.id === 'string')
-    .map((project) => ({
-      id: String(project.id),
-      name: typeof project.name === 'string' && project.name.trim() ? project.name : 'Untitled Workspace',
-      description: typeof project.description === 'string' ? project.description : '',
-      context_preset: typeof project.context_preset === 'string' && project.context_preset.trim() ? project.context_preset : 'general',
-      root_objective: typeof project.root_objective === 'string' ? project.root_objective : '',
-      owner: typeof project.owner === 'string' ? project.owner : '',
-      workspace_mode: normalizeWorkspaceMode(project.workspace_mode),
-      created_at: typeof project.created_at === 'string' ? project.created_at : '',
-      updated_at: typeof project.updated_at === 'string' ? project.updated_at : '',
-      node_count: typeof project.node_count === 'number' && Number.isFinite(project.node_count) ? project.node_count : 0,
-    }));
 }
 
 function normalizeNodeList(value: unknown): AttackNodeData[] {
@@ -99,6 +97,110 @@ function normalizeNodeList(value: unknown): AttackNodeData[] {
     && typeof node.title === 'string'
     && typeof node.node_type === 'string'
   ));
+}
+
+function normalizeArtifactCounts(value: ArtifactCountsData | null | undefined): ArtifactCounts {
+  return {
+    scenarios: value?.scenarios ?? 0,
+    killChains: value?.kill_chains ?? 0,
+    threatModels: value?.threat_models ?? 0,
+    infraMaps: value?.infra_maps ?? 0,
+    snapshots: value?.snapshots ?? 0,
+  };
+}
+
+function normalizeDashboardNode(value: DashboardNodeSummaryData): AttackNodeData {
+  return {
+    id: value.id,
+    project_id: '',
+    parent_id: null,
+    node_type: (value.node_type as NodeType) || 'attack_step',
+    title: value.title,
+    description: '',
+    notes: '',
+    logic_type: 'OR',
+    status: (value.status as AttackNodeData['status']) || 'draft',
+    sort_order: 0,
+    position_x: 0,
+    position_y: 0,
+    threat_category: '',
+    attack_surface: value.attack_surface || '',
+    platform: value.platform || '',
+    required_access: value.required_access || '',
+    required_privileges: '',
+    required_tools: '',
+    required_skill: '',
+    likelihood: null,
+    impact: null,
+    effort: null,
+    exploitability: null,
+    detectability: null,
+    confidence: null,
+    inherent_risk: value.inherent_risk,
+    residual_risk: value.residual_risk,
+    probability: null,
+    cost_to_attacker: null,
+    time_estimate: '',
+    rolled_up_risk: null,
+    rolled_up_likelihood: null,
+    assumptions: '',
+    analyst: '',
+    cve_references: '',
+    extended_metadata: {},
+    created_at: '',
+    updated_at: '',
+    mitigations: [],
+    detections: [],
+    reference_mappings: [],
+    tags: [],
+  };
+}
+
+function normalizeDashboardAnalysis(value: DashboardAnalysisData | null | undefined): NodeAnalysis {
+  if (!value) return EMPTY_ANALYSIS;
+  return {
+    totalNodes: value.total_nodes ?? 0,
+    scored: value.scored ?? 0,
+    avgRisk: value.avg_risk ?? 0,
+    maxRisk: value.max_risk ?? 0,
+    criticalCount: value.critical_count ?? 0,
+    mitigationPct: value.mitigation_pct ?? 0,
+    detectionPct: value.detection_pct ?? 0,
+    mappingPct: value.mapping_pct ?? 0,
+    topRisks: Array.isArray(value.top_risks) ? value.top_risks.map(normalizeDashboardNode) : [],
+    unmitigated: Array.isArray(value.unmitigated) ? value.unmitigated.map(normalizeDashboardNode) : [],
+    byType: value.by_type ?? {},
+    byStatus: value.by_status ?? {},
+    bySurface: value.by_surface ?? {},
+    riskBuckets: Array.isArray(value.risk_buckets)
+      ? value.risk_buckets.map(bucket => ({ label: bucket.label, count: bucket.count, color: bucket.color }))
+      : EMPTY_ANALYSIS.riskBuckets,
+  };
+}
+
+function normalizeWorkspaceSummary(value: DashboardWorkspaceSummaryData): WorkspaceBundle {
+  return {
+    project: value.project,
+    artifacts: normalizeArtifactCounts(value.artifacts),
+    analysis: normalizeDashboardAnalysis(value.analysis),
+    totalArtifacts: value.total_artifacts ?? 0,
+  };
+}
+
+function normalizePortfolio(value: DashboardPortfolioData | null | undefined) {
+  if (!value) return EMPTY_PORTFOLIO;
+  const metrics = Array.isArray(value.workspaces) ? value.workspaces.map(normalizeWorkspaceSummary) : [];
+  return {
+    metrics,
+    aggregate: normalizeDashboardAnalysis(value.aggregate),
+    totalArtifacts: normalizeArtifactCounts(value.artifact_totals),
+    workspaceCount: metrics.length,
+    projectScans: value.project_scans ?? 0,
+    standaloneScans: value.standalone_scans ?? 0,
+    contexts: Object.fromEntries(
+      Object.entries(value.contexts ?? {}).map(([context, count]) => [formatContext(context), count])
+    ),
+  };
 }
 
 function countItems(value: unknown): number {
@@ -204,7 +306,7 @@ export function DashboardView() {
   const [error, setError] = useState('');
   const [refreshTick, setRefreshTick] = useState(0);
   const [projectArtifacts, setProjectArtifacts] = useState<ArtifactCounts>(EMPTY_ARTIFACTS);
-  const [bundles, setBundles] = useState<WorkspaceBundle[]>([]);
+  const [portfolio, setPortfolio] = useState(EMPTY_PORTFOLIO);
   const safeProjectNodes = useMemo(() => normalizeNodeList(nodes), [nodes]);
 
   useEffect(() => {
@@ -214,7 +316,7 @@ export function DashboardView() {
       setError('');
       try {
         if (currentProject) {
-          if (!cancelled) setBundles([]);
+          if (!cancelled) setPortfolio(EMPTY_PORTFOLIO);
           const [scenarios, killChains, threatModels, infraMaps, snapshots] = await Promise.all([
             api.listScenarios(currentProject.id).catch(() => []),
             api.listKillChains(currentProject.id).catch(() => []),
@@ -233,30 +335,8 @@ export function DashboardView() {
           }
         } else {
           if (!cancelled) setProjectArtifacts({ ...EMPTY_ARTIFACTS });
-          const projectResponse = await api.listProjects();
-          const projects = normalizeProjectList(projectResponse?.projects);
-          const loaded = await Promise.all(projects.map(async project => {
-            const [nodeList, scenarios, killChains, threatModels, infraMaps, snapshots] = await Promise.all([
-              api.listNodes(project.id).catch(() => []),
-              api.listScenarios(project.id).catch(() => []),
-              api.listKillChains(project.id).catch(() => []),
-              api.listThreatModels(project.id).catch(() => []),
-              api.listInfraMaps(project.id).catch(() => []),
-              api.listSnapshots(project.id).catch(() => []),
-            ]);
-            return {
-              project,
-              nodes: normalizeNodeList(nodeList),
-              artifacts: {
-                scenarios: countItems(scenarios),
-                killChains: countItems(killChains),
-                threatModels: countItems(threatModels),
-                infraMaps: countItems(infraMaps),
-                snapshots: countItems(snapshots),
-              },
-            };
-          }));
-          if (!cancelled) setBundles(loaded);
+          const dashboard = await api.getDashboardPortfolio();
+          if (!cancelled) setPortfolio(normalizePortfolio(dashboard));
         }
       } catch (e: any) {
         if (!cancelled) setError(e.message || 'Failed to load dashboard');
@@ -269,28 +349,6 @@ export function DashboardView() {
   }, [currentProject?.id, refreshTick]);
 
   const projectAnalysis = useMemo(() => analyze(safeProjectNodes), [safeProjectNodes]);
-  const portfolio = useMemo(() => {
-    const metrics = bundles.map(bundle => ({ ...bundle, analysis: analyze(normalizeNodeList(bundle.nodes)), totalArtifacts: artifactTotal(bundle.artifacts) }));
-    const allNodes = metrics.flatMap(bundle => bundle.nodes);
-    const aggregate = analyze(allNodes);
-    const modes = { project_scan: 0, standalone_scan: 0 };
-    const contexts: Record<string, number> = {};
-    metrics.forEach(bundle => {
-      const mode = normalizeWorkspaceMode(bundle.project.workspace_mode);
-      const context = formatContext(bundle.project.context_preset);
-      modes[mode] += 1;
-      contexts[context] = (contexts[context] || 0) + 1;
-    });
-    return {
-      metrics,
-      aggregate: metrics.length || allNodes.length ? aggregate : EMPTY_ANALYSIS,
-      totalArtifacts: metrics.reduce((sum, bundle) => sum + bundle.totalArtifacts, 0),
-      workspaceCount: metrics.length,
-      projectScans: modes.project_scan,
-      standaloneScans: modes.standalone_scan,
-      contexts,
-    };
-  }, [bundles]);
 
   if (loading) {
     return (
@@ -324,13 +382,7 @@ export function DashboardView() {
   }
 
   const active = currentProject ? projectAnalysis : portfolio.aggregate;
-  const artifacts = currentProject ? projectArtifacts : portfolio.metrics.reduce((totals, bundle) => ({
-    scenarios: totals.scenarios + bundle.artifacts.scenarios,
-    killChains: totals.killChains + bundle.artifacts.killChains,
-    threatModels: totals.threatModels + bundle.artifacts.threatModels,
-    infraMaps: totals.infraMaps + bundle.artifacts.infraMaps,
-    snapshots: totals.snapshots + bundle.artifacts.snapshots,
-  }), { ...EMPTY_ARTIFACTS });
+  const artifacts = currentProject ? projectArtifacts : portfolio.totalArtifacts;
   const grade = riskGrade(active.avgRisk);
   const topRiskEntries = currentProject
     ? projectAnalysis.topRisks.map(node => ({ ...node, projectName: currentProject.name }))
@@ -500,7 +552,7 @@ export function DashboardView() {
                         <div className="flex items-center justify-between gap-3">
                           <div>
                             <div className="text-sm font-semibold">{bundle.project.name}</div>
-                            <div className="text-[11px] text-muted-foreground">{formatMode(bundle.project.workspace_mode)} · {bundle.nodes.length} nodes · {bundle.totalArtifacts} analyses</div>
+                            <div className="text-[11px] text-muted-foreground">{formatMode(bundle.project.workspace_mode)} · {bundle.project.node_count} nodes · {bundle.totalArtifacts} analyses</div>
                           </div>
                           <div className={cn('text-lg font-black', riskText(bundle.analysis.avgRisk))}>{bundle.analysis.avgRisk.toFixed(1)}</div>
                         </div>
@@ -523,7 +575,7 @@ export function DashboardView() {
                         </div>
                         <div className="text-right shrink-0">
                           <div>{formatDate(bundle.project.updated_at)}</div>
-                          <div className="text-[10px] text-muted-foreground">{bundle.nodes.length} nodes</div>
+                          <div className="text-[10px] text-muted-foreground">{bundle.project.node_count} nodes</div>
                         </div>
                       </div>
                     ))}

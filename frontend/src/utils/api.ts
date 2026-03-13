@@ -2,6 +2,7 @@ import type {
   AttackNodeData,
   AuthLoginResponseData,
   AuthUserData,
+  DashboardPortfolioData,
   EnvironmentCatalogData,
   EnvironmentCatalogSummary,
   LLMAgentRequestData,
@@ -192,6 +193,7 @@ export const api = {
   // Audit
   listAuditEvents: (projectId: string, limit = 50, offset = 0) =>
     request<any[]>(`/audit/project/${projectId}?limit=${limit}&offset=${offset}`),
+  getDashboardPortfolio: () => request<DashboardPortfolioData>('/dashboard/portfolio'),
 
   // Snapshots
   listSnapshots: (projectId: string) => request<any[]>(`/snapshots/project/${projectId}`),

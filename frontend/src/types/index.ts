@@ -196,6 +196,65 @@ export interface SnapshotData {
   created_by: string;
 }
 
+export interface ArtifactCountsData {
+  scenarios: number;
+  kill_chains: number;
+  threat_models: number;
+  infra_maps: number;
+  snapshots: number;
+}
+
+export interface DashboardNodeSummaryData {
+  id: string;
+  title: string;
+  node_type: string;
+  inherent_risk: number | null;
+  residual_risk: number | null;
+  status: string;
+  platform: string;
+  attack_surface: string;
+  required_access: string;
+}
+
+export interface DashboardRiskBucketData {
+  label: string;
+  count: number;
+  color: string;
+}
+
+export interface DashboardAnalysisData {
+  total_nodes: number;
+  scored: number;
+  avg_risk: number;
+  max_risk: number;
+  critical_count: number;
+  mitigation_pct: number;
+  detection_pct: number;
+  mapping_pct: number;
+  top_risks: DashboardNodeSummaryData[];
+  unmitigated: DashboardNodeSummaryData[];
+  by_type: Record<string, number>;
+  by_status: Record<string, number>;
+  by_surface: Record<string, number>;
+  risk_buckets: DashboardRiskBucketData[];
+}
+
+export interface DashboardWorkspaceSummaryData {
+  project: ProjectData;
+  artifacts: ArtifactCountsData;
+  analysis: DashboardAnalysisData;
+  total_artifacts: number;
+}
+
+export interface DashboardPortfolioData {
+  workspaces: DashboardWorkspaceSummaryData[];
+  aggregate: DashboardAnalysisData;
+  artifact_totals: ArtifactCountsData;
+  project_scans: number;
+  standalone_scans: number;
+  contexts: Record<string, number>;
+}
+
 export interface LLMProviderData {
   id: string;
   name: string;
