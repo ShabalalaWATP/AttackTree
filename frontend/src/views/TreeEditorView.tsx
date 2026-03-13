@@ -17,10 +17,11 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { StandaloneLanding } from '@/components/StandaloneLanding';
 import toast from 'react-hot-toast';
 import { cn } from '@/utils/cn';
-import { Search, Filter, Plus, Sparkles, Bot, ChevronRight, RefreshCw, Tag, X, LayoutGrid, Palette, CheckSquare, Trash2, Flame, Route, Group, GitBranch } from 'lucide-react';
+import { Search, Filter, Plus, Sparkles, Bot, ChevronRight, RefreshCw, Tag, X, LayoutGrid, Palette, CheckSquare, Trash2, Flame, Route, Group, GitBranch, Maximize2, Minimize2 } from 'lucide-react';
 import { toPng, toSvg } from 'html-to-image';
 import { useQuery } from '@tanstack/react-query';
 import type { TagData } from '@/types';
+import { useAdvisorPageContext } from '@/hooks/useAdvisorPageContext';
 
 function GroupNode({ data }: { data: Record<string, unknown> }) {
   return (
@@ -42,6 +43,7 @@ export function TreeEditorView() {
     aiSuggestionsOpen, setAiSuggestionsOpen, darkMode,
     filterTags, setFilterTags,
     selectedNodeIds, toggleNodeSelection, clearMultiSelect,
+    pendingViewSelection, clearPendingViewSelection,
   } = useStore();
 
   const flowRef = useRef<HTMLDivElement>(null);
@@ -54,12 +56,52 @@ export function TreeEditorView() {
   const [criticalPathDetails, setCriticalPathDetails] = useState<Array<{ id: string; title: string; node_type: string; inherent_risk: number | null; residual_risk: number | null; mitigation_count: number; max_mitigation_effectiveness: number }>>([]);
   const [criticalPathRisk, setCriticalPathRisk] = useState(0);
   const [groupBy, setGroupBy] = useState<string>('');
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const pendingDeleteNode = storeNodes.find(n => n.id === pendingDeleteId);
+  const selectedNode = useMemo(
+    () => storeNodes.find((node) => node.id === selectedNodeId) || null,
+    [selectedNodeId, storeNodes],
+  );
+
+  const refreshProjectNodes = useCallback(async () => {
+    if (!currentProject) return;
+    const latestNodes = await api.listNodes(currentProject.id);
+    setStoreNodes(latestNodes);
+  }, [currentProject, setStoreNodes]);
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['tags'],
     queryFn: api.listTags,
   });
+
+  const advisorContext = useMemo(() => ({
+    view: 'tree' as const,
+    title: currentProject ? `${currentProject.name} Attack Tree` : 'Attack Tree',
+    summary: selectedNode
+      ? `Focused on the selected node "${selectedNode.title}" in the attack tree.`
+      : `Viewing the attack tree canvas with ${storeNodes.length} node${storeNodes.length === 1 ? '' : 's'}.`,
+    packets: [
+      selectedNode ? `Selected node: ${selectedNode.title}` : '',
+      selectedNode?.node_type ? `Selected node type: ${selectedNode.node_type}` : '',
+      selectedNode?.inherent_risk != null ? `Selected node inherent risk: ${selectedNode.inherent_risk.toFixed(1)}` : '',
+      searchQuery ? `Search filter: ${searchQuery}` : '',
+      filterNodeType ? `Node type filter: ${filterNodeType}` : '',
+      filterTags.length ? `Tag filters: ${filterTags.join(', ')}` : '',
+      criticalPathActive ? `Critical path overlay active across ${criticalPathIds.size} nodes` : '',
+      groupBy ? `Grouped by: ${groupBy}` : '',
+    ],
+  }), [
+    criticalPathActive,
+    criticalPathIds.size,
+    currentProject,
+    filterNodeType,
+    filterTags,
+    groupBy,
+    searchQuery,
+    selectedNode,
+    storeNodes.length,
+  ]);
+  useAdvisorPageContext(advisorContext);
 
   // Convert store nodes to React Flow nodes and edges, applying all filters
   const { rfNodes, rfEdges } = useMemo(() => {
@@ -180,6 +222,30 @@ export function TreeEditorView() {
 
   useEffect(() => { setFlowNodes(rfNodes); }, [rfNodes, setFlowNodes]);
   useEffect(() => { setFlowEdges(rfEdges); }, [rfEdges, setFlowEdges]);
+  useEffect(() => {
+    if (pendingViewSelection?.view !== 'tree') return;
+    if (pendingViewSelection.nodeId && storeNodes.some((node) => node.id === pendingViewSelection.nodeId)) {
+      setSelectedNodeId(pendingViewSelection.nodeId);
+    }
+    clearPendingViewSelection();
+  }, [clearPendingViewSelection, pendingViewSelection, setSelectedNodeId, storeNodes]);
+  useEffect(() => {
+    if (!isFullscreen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFullscreen(false);
+      }
+    };
+
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen]);
 
   const onNodeClick = useCallback((_: any, node: Node) => {
     const evt = _ as MouseEvent;
@@ -214,12 +280,12 @@ export function TreeEditorView() {
     try {
       pushUndo('Re-parent node');
       await api.updateNode(connection.target, { parent_id: connection.source });
-      useStore.getState().updateNodeLocal(connection.target, { parent_id: connection.source });
+      await refreshProjectNodes();
       toast.success('Node re-parented');
     } catch (e: any) {
       toast.error(e.message);
     }
-  }, [pushUndo]);
+  }, [pushUndo, refreshProjectNodes]);
 
   const addNode = useCallback(async (parentId: string | null, nodeType: NodeType = 'attack_step') => {
     const project = useStore.getState().currentProject;
@@ -235,12 +301,12 @@ export function TreeEditorView() {
         position_x: parent ? parent.position_x + 200 : 400,
         position_y: parent ? parent.position_y + 150 : 0,
       });
-      useStore.getState().addNodeLocal(newNode);
+      await refreshProjectNodes();
       setSelectedNodeId(newNode.id);
     } catch (e: any) {
       toast.error(e.message);
     }
-  }, [pushUndo, setSelectedNodeId]);
+  }, [pushUndo, refreshProjectNodes, setSelectedNodeId]);
 
   const addRootNode = () => addNode(null, 'goal');
 
@@ -394,7 +460,7 @@ export function TreeEditorView() {
     try {
       pushUndo('Delete node');
       await api.deleteNode(pendingDeleteId);
-      useStore.getState().removeNodeLocal(pendingDeleteId);
+      await refreshProjectNodes();
       setSelectedNodeId(null);
       toast.success('Node deleted');
     } catch (e: any) {
@@ -412,9 +478,7 @@ export function TreeEditorView() {
     try {
       pushUndo('Bulk status change');
       await api.bulkUpdateNodes(bulkIds, { status });
-      for (const id of bulkIds) {
-        useStore.getState().updateNodeLocal(id, { status: status as any });
-      }
+      await refreshProjectNodes();
       clearMultiSelect();
       toast.success(`Set ${bulkCount} nodes to ${status}`);
     } catch (e: any) { toast.error(e.message); }
@@ -425,9 +489,7 @@ export function TreeEditorView() {
     try {
       pushUndo('Bulk delete');
       await api.bulkDeleteNodes(bulkIds);
-      for (const id of bulkIds) {
-        useStore.getState().removeNodeLocal(id);
-      }
+      await refreshProjectNodes();
       clearMultiSelect();
       setSelectedNodeId(null);
       toast.success(`Deleted ${bulkCount} nodes`);
@@ -450,9 +512,19 @@ export function TreeEditorView() {
   }
 
   return (
-    <div className="h-full flex">
+    <>
+      {isFullscreen && (
+        <div className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
+      )}
+      <div className="h-full flex relative">
       {/* Main canvas */}
-      <div className="flex-1 relative" ref={flowRef}>
+      <div
+        className={cn(
+          'flex-1 relative',
+          isFullscreen && 'fixed inset-4 z-50 overflow-hidden rounded-2xl border border-border/50 bg-background shadow-2xl'
+        )}
+        ref={flowRef}
+      >
         <ReactFlow
           nodes={flowNodes}
           edges={flowEdges}
@@ -569,6 +641,14 @@ export function TreeEditorView() {
               </button>
               <button onClick={handleExportPng} className="px-2 py-1 text-xs rounded hover:bg-accent">PNG</button>
               <button onClick={handleExportSvg} className="px-2 py-1 text-xs rounded hover:bg-accent">SVG</button>
+              <button
+                onClick={() => setIsFullscreen((current) => !current)}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-accent"
+                title={isFullscreen ? 'Exit full screen' : 'Open full screen'}
+              >
+                {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                {isFullscreen ? 'Exit' : 'Full'}
+              </button>
               <div className="w-px h-5 bg-border" />
               <button onClick={() => setHeatmapMode(!heatmapMode)} className={cn("flex items-center gap-1 px-2 py-1 text-xs rounded", heatmapMode ? 'bg-orange-500 text-white' : 'hover:bg-accent')} title="Mitigation coverage heatmap">
                 <Flame size={13} /> Heatmap
@@ -727,6 +807,7 @@ export function TreeEditorView() {
         confirmLabel="Delete"
         destructive
       />
-    </div>
+      </div>
+    </>
   );
 }

@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models.llm_config import LLMProviderConfig
 from ..models.node import Node
-from ..services.access_control import require_provider_access
+from ..services.access_control import require_provider_access, require_project_access
+from ..services.analysis_runs import record_analysis_run
 from ..services.crypto import decrypt_value
 from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
 from ..services.llm_service import (
@@ -32,6 +33,7 @@ class ChatMessage(BaseModel):
 
 class BrainstormRequest(BaseModel):
     provider_id: str
+    project_id: str = ""
     project_name: str = ""
     root_objective: str = ""
     context_preset: str = ""
@@ -50,6 +52,10 @@ class AdvisorRequest(BaseModel):
     project_name: str = ""
     root_objective: str = ""
     tree_context: str = ""  # summary of nodes
+    view_mode: str = ""
+    page_title: str = ""
+    page_summary: str = ""
+    context_packets: list[str] = []
 
 
 class ChallengeRequest(BaseModel):
@@ -214,6 +220,18 @@ def _build_brainstorm_seed(req: BrainstormRequest) -> str:
 
 @router.post("/brainstorm", response_model=AIChatResponse)
 async def brainstorm_chat(req: BrainstormRequest, db: AsyncSession = Depends(get_db)):
+    project = None
+    if req.project_id:
+        project = await require_project_access(req.project_id, db)
+        if not req.project_name:
+            req.project_name = project.name
+        if not req.root_objective:
+            req.root_objective = project.root_objective or ""
+        if not req.context_preset:
+            req.context_preset = project.context_preset or ""
+        if not req.workspace_mode:
+            req.workspace_mode = (project.metadata_json or {}).get("workspace_mode", "project_scan")
+
     config = await _get_provider(req.provider_id, db)
     system_content = _build_brainstorm_system_prompt(req)
 
@@ -226,6 +244,25 @@ async def brainstorm_chat(req: BrainstormRequest, db: AsyncSession = Depends(get
             messages.append({"role": m.role, "content": m.content})
 
     result = await chat_completion(config, messages, temperature=0.8)
+    if project:
+        last_prompt = next((message["content"] for message in reversed(messages) if message.get("role") == "user"), "")
+        await record_analysis_run(
+            db,
+            project_id=project.id,
+            tool="brainstorm",
+            run_type="session_start" if not req.messages else "brainstorm_turn",
+            status="completed" if result.get("status") == "success" else "failed",
+            artifact_kind="project",
+            artifact_id=project.id,
+            artifact_name=project.name,
+            summary=(last_prompt or "Started project brainstorm")[:240],
+            metadata={
+                "focus_mode": req.focus_mode,
+                "technical_depth": req.technical_depth,
+                "planning_profile": req.planning_profile,
+            },
+            duration_ms=result.get("elapsed_ms", 0),
+        )
     return AIChatResponse(
         status=result.get("status", "error"),
         content=result.get("content", result.get("message", "No response")),
@@ -245,6 +282,8 @@ Provide authoritative, detailed answers referencing:
 - Operational considerations (OPSEC, detection avoidance)
 - Chained attack sequences and kill-chain progression
 
+Treat the current page context as live operator context. If the user is on a scenario, kill chain, threat model, infrastructure map, dashboard, or attack tree view, anchor your answer in that artifact instead of responding with generic project advice.
+
 Be direct and tactical. Use markdown with headers and bullet points. If the user's question is vague, ask one clarifying question before answering."""
 
 
@@ -253,12 +292,22 @@ async def advisor_chat(req: AdvisorRequest, db: AsyncSession = Depends(get_db)):
     config = await _get_provider(req.provider_id, db)
 
     system_content = ADVISOR_SYSTEM
+    if req.view_mode:
+        system_content += f"\n\nCurrent View Mode: {req.view_mode}"
+    if req.page_title:
+        system_content += f"\nCurrent Page: {req.page_title}"
+    if req.page_summary:
+        system_content += f"\nPage Summary: {req.page_summary}"
     if req.project_name:
-        system_content += f"\n\nCurrent Project: {req.project_name}"
+        system_content += f"\nCurrent Project: {req.project_name}"
     if req.root_objective:
         system_content += f"\nAttacker Objective: {req.root_objective}"
     if req.tree_context:
         system_content += f"\n\nTree Context (existing nodes):\n{req.tree_context}"
+    if req.context_packets:
+        system_content += "\n\nCurrent Page Context:\n" + "\n".join(
+            f"- {packet}" for packet in req.context_packets if packet
+        )
 
     messages = [
         {"role": "system", "content": system_content},

@@ -1,10 +1,12 @@
 """Integration tests for the API endpoints."""
+import asyncio
 import json
 import re
+from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import backend.app.database as db_module
@@ -16,8 +18,13 @@ from backend.app.api.infra_maps import _infra_map_planning_context, _normalize_n
 from backend.app.api.kill_chains import CKC_PHASES, _kill_chain_planning_context
 from backend.app.api.scenarios import _scenario_planning_context
 from backend.app.api.threat_models import _threat_model_planning_context
+from backend.app.models.analysis_run import AnalysisRun
+from backend.app.models.node import Node
+from backend.app.models.snapshot import Snapshot
+from backend.app.models.user import User
 from backend.app.services.environment_catalog_service import build_environment_catalog_outline_for_context
 from backend.app.services import llm_service
+from backend.app.services.auth import hash_password
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -73,14 +80,46 @@ async def _signup_or_login(client: AsyncClient, *, name: str, email: str, passwo
         "username": username,
         "password": password,
     })
-    if response.status_code == 409:
+    assert response.status_code in (201, 409), response.text
+
+    response = await client.post("/api/auth/login", json={
+        "identifier": email,
+        "password": password,
+    })
+    if response.status_code == 403:
+        assert "pending admin approval" in response.text.lower()
+        await _approve_user(client, email=email)
         response = await client.post("/api/auth/login", json={
             "identifier": email,
             "password": password,
         })
-    assert response.status_code in (200, 201), response.text
+
+    assert response.status_code == 200, response.text
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+async def _login_as_seed_admin(client: AsyncClient) -> dict[str, str]:
+    response = await client.post("/api/auth/login", json={
+        "identifier": "admin12345",
+        "password": "admin12345",
+    })
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+async def _approve_user(client: AsyncClient, *, email: str, role: str = "user") -> dict:
+    admin_headers = await _login_as_seed_admin(client)
+    response = await client.get("/api/auth/users", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    target = next(user for user in response.json() if user["email"] == email.lower())
+    response = await client.patch(
+        f"/api/auth/users/{target['id']}",
+        json={"is_active": True, "role": role},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 @pytest.mark.asyncio
@@ -91,6 +130,77 @@ async def test_signup_requires_username(client: AsyncClient):
         "password": "supersecure1",
     })
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_signup_requires_admin_approval(client: AsyncClient):
+    response = await client.post("/api/auth/signup", json={
+        "name": "Pending Analyst",
+        "email": "pending.analyst@example.com",
+        "username": "pending.analyst",
+        "password": "Approvals!123",
+    })
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["approval_required"] is True
+    assert body["user"]["is_active"] is False
+    assert body["user"]["approval_status"] == "pending"
+
+    response = await client.post("/api/auth/login", json={
+        "identifier": "pending.analyst@example.com",
+        "password": "Approvals!123",
+    })
+    assert response.status_code == 403, response.text
+    assert "pending admin approval" in response.json()["detail"].lower()
+
+    approved = await _approve_user(client, email="pending.analyst@example.com")
+    assert approved["is_active"] is True
+    assert approved["approval_status"] == "approved"
+
+    response = await client.post("/api/auth/login", json={
+        "identifier": "pending.analyst@example.com",
+        "password": "Approvals!123",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["approval_status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_project_brainstorm_records_analysis_run(authed_client: AsyncClient, monkeypatch):
+    provider = await _create_active_provider(authed_client, name="Brainstorm Ledger Provider")
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Brainstorm Ledger Project",
+        "root_objective": "Assess remote access and supplier pathways",
+        "context_preset": "airport",
+    })
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    async def fake_chat_completion(*args, **kwargs):
+        return {
+            "status": "success",
+            "content": "Start with supplier remote access, maintenance trust paths, and exposed identity workflows.",
+            "model": "test-model",
+            "tokens": 88,
+            "elapsed_ms": 321,
+        }
+
+    monkeypatch.setattr("backend.app.api.ai_chat.chat_completion", fake_chat_completion)
+
+    resp = await authed_client.post("/api/ai-chat/brainstorm", json={
+        "provider_id": provider["id"],
+        "project_id": project_id,
+        "messages": [{"role": "user", "content": "Focus on vendor VPN and maintenance access."}],
+    })
+    assert resp.status_code == 200, resp.text
+
+    resp = await authed_client.get(f"/api/analysis-runs/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    runs = resp.json()
+    assert runs[0]["tool"] == "brainstorm"
+    assert runs[0]["run_type"] == "brainstorm_turn"
+    assert runs[0]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -185,7 +295,7 @@ async def test_llm_agent_rejects_unsafe_generation_modes(authed_client: AsyncCli
         "objective": "Compromise airport operations systems",
         "scope": "AODB, FIDS, baggage, and partner links",
         "depth": 4,
-        "breadth": 5,
+        "breadth": 4,
         "mode": "from_template",
         "template_id": "missing_template",
     })
@@ -212,11 +322,155 @@ async def test_llm_agent_rejects_unsafe_generation_modes(authed_client: AsyncCli
         "objective": "Exfiltrate operations data",
         "scope": "Existing project should not be overwritten",
         "depth": 4,
-        "breadth": 5,
+        "breadth": 4,
         "mode": "generate",
     })
     assert resp.status_code == 409, resp.text
     assert "already contains nodes" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_rejects_tree_shapes_above_robust_budget(authed_client: AsyncClient):
+    await _create_active_provider(authed_client, name="Agent Budget Provider")
+
+    resp = await authed_client.post("/api/projects", json={"name": "Agent Budget Project"})
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": project["id"],
+        "objective": "Compromise airport operations systems",
+        "scope": "AODB, FIDS, baggage, and partner links",
+        "depth": 5,
+        "breadth": 4,
+        "mode": "generate",
+    })
+    assert resp.status_code == 422, resp.text
+    assert "Requested tree size is too large" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_prompt_trims_template_example_to_small_few_shot_context(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Agent Template Prompt Provider")
+
+    resp = await authed_client.post("/api/projects", json={"name": "Agent Template Prompt Project"})
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+
+    template = {
+        "name": "Large Template",
+        "nodes": [
+            {
+                "id": "root",
+                "parent_id": None,
+                "title": "Template Root",
+                "description": "Root template node.",
+                "node_type": "goal",
+                "logic_type": "OR",
+                "status": "validated",
+                "likelihood": 7,
+                "impact": 8,
+                "effort": 6,
+                "exploitability": 7,
+                "detectability": 4,
+            },
+            *[
+                {
+                    "id": f"child-{index}",
+                    "parent_id": "root",
+                    "title": f"Template Child {index}",
+                    "description": f"Template child {index}.",
+                    "node_type": "sub_goal",
+                    "logic_type": "OR",
+                    "status": "validated",
+                    "likelihood": 6,
+                    "impact": 6,
+                    "effort": 5,
+                    "exploitability": 6,
+                    "detectability": 4,
+                }
+                for index in range(1, 9)
+            ],
+        ],
+    }
+
+    captured_prompt: dict[str, str] = {}
+
+    async def fake_chat_completion(config, messages, temperature=0.7, max_tokens=0, timeout_override=None):
+        prompt = messages[-1]["content"]
+        if "Generate a complete attack tree" in prompt:
+            captured_prompt["content"] = prompt
+            return {
+                "status": "success",
+                "content": json.dumps({
+                    "title": "Generated Root",
+                    "description": "Operator gains an initial planning foothold and frames the objective.",
+                    "node_type": "goal",
+                    "logic_type": "OR",
+                    "status": "validated",
+                    "platform": "Airport Operations Environment",
+                    "attack_surface": "Operations Management Plane",
+                    "threat_category": "Initial Access",
+                    "required_access": "None/Public",
+                    "required_privileges": "None",
+                    "required_skill": "Medium",
+                    "likelihood": 6,
+                    "impact": 7,
+                    "effort": 4,
+                    "exploitability": 6,
+                    "detectability": 5,
+                    "children": [],
+                }),
+                "model": "test-model",
+                "tokens": 120,
+                "elapsed_ms": 40,
+            }
+
+        if "suggest the most relevant reference mappings" in prompt:
+            return {
+                "status": "success",
+                "content": "[]",
+                "model": "test-model",
+                "tokens": 10,
+                "elapsed_ms": 5,
+            }
+
+        if "suggest detailed mitigations and detections" in prompt:
+            return {
+                "status": "success",
+                "content": "[]",
+                "model": "test-model",
+                "tokens": 10,
+                "elapsed_ms": 5,
+            }
+
+        pytest.fail(f"Unexpected AI prompt: {prompt[:120]}")
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(llm_service, "find_best_template_for_objective", lambda *args, **kwargs: template)
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": project["id"],
+        "objective": "Compromise airport operations systems",
+        "scope": "AODB, FIDS, baggage, and partner links",
+        "depth": 3,
+        "breadth": 3,
+        "mode": "generate",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["background_processing"] is True
+    await _wait_for_agent_run_completion(authed_client, body["agent_run_id"])
+
+    prompt = captured_prompt["content"]
+    assert "Template Root" in prompt
+    assert "Template Child 1" in prompt
+    assert "Template Child 5" in prompt
+    assert "Template Child 6" not in prompt
+    assert "Template Child 8" not in prompt
 
 
 @pytest.mark.asyncio
@@ -233,6 +487,7 @@ async def test_llm_agent_batches_leaf_analysis_persists_mappings_and_surfaces_wa
     assert resp.status_code == 201, resp.text
     project = resp.json()
 
+    structure_branch_prompts: list[str] = []
     mapping_batches: list[list[int]] = []
     mitdet_batches: list[list[int]] = []
 
@@ -241,13 +496,26 @@ async def test_llm_agent_batches_leaf_analysis_persists_mappings_and_surfaces_wa
         if "Generate a complete attack tree" in prompt:
             return {
                 "status": "success",
-                "content": json.dumps(_build_agent_tree_payload()),
+                "content": json.dumps(_build_agent_tree_payload(leaves_per_branch=0)),
                 "model": "test-model",
                 "tokens": 120,
                 "elapsed_ms": 40,
             }
 
-        if "suggest the most relevant MITRE ATT&CK techniques" in prompt:
+        if "Expand one branch of an attack tree using only the local branch context below." in prompt:
+            structure_branch_prompts.append(prompt)
+            match = re.search(r'"title":\s*"Branch (\d+)"', prompt)
+            assert match is not None, prompt
+            branch_index = int(match.group(1))
+            return {
+                "status": "success",
+                "content": json.dumps(_build_agent_branch_children_payload(branch_index, child_count=6)),
+                "model": "test-model",
+                "tokens": 90,
+                "elapsed_ms": 30,
+            }
+
+        if "suggest the most relevant reference mappings" in prompt:
             indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
             mapping_batches.append(indexes)
             if len(mapping_batches) == 2:
@@ -263,8 +531,8 @@ async def test_llm_agent_batches_leaf_analysis_persists_mappings_and_surfaces_wa
                     {
                         "index": idx,
                         "mappings": [
-                            {"framework": "attack", "ref_id": f"T{1000 + idx}", "ref_name": "Technique"},
-                            {"framework": "capec", "ref_id": f"CAPEC-{idx}", "ref_name": "Pattern"},
+                            {"framework": "attack", "ref_id": "T1595", "ref_name": "Active Scanning"},
+                            {"framework": "capec", "ref_id": "CAPEC-66", "ref_name": "SQL Injection"},
                         ],
                     }
                     for idx in indexes
@@ -321,10 +589,14 @@ async def test_llm_agent_batches_leaf_analysis_persists_mappings_and_surfaces_wa
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["nodes_created"] == 43
-    assert body["passes_completed"] == 4
+    assert body["passes_completed"] == 1
+    assert body["background_processing"] is True
+    run_status = await _wait_for_agent_run_completion(authed_client, body["agent_run_id"])
+    assert run_status["passes_completed"] == 4
+    assert len(structure_branch_prompts) == 6
     assert len(mapping_batches) == 3
     assert len(mitdet_batches) == 3
-    assert any("Reference-mapping batch 2 failed" in warning for warning in body["warnings"])
+    assert any("Reference-mapping batch 2 failed" in warning for warning in run_status["warnings"])
 
     resp = await authed_client.get(f"/api/nodes/project/{project['id']}")
     assert resp.status_code == 200, resp.text
@@ -340,6 +612,636 @@ async def test_llm_agent_batches_leaf_analysis_persists_mappings_and_surfaces_wa
     assert total_detections == 36
 
 
+@pytest.mark.asyncio
+async def test_llm_agent_reference_mapping_uses_candidates_and_drops_unknown_ids(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Agent Reference Validation Provider")
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Agent Reference Validation Project",
+        "context_preset": "telecoms_base_station",
+        "root_objective": "Assess exposed telecom management and timing surfaces",
+        "description": "Telecom site with GNSS timing, management interfaces, and remote access dependencies.",
+    })
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+
+    mapping_prompts: list[str] = []
+
+    async def fake_chat_completion(config, messages, temperature=0.7, max_tokens=0, timeout_override=None):
+        prompt = messages[-1]["content"]
+        if "Generate a complete attack tree" in prompt:
+            return {
+                "status": "success",
+                "content": json.dumps(
+                    _build_agent_node_payload(
+                        "Assess telecom management exposure",
+                        "Model the operator objective across exposed remote access and timing dependencies.",
+                        node_type="goal",
+                        logic_type="OR",
+                        status="validated",
+                        platform="Telecom Base Station",
+                        attack_surface="Multiple",
+                        threat_category="Reconnaissance",
+                        required_access="None/Public",
+                        required_privileges="None",
+                        required_skill="Medium",
+                        likelihood=6,
+                        impact=7,
+                        effort=4,
+                        exploitability=6,
+                        detectability=5,
+                        children=[
+                            _build_agent_node_payload(
+                                "Active Scanning",
+                                "Probe exposed management and timing endpoints to discover reachable services.",
+                                node_type="attack_step",
+                                logic_type="OR",
+                                status="validated",
+                                platform="Telecom Base Station",
+                                attack_surface="Management Interface",
+                                threat_category="Reconnaissance",
+                                required_access="None/Public",
+                                required_privileges="None",
+                                required_skill="Medium",
+                                likelihood=6,
+                                impact=5,
+                                effort=3,
+                                exploitability=6,
+                                detectability=5,
+                                children=[],
+                            )
+                        ],
+                    )
+                ),
+                "model": "test-model",
+                "tokens": 90,
+                "elapsed_ms": 25,
+            }
+
+        if "suggest the most relevant reference mappings" in prompt:
+            mapping_prompts.append(prompt)
+            assert '"candidate_references"' in prompt
+            assert "T1595" in prompt
+            indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
+            return {
+                "status": "success",
+                "content": json.dumps([
+                    {
+                        "index": idx,
+                        "mappings": [
+                            {
+                                "framework": "attack",
+                                "ref_id": "T1595",
+                                "ref_name": "Active Scanning",
+                                "confidence": 0.93,
+                                "rationale": "Matches the node's active discovery behaviour.",
+                            },
+                            {
+                                "framework": "attack",
+                                "ref_id": "T999999",
+                                "ref_name": "Hallucinated Technique",
+                                "confidence": 0.91,
+                                "rationale": "Should be rejected because it is not in the local corpus.",
+                            },
+                            {
+                                "framework": "software_research_patterns",
+                                "ref_id": "SRP-001",
+                                "ref_name": "Attack Surface Inventory and Exposure Mapping",
+                                "confidence": 0.58,
+                                "rationale": "Supports the exposure-discovery angle of the node.",
+                            },
+                        ],
+                    }
+                    for idx in indexes
+                ]),
+                "model": "test-model",
+                "tokens": 60,
+                "elapsed_ms": 20,
+            }
+
+        if "suggest detailed mitigations and detections" in prompt:
+            indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
+            return {
+                "status": "success",
+                "content": json.dumps([
+                    {
+                        "index": idx,
+                        "mitigations": [],
+                        "detections": [],
+                    }
+                    for idx in indexes
+                ]),
+                "model": "test-model",
+                "tokens": 30,
+                "elapsed_ms": 10,
+            }
+
+        pytest.fail(f"Unexpected AI prompt: {prompt[:160]}")
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(llm_service, "find_best_template_for_objective", lambda *args, **kwargs: None)
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": project["id"],
+        "objective": "Assess exposed telecom management and timing surfaces",
+        "scope": "GNSS timing, management interfaces, and remote access gateways",
+        "depth": 2,
+        "breadth": 2,
+        "mode": "generate",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["background_processing"] is True
+
+    run_status = await _wait_for_agent_run_completion(authed_client, body["agent_run_id"])
+    assert run_status["status"] in {"completed", "completed_with_warnings"}
+    assert len(mapping_prompts) == 1
+
+    resp = await authed_client.get(f"/api/analysis-runs/project/{project['id']}")
+    assert resp.status_code == 200, resp.text
+    runs = resp.json()
+    assert runs[0]["tool"] == "attack_tree"
+    assert runs[0]["run_type"] == "agent_generate"
+    assert runs[0]["status"] in {"completed", "partial"}
+
+    resp = await authed_client.get(f"/api/nodes/project/{project['id']}")
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()
+    all_mappings = [mapping for node in nodes for mapping in node["reference_mappings"]]
+    assert any(mapping["ref_id"] == "T1595" for mapping in all_mappings)
+    assert any(mapping["ref_id"] == "SRP-001" for mapping in all_mappings)
+    assert all(mapping["ref_id"] != "T999999" for mapping in all_mappings)
+    attack_mapping = next(mapping for mapping in all_mappings if mapping["ref_id"] == "T1595")
+    assert attack_mapping["confidence"] == 0.93
+    assert attack_mapping["source"] == "ai"
+    assert attack_mapping["rationale"].startswith("Matches the node")
+
+
+@pytest.mark.asyncio
+async def test_llm_suggest_filters_duplicate_branch_titles_against_existing_siblings(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Suggestion Dedupe Provider")
+
+    resp = await authed_client.post("/api/projects", json={"name": "Suggestion Dedupe Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Root Goal",
+        "node_type": "goal",
+        "logic_type": "OR",
+    })
+    assert resp.status_code == 201, resp.text
+    root = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "parent_id": root["id"],
+        "title": "Active Scanning",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+
+    async def fake_chat_completion(*args, **kwargs):
+        return {
+            "status": "success",
+            "content": json.dumps([
+                {
+                    "title": "Active Scanning",
+                    "description": "Duplicate of an existing sibling.",
+                    "node_type": "attack_step",
+                    "logic_type": "OR",
+                    "threat_category": "Reconnaissance",
+                    "likelihood": 6,
+                    "impact": 4,
+                },
+                {
+                    "title": "Active Scannings",
+                    "description": "Normalized duplicate of an existing sibling.",
+                    "node_type": "attack_step",
+                    "logic_type": "OR",
+                    "threat_category": "Reconnaissance",
+                    "likelihood": 6,
+                    "impact": 4,
+                },
+                {
+                    "title": "Credential Token",
+                    "description": "Distinct new branch suggestion.",
+                    "node_type": "attack_step",
+                    "logic_type": "OR",
+                    "threat_category": "Credential Access",
+                    "likelihood": 7,
+                    "impact": 6,
+                },
+                {
+                    "title": "Credential Tokens",
+                    "description": "Normalized duplicate of the new suggestion.",
+                    "node_type": "attack_step",
+                    "logic_type": "OR",
+                    "threat_category": "Credential Access",
+                    "likelihood": 7,
+                    "impact": 6,
+                },
+            ]),
+            "model": "test-model",
+            "tokens": 30,
+            "elapsed_ms": 10,
+        }
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+
+    resp = await authed_client.post("/api/llm/suggest", json={
+        "node_id": root["id"],
+        "project_id": project_id,
+        "suggestion_type": "branches",
+    })
+    assert resp.status_code == 200, resp.text
+    suggestions = resp.json()["suggestions"]
+    assert len(suggestions) == 1
+    assert suggestions[0]["title"] == "Credential Token"
+
+
+@pytest.mark.asyncio
+async def test_llm_suggest_returns_typed_items_for_non_branch_suggestions(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Typed Suggestion Provider")
+
+    resp = await authed_client.post("/api/projects", json={"name": "Typed Suggestion Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Phishing Step",
+        "node_type": "attack_step",
+        "attack_surface": "Email",
+    })
+    assert resp.status_code == 201, resp.text
+    node = resp.json()
+
+    async def fake_chat_completion(*args, **kwargs):
+        prompt = args[1][-1]["content"]
+        if "suggest 3-5 specific mitigations" in prompt:
+            content = [
+                {
+                    "title": "Enforce phishing-resistant MFA",
+                    "description": "Require phishing-resistant MFA on mailbox and SSO entry points.",
+                    "effectiveness": 0.8,
+                }
+            ]
+        elif "suggest 3-5 specific detection opportunities" in prompt:
+            content = [
+                {
+                    "title": "Monitor suspicious inbox rule creation",
+                    "description": "Alert on mailbox forwarding and inbox-rule creation anomalies.",
+                    "coverage": 0.7,
+                    "data_source": "M365 audit log",
+                }
+            ]
+        else:
+            content = [
+                {
+                    "framework": "attack",
+                    "ref_id": "T1566",
+                    "ref_name": "Phishing",
+                    "confidence": 0.9,
+                    "rationale": "Direct match to email-driven initial access.",
+                },
+                {
+                    "framework": "attack",
+                    "ref_id": "T0000",
+                    "ref_name": "Invalid Technique",
+                    "confidence": 0.2,
+                    "rationale": "Should be filtered out.",
+                },
+            ]
+        return {
+            "status": "success",
+            "content": json.dumps(content),
+            "model": "test-model",
+            "tokens": 40,
+            "elapsed_ms": 12,
+        }
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+
+    resp = await authed_client.post("/api/llm/suggest", json={
+        "node_id": node["id"],
+        "project_id": project_id,
+        "suggestion_type": "mitigations",
+    })
+    assert resp.status_code == 200, resp.text
+    mitigation_suggestion = resp.json()["suggestions"][0]
+    assert mitigation_suggestion["kind"] == "mitigation"
+    assert mitigation_suggestion["effectiveness"] == 0.8
+
+    resp = await authed_client.post("/api/llm/suggest", json={
+        "node_id": node["id"],
+        "project_id": project_id,
+        "suggestion_type": "detections",
+    })
+    assert resp.status_code == 200, resp.text
+    detection_suggestion = resp.json()["suggestions"][0]
+    assert detection_suggestion["kind"] == "detection"
+    assert detection_suggestion["data_source"] == "M365 audit log"
+
+    resp = await authed_client.post("/api/llm/suggest", json={
+        "node_id": node["id"],
+        "project_id": project_id,
+        "suggestion_type": "mappings",
+    })
+    assert resp.status_code == 200, resp.text
+    mapping_suggestions = resp.json()["suggestions"]
+    assert len(mapping_suggestions) == 1
+    assert mapping_suggestions[0]["kind"] == "mapping"
+    assert mapping_suggestions[0]["ref_id"] == "T1566"
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_dedupes_duplicate_sibling_titles_before_persisting(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Agent Dedupe Provider")
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Agent Dedupe Project",
+        "root_objective": "Model duplicate suppression",
+    })
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+
+    async def fake_chat_completion(config, messages, temperature=0.7, max_tokens=0, timeout_override=None):
+        prompt = messages[-1]["content"]
+        if "Generate a complete attack tree" in prompt:
+            return {
+                "status": "success",
+                "content": json.dumps(
+                    _build_agent_node_payload(
+                        "Assess duplicate handling",
+                        "Root node for duplicate suppression tests.",
+                        node_type="goal",
+                        logic_type="OR",
+                        status="validated",
+                        platform="Enterprise Environment",
+                        attack_surface="Multiple",
+                        threat_category="Reconnaissance",
+                        required_access="None/Public",
+                        required_privileges="None",
+                        required_skill="Medium",
+                        likelihood=6,
+                        impact=6,
+                        effort=4,
+                        exploitability=6,
+                        detectability=5,
+                        children=[
+                            _build_agent_node_payload(
+                                "Credential Token",
+                                "First sibling title.",
+                                node_type="attack_step",
+                                logic_type="OR",
+                                status="validated",
+                                platform="Enterprise Environment",
+                                attack_surface="Identity",
+                                threat_category="Credential Access",
+                                required_access="Authenticated User",
+                                required_privileges="User",
+                                required_skill="Medium",
+                                likelihood=6,
+                                impact=6,
+                                effort=4,
+                                exploitability=6,
+                                detectability=5,
+                                children=[],
+                            ),
+                            _build_agent_node_payload(
+                                "Credential Tokens",
+                                "Normalized duplicate sibling title that should be dropped.",
+                                node_type="attack_step",
+                                logic_type="OR",
+                                status="validated",
+                                platform="Enterprise Environment",
+                                attack_surface="Identity",
+                                threat_category="Credential Access",
+                                required_access="Authenticated User",
+                                required_privileges="User",
+                                required_skill="Medium",
+                                likelihood=6,
+                                impact=6,
+                                effort=4,
+                                exploitability=6,
+                                detectability=5,
+                                children=[],
+                            ),
+                            _build_agent_node_payload(
+                                "Remote Support Tunnel Hijack",
+                                "Distinct sibling title that should remain.",
+                                node_type="attack_step",
+                                logic_type="OR",
+                                status="validated",
+                                platform="Enterprise Environment",
+                                attack_surface="Remote Access",
+                                threat_category="Initial Access",
+                                required_access="None/Public",
+                                required_privileges="None",
+                                required_skill="Medium",
+                                likelihood=6,
+                                impact=7,
+                                effort=5,
+                                exploitability=6,
+                                detectability=5,
+                                children=[],
+                            ),
+                        ],
+                    )
+                ),
+                "model": "test-model",
+                "tokens": 60,
+                "elapsed_ms": 20,
+            }
+
+        if "suggest the most relevant reference mappings" in prompt:
+            return {
+                "status": "success",
+                "content": "[]",
+                "model": "test-model",
+                "tokens": 10,
+                "elapsed_ms": 5,
+            }
+
+        if "suggest detailed mitigations and detections" in prompt:
+            return {
+                "status": "success",
+                "content": "[]",
+                "model": "test-model",
+                "tokens": 10,
+                "elapsed_ms": 5,
+            }
+
+        pytest.fail(f"Unexpected AI prompt: {prompt[:160]}")
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(llm_service, "find_best_template_for_objective", lambda *args, **kwargs: None)
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": project["id"],
+        "objective": "Model duplicate suppression",
+        "scope": "Focus on sibling-title dedupe in generated trees",
+        "depth": 2,
+        "breadth": 3,
+        "mode": "generate",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    run_status = await _wait_for_agent_run_completion(authed_client, body["agent_run_id"])
+    assert any("duplicate AI-generated child titles" in warning for warning in run_status["warnings"])
+
+    resp = await authed_client.get(f"/api/nodes/project/{project['id']}")
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()
+    titles = [node["title"] for node in nodes]
+    assert titles.count("Credential Token") == 1
+    assert "Credential Tokens" not in titles
+    assert "Remote Support Tunnel Hijack" in titles
+    assert len(nodes) == 3
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_generates_large_tree_via_branch_local_expansion_prompts(
+    authed_client: AsyncClient,
+    monkeypatch,
+):
+    await _create_active_provider(authed_client, name="Agent Large Tree Provider")
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Agent Large Tree Project",
+        "context_preset": "airport",
+    })
+    assert resp.status_code == 201, resp.text
+    project = resp.json()
+
+    skeleton_prompts: list[str] = []
+    branch_prompts: list[str] = []
+
+    async def fake_chat_completion(config, messages, temperature=0.7, max_tokens=0, timeout_override=None):
+        prompt = messages[-1]["content"]
+        if "Generate a complete attack tree" in prompt:
+            skeleton_prompts.append(prompt)
+            assert "**Tree Depth:** up to 2 levels deep" in prompt
+            return {
+                "status": "success",
+                "content": json.dumps(_build_agent_tree_payload(branch_count=6, leaves_per_branch=0)),
+                "model": "test-model",
+                "tokens": 140,
+                "elapsed_ms": 45,
+            }
+
+        if "Expand one branch of an attack tree using only the local branch context below." in prompt:
+            branch_prompts.append(prompt)
+            assert "Sibling Branches Already Covered Elsewhere" in prompt
+            assert "Leaf 1-1" not in prompt
+            match = re.search(r'"title":\s*"Branch (\d+)"', prompt)
+            assert match is not None, prompt
+            branch_index = int(match.group(1))
+            return {
+                "status": "success",
+                "content": json.dumps(
+                    _build_agent_branch_children_payload(
+                        branch_index,
+                        child_count=6,
+                        grandchild_count=6,
+                    )
+                ),
+                "model": "test-model",
+                "tokens": 220,
+                "elapsed_ms": 55,
+            }
+
+        if "suggest the most relevant reference mappings" in prompt:
+            indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
+            return {
+                "status": "success",
+                "content": json.dumps([
+                    {
+                        "index": idx,
+                        "mappings": [
+                            {"framework": "attack", "ref_id": "T1595", "ref_name": "Active Scanning"},
+                        ],
+                    }
+                    for idx in indexes
+                ]),
+                "model": "test-model",
+                "tokens": 50,
+                "elapsed_ms": 15,
+            }
+
+        if "suggest detailed mitigations and detections" in prompt:
+            indexes = [int(value) for value in re.findall(r'"index"\s*:\s*(\d+)', prompt)]
+            return {
+                "status": "success",
+                "content": json.dumps([
+                    {
+                        "index": idx,
+                        "mitigations": [
+                            {
+                                "title": f"Mitigate {idx}",
+                                "description": "Apply a concrete preventative control with product-specific tuning.",
+                                "effectiveness": 0.8,
+                            }
+                        ],
+                        "detections": [
+                            {
+                                "title": f"Detect {idx}",
+                                "description": "Detect the operator behaviour with endpoint or proxy telemetry.",
+                                "coverage": 0.6,
+                                "data_source": "EDR telemetry",
+                            }
+                        ],
+                    }
+                    for idx in indexes
+                ]),
+                "model": "test-model",
+                "tokens": 70,
+                "elapsed_ms": 20,
+            }
+
+        pytest.fail(f"Unexpected AI prompt: {prompt[:120]}")
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(llm_service, "find_best_template_for_objective", lambda *args, **kwargs: None)
+
+    resp = await authed_client.post("/api/llm/agent", json={
+        "project_id": project["id"],
+        "objective": "Compromise airport operations systems",
+        "scope": "AODB, FIDS, baggage handling, and partner maintenance links",
+        "depth": 4,
+        "breadth": 6,
+        "mode": "generate",
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["nodes_created"] == 259
+    assert body["passes_completed"] == 1
+    assert body["background_processing"] is True
+    run_status = await _wait_for_agent_run_completion(authed_client, body["agent_run_id"])
+    assert run_status["passes_completed"] == 4
+    assert len(skeleton_prompts) == 1
+    assert len(branch_prompts) == 6
+
+    resp = await authed_client.get(f"/api/nodes/project/{project['id']}")
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()
+    assert len(nodes) == 259
+
+
 async def _create_active_provider(client: AsyncClient, *, name: str = "Test Provider") -> dict:
     response = await client.post("/api/llm/providers", json={
         "name": name,
@@ -348,6 +1250,17 @@ async def _create_active_provider(client: AsyncClient, *, name: str = "Test Prov
     })
     assert response.status_code == 201, response.text
     return response.json()
+
+
+async def _wait_for_agent_run_completion(client: AsyncClient, run_id: str) -> dict:
+    for _ in range(100):
+        response = await client.get(f"/api/llm/agent-runs/{run_id}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        if body["status"] in {"completed", "completed_with_warnings", "failed"}:
+            return body
+        await asyncio.sleep(0.02)
+    pytest.fail(f"Agent run {run_id} did not complete in time")
 
 
 def _kill_chain_overview_payload(phases: list[str]) -> dict:
@@ -490,77 +1403,159 @@ def _infra_branch_fallback_payload(branch_label: str, category: str) -> dict:
     }
 
 
+def _build_agent_node_payload(
+    title: str,
+    description: str,
+    *,
+    node_type: str,
+    logic_type: str,
+    status: str,
+    platform: str,
+    attack_surface: str,
+    threat_category: str,
+    required_access: str,
+    required_privileges: str,
+    required_skill: str,
+    likelihood: int,
+    impact: int,
+    effort: int,
+    exploitability: int,
+    detectability: int,
+    children: list[dict],
+) -> dict:
+    return {
+        "title": title,
+        "description": description,
+        "node_type": node_type,
+        "logic_type": logic_type,
+        "status": status,
+        "platform": platform,
+        "attack_surface": attack_surface,
+        "threat_category": threat_category,
+        "required_access": required_access,
+        "required_privileges": required_privileges,
+        "required_skill": required_skill,
+        "likelihood": likelihood,
+        "impact": impact,
+        "effort": effort,
+        "exploitability": exploitability,
+        "detectability": detectability,
+        "children": children,
+    }
+
+
+def _build_agent_branch_children_payload(
+    branch_index: int,
+    *,
+    child_count: int = 6,
+    grandchild_count: int = 0,
+) -> list[dict]:
+    children = []
+    for child_index in range(1, child_count + 1):
+        grandchildren = [
+            _build_agent_node_payload(
+                f"Leaf {branch_index}-{child_index}-{grandchild_index}",
+                (
+                    f"Leaf {branch_index}-{child_index}-{grandchild_index} models a concrete operator action "
+                    "with tooling, access preconditions, and the expected control impact on success."
+                ),
+                node_type="attack_step",
+                logic_type="OR",
+                status="validated",
+                platform="Windows Server 2022",
+                attack_surface="Identity Infrastructure",
+                threat_category="Credential Access",
+                required_access="Authenticated User",
+                required_privileges="User",
+                required_skill="High",
+                likelihood=7,
+                impact=8,
+                effort=6,
+                exploitability=7,
+                detectability=4,
+                children=[],
+            )
+            for grandchild_index in range(1, grandchild_count + 1)
+        ]
+        children.append(
+            _build_agent_node_payload(
+                f"Leaf {branch_index}-{child_index}",
+                (
+                    f"Leaf {branch_index}-{child_index} models a concrete operator action with tooling, "
+                    "access preconditions, and the expected control impact on success."
+                ),
+                node_type="sub_goal" if grandchildren else "attack_step",
+                logic_type="OR",
+                status="validated",
+                platform="Windows Server 2022",
+                attack_surface="Identity Infrastructure",
+                threat_category="Credential Access",
+                required_access="Authenticated User",
+                required_privileges="User",
+                required_skill="High",
+                likelihood=7,
+                impact=8,
+                effort=6,
+                exploitability=7,
+                detectability=4,
+                children=grandchildren,
+            )
+        )
+    return children
+
+
 def _build_agent_tree_payload(branch_count: int = 6, leaves_per_branch: int = 6) -> dict:
     children = []
     for branch_index in range(1, branch_count + 1):
-        branch_children = []
-        for leaf_index in range(1, leaves_per_branch + 1):
-            branch_children.append({
-                "title": f"Leaf {branch_index}-{leaf_index}",
-                "description": (
-                    f"Leaf {branch_index}-{leaf_index} models a concrete operator action with tooling, "
-                    "access preconditions, and the expected control impact on success."
+        children.append(
+            _build_agent_node_payload(
+                f"Branch {branch_index}",
+                (
+                    f"Branch {branch_index} represents a distinct operational path with concrete access abuse "
+                    "and follow-on intrusion opportunities."
                 ),
-                "node_type": "attack_step",
-                "logic_type": "OR",
-                "status": "validated",
-                "platform": "Windows Server 2022",
-                "attack_surface": "Identity Infrastructure",
-                "threat_category": "Credential Access",
-                "required_access": "Authenticated User",
-                "required_privileges": "User",
-                "required_skill": "High",
-                "likelihood": 7,
-                "impact": 8,
-                "effort": 6,
-                "exploitability": 7,
-                "detectability": 4,
-                "children": [],
-            })
-        children.append({
-            "title": f"Branch {branch_index}",
-            "description": (
-                f"Branch {branch_index} represents a distinct operational path with concrete access abuse "
-                "and follow-on intrusion opportunities."
-            ),
-            "node_type": "sub_goal",
-            "logic_type": "OR",
-            "status": "validated",
-            "platform": "Hybrid Enterprise",
-            "attack_surface": "Remote Access",
-            "threat_category": "Initial Access",
-            "required_access": "None/Public",
-            "required_privileges": "None",
-            "required_skill": "Medium",
-            "likelihood": 6,
-            "impact": 7,
-            "effort": 5,
-            "exploitability": 7,
-            "detectability": 5,
-            "children": branch_children,
-        })
-    return {
-        "title": "Compromise target environment",
-        "description": (
+                node_type="sub_goal",
+                logic_type="OR",
+                status="validated",
+                platform="Hybrid Enterprise",
+                attack_surface="Remote Access",
+                threat_category="Initial Access",
+                required_access="None/Public",
+                required_privileges="None",
+                required_skill="Medium",
+                likelihood=6,
+                impact=7,
+                effort=5,
+                exploitability=7,
+                detectability=5,
+                children=_build_agent_branch_children_payload(
+                    branch_index,
+                    child_count=leaves_per_branch,
+                ),
+            )
+        )
+    return _build_agent_node_payload(
+        "Compromise target environment",
+        (
             "The root goal models the complete intrusion objective across the exposed trust boundaries, "
             "operator workflows, and business-critical systems in scope."
         ),
-        "node_type": "goal",
-        "logic_type": "OR",
-        "status": "validated",
-        "platform": "Enterprise Environment",
-        "attack_surface": "Multiple",
-        "threat_category": "Impact",
-        "required_access": "None/Public",
-        "required_privileges": "None",
-        "required_skill": "High",
-        "likelihood": 6,
-        "impact": 9,
-        "effort": 6,
-        "exploitability": 7,
-        "detectability": 4,
-        "children": children,
-    }
+        node_type="goal",
+        logic_type="OR",
+        status="validated",
+        platform="Enterprise Environment",
+        attack_surface="Multiple",
+        threat_category="Impact",
+        required_access="None/Public",
+        required_privileges="None",
+        required_skill="High",
+        likelihood=6,
+        impact=9,
+        effort=6,
+        exploitability=7,
+        detectability=4,
+        children=children,
+    )
 
 
 @pytest_asyncio.fixture
@@ -580,12 +1575,7 @@ async def authed_client():
 async def admin_client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response = await ac.post("/api/auth/login", json={
-            "identifier": "administrator",
-            "password": "AdminPass!234",
-        })
-        assert response.status_code == 200, response.text
-        ac.headers.update({"Authorization": f"Bearer {response.json()['access_token']}"})
+        ac.headers.update(await _login_as_seed_admin(ac))
         yield ac
 
 
@@ -606,6 +1596,40 @@ async def test_seeded_adminaccount_can_login_by_username(client: AsyncClient):
     assert resp.json()["user"]["name"] == "adminaccount"
     assert resp.json()["user"]["username"] == "admin12345"
     assert resp.json()["user"]["role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_only_admin12345_is_seeded_by_default(client: AsyncClient):
+    admin_headers = await _login_as_seed_admin(client)
+    resp = await client.get("/api/auth/users", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    users = resp.json()
+    assert len(users) == 1
+    assert users[0]["username"] == "admin12345"
+    assert users[0]["approval_status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_init_db_preserves_non_legacy_users_with_seed_like_usernames():
+    async with db_module.async_session_factory() as session:
+        session.add(User(
+            name="Alice Real",
+            username="alice",
+            email="alice.real@example.com",
+            password_hash=hash_password("Password!123"),
+            role="user",
+            is_active=True,
+            approval_status="approved",
+        ))
+        await session.commit()
+
+    await db_module.init_db()
+
+    async with db_module.async_session_factory() as session:
+        result = await session.execute(select(User).where(User.email == "alice.real@example.com"))
+        user = result.scalar_one_or_none()
+        assert user is not None
+        assert user.username == "alice"
 
 
 @pytest.mark.asyncio
@@ -639,6 +1663,283 @@ async def test_project_crud(authed_client: AsyncClient):
     # Delete
     resp = await authed_client.delete(f"/api/projects/{project_id}")
     assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_project_list_reports_node_counts(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Node Count A"})
+    assert resp.status_code == 201, resp.text
+    project_a = resp.json()["id"]
+
+    resp = await authed_client.post("/api/projects", json={"name": "Node Count B"})
+    assert resp.status_code == 201, resp.text
+    project_b = resp.json()["id"]
+
+    for title in ("A-Root", "A-Child"):
+        resp = await authed_client.post("/api/nodes", json={
+            "project_id": project_a,
+            "title": title,
+            "node_type": "attack_step",
+        })
+        assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_b,
+        "title": "B-Only",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.get("/api/projects")
+    assert resp.status_code == 200, resp.text
+    projects = {project["id"]: project for project in resp.json()["projects"]}
+    assert projects[project_a]["node_count"] == 2
+    assert projects[project_b]["node_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_project_dashboard_aggregates_workspace_data(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Dashboard Project",
+        "context_preset": "web_application",
+        "workspace_mode": "standalone_scan",
+    })
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Compromise VPN Gateway",
+        "node_type": "attack_step",
+        "status": "validated",
+        "attack_surface": "Edge",
+        "platform": "Network",
+        "required_access": "external",
+        "likelihood": 9,
+        "impact": 9,
+        "effort": 2,
+        "exploitability": 9,
+        "detectability": 2,
+    })
+    assert resp.status_code == 201, resp.text
+    covered_node = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Abuse inherited admin session",
+        "node_type": "attack_step",
+        "status": "validated",
+        "attack_surface": "Identity",
+        "platform": "Cloud",
+        "required_access": "partner",
+        "likelihood": 8,
+        "impact": 8,
+        "effort": 3,
+        "exploitability": 8,
+        "detectability": 3,
+    })
+    assert resp.status_code == 201, resp.text
+    gap_node = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Review operational assumptions",
+        "node_type": "goal",
+    })
+    assert resp.status_code == 201, resp.text
+    draft_node = resp.json()
+
+    resp = await authed_client.post("/api/mitigations", json={
+        "node_id": covered_node["id"],
+        "title": "Harden edge access policy",
+        "effectiveness": 0.75,
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/detections", json={
+        "node_id": covered_node["id"],
+        "title": "Alert on impossible travel",
+        "coverage": 0.8,
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/references", json={
+        "node_id": covered_node["id"],
+        "framework": "attack",
+        "ref_id": "T1133",
+        "ref_name": "External Remote Services",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/scenarios", json={
+        "project_id": project_id,
+        "name": "Remote access intrusion",
+        "operation_goal": "Exercise the edge compromise path",
+        "entry_vectors": ["VPN"],
+        "campaign_phases": ["Initial access", "Credential access"],
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/kill-chains", json={
+        "project_id": project_id,
+        "name": "Edge intrusion chain",
+        "framework": "unified",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "Remote Access Threat Model",
+        "scope": "VPN and identity control plane",
+        "methodology": "stride",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/infra-maps", json={
+        "project_id": project_id,
+        "name": "Edge Infrastructure",
+    })
+    assert resp.status_code == 201, resp.text
+
+    now = datetime.now(timezone.utc)
+    async with db_module.async_session_factory() as session:
+        session.add_all([
+            Snapshot(
+                project_id=project_id,
+                label="baseline",
+                tree_data={"nodes": []},
+                created_by="test-suite",
+            ),
+            AnalysisRun(
+                project_id=project_id,
+                tool="tree_builder",
+                run_type="workspace_refresh",
+                status="completed",
+                artifact_kind="project",
+                artifact_name="Dashboard Project",
+                summary="Refreshed attack tree coverage",
+                metadata_json={"source": "test"},
+                duration_ms=1200,
+                created_at=now - timedelta(minutes=10),
+            ),
+            AnalysisRun(
+                project_id=project_id,
+                tool="threat_model",
+                run_type="threat_enrichment",
+                status="partial",
+                artifact_kind="threat_model",
+                artifact_name="Remote Access Threat Model",
+                summary="Mapped threats to the access layer",
+                metadata_json={"source": "test"},
+                duration_ms=2600,
+                created_at=now,
+            ),
+        ])
+        await session.commit()
+
+    resp = await authed_client.get(f"/api/dashboard/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    analysis = body["analysis"]
+
+    assert body["project"]["id"] == project_id
+    assert body["project"]["node_count"] == 3
+    assert body["artifacts"] == {
+        "scenarios": 1,
+        "kill_chains": 1,
+        "threat_models": 1,
+        "infra_maps": 1,
+        "snapshots": 1,
+    }
+    assert analysis["total_nodes"] == 3
+    assert analysis["scored"] == 2
+    assert analysis["review_backlog"] == 1
+    assert analysis["no_mitigation_count"] == 2
+    assert analysis["no_detection_count"] == 2
+    assert analysis["no_mapping_count"] == 2
+    expected_gap_count = sum(
+        1
+        for node in (covered_node, gap_node, draft_node)
+        if node.get("inherent_risk") is not None
+        and node["inherent_risk"] >= 6.0
+        and node["id"] != covered_node["id"]
+    )
+    assert analysis["gap_count"] == expected_gap_count
+    assert analysis["top_risks"][0]["id"] == max(
+        (covered_node, gap_node),
+        key=lambda node: node["inherent_risk"] or 0.0,
+    )["id"]
+    assert [run["tool"] for run in body["analysis_runs"]] == ["threat_model", "tree_builder"]
+
+
+@pytest.mark.asyncio
+async def test_portfolio_dashboard_aggregates_workspaces(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Project Scan Workspace",
+        "context_preset": "web_application",
+        "workspace_mode": "project_scan",
+    })
+    assert resp.status_code == 201, resp.text
+    project_scan_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/projects", json={
+        "name": "Standalone Workspace",
+        "context_preset": "telecoms_base_station",
+        "workspace_mode": "standalone_scan",
+    })
+    assert resp.status_code == 201, resp.text
+    standalone_id = resp.json()["id"]
+
+    for project_id, title in (
+        (project_scan_id, "Web foothold"),
+        (project_scan_id, "API abuse"),
+        (standalone_id, "Timing disruption"),
+    ):
+        resp = await authed_client.post("/api/nodes", json={
+            "project_id": project_id,
+            "title": title,
+            "node_type": "attack_step",
+            "status": "validated",
+            "likelihood": 7,
+            "impact": 7,
+            "effort": 4,
+            "exploitability": 7,
+            "detectability": 4,
+        })
+        assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/scenarios", json={
+        "project_id": project_scan_id,
+        "name": "Web application scenario",
+        "operation_goal": "Validate project scan coverage",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/infra-maps", json={
+        "project_id": standalone_id,
+        "name": "Standalone infra map",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.get("/api/dashboard/portfolio")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    workspaces = {workspace["project"]["id"]: workspace for workspace in body["workspaces"]}
+
+    assert len(body["workspaces"]) == 2
+    assert body["project_scans"] == 1
+    assert body["standalone_scans"] == 1
+    assert body["contexts"] == {
+        "web_application": 1,
+        "telecoms_base_station": 1,
+    }
+    assert body["aggregate"]["total_nodes"] == 3
+    assert body["artifact_totals"]["scenarios"] == 1
+    assert body["artifact_totals"]["infra_maps"] == 1
+    assert workspaces[project_scan_id]["project"]["node_count"] == 2
+    assert workspaces[project_scan_id]["total_artifacts"] == 1
+    assert workspaces[standalone_id]["project"]["node_count"] == 1
+    assert workspaces[standalone_id]["total_artifacts"] == 1
 
 
 @pytest.mark.asyncio
@@ -692,6 +1993,57 @@ async def test_node_crud(authed_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_node_parent_validation_blocks_cross_project_links_and_cycles(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Project A"})
+    assert resp.status_code == 201
+    project_a = resp.json()["id"]
+
+    resp = await authed_client.post("/api/projects", json={"name": "Project B"})
+    assert resp.status_code == 201
+    project_b = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_a,
+        "title": "Root A",
+        "node_type": "goal",
+    })
+    assert resp.status_code == 201
+    root_a = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_b,
+        "title": "Root B",
+        "node_type": "goal",
+    })
+    assert resp.status_code == 201
+    root_b = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_a,
+        "parent_id": root_a["id"],
+        "title": "Child A",
+    })
+    assert resp.status_code == 201
+    child_a = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_a,
+        "parent_id": root_b["id"],
+        "title": "Cross Project Parent",
+    })
+    assert resp.status_code == 400
+    assert "same project" in resp.text.lower()
+
+    resp = await authed_client.patch(f"/api/nodes/{root_a['id']}", json={"parent_id": root_a["id"]})
+    assert resp.status_code == 400
+    assert "own parent" in resp.text.lower()
+
+    resp = await authed_client.patch(f"/api/nodes/{root_a['id']}", json={"parent_id": child_a["id"]})
+    assert resp.status_code == 400
+    assert "descendant" in resp.text.lower()
+
+
+@pytest.mark.asyncio
 async def test_mitigation_creation(authed_client: AsyncClient):
     # Setup
     resp = await authed_client.post("/api/projects", json={"name": "Mit Test"})
@@ -710,6 +2062,62 @@ async def test_mitigation_creation(authed_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_rollups_recalculate_automatically_after_tree_edits(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Auto Rollup"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Root",
+        "node_type": "goal",
+        "logic_type": "OR",
+    })
+    assert resp.status_code == 201
+    root_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "parent_id": root_id,
+        "title": "Child",
+        "likelihood": 8,
+        "impact": 8,
+        "effort": 4,
+        "exploitability": 6,
+        "detectability": 5,
+    })
+    assert resp.status_code == 201
+    child = resp.json()
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200
+    nodes = resp.json()
+    root = next(node for node in nodes if node["id"] == root_id)
+    child = next(node for node in nodes if node["id"] == child["id"])
+    assert root["rolled_up_risk"] == child["inherent_risk"]
+    original_rollup = root["rolled_up_risk"]
+
+    resp = await authed_client.patch(f"/api/nodes/{child['id']}", json={"likelihood": 4})
+    assert resp.status_code == 200
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200
+    nodes = resp.json()
+    root = next(node for node in nodes if node["id"] == root_id)
+    child = next(node for node in nodes if node["id"] == child["id"])
+    assert root["rolled_up_risk"] == child["inherent_risk"]
+    assert root["rolled_up_risk"] != original_rollup
+
+    resp = await authed_client.delete(f"/api/nodes/{child['id']}")
+    assert resp.status_code == 204
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200
+    root = next(node for node in resp.json() if node["id"] == root_id)
+    assert root["rolled_up_risk"] is None
+
+
+@pytest.mark.asyncio
 async def test_reference_browsing(authed_client: AsyncClient):
     resp = await authed_client.get("/api/references/browse/attack")
     assert resp.status_code == 200
@@ -717,10 +2125,299 @@ async def test_reference_browsing(authed_client: AsyncClient):
     assert data["framework"] == "attack"
     assert data["count"] > 0
 
+    resp = await authed_client.get("/api/references/browse/infra_attack_patterns")
+    assert resp.status_code == 200
+    infra_data = resp.json()
+    assert infra_data["framework"] == "infra_attack_patterns"
+    assert infra_data["count"] >= 20
+    assert infra_data["filter_field"] == "category"
+    assert "Timing / PNT" in infra_data["filter_options"]
+
+    resp = await authed_client.get("/api/references/browse/infra_attack_patterns?filter=Timing%20%2F%20PNT")
+    assert resp.status_code == 200
+    timing_data = resp.json()
+    assert timing_data["count"] >= 3
+    assert all(item["category"] == "Timing / PNT" for item in timing_data["items"])
+
+    resp = await authed_client.get("/api/references/browse/software_research_patterns")
+    assert resp.status_code == 200
+    software_data = resp.json()
+    assert software_data["framework"] == "software_research_patterns"
+    assert software_data["count"] >= 60
+    assert software_data["filter_field"] == "category"
+    assert "Trust Boundary Review" in software_data["filter_options"]
+    assert "Binary and Reverse Engineering" in software_data["filter_options"]
+    assert "Dynamic Observation and Instrumentation" in software_data["filter_options"]
+
+    resp = await authed_client.get("/api/references/browse/software_research_patterns?filter=Runtime%20and%20Isolation")
+    assert resp.status_code == 200
+    runtime_data = resp.json()
+    assert runtime_data["count"] >= 6
+    assert all(item["category"] == "Runtime and Isolation" for item in runtime_data["items"])
+
+    resp = await authed_client.get("/api/references/browse/software_research_patterns?filter=Dynamic%20Observation%20and%20Instrumentation")
+    assert resp.status_code == 200
+    dynamic_data = resp.json()
+    assert dynamic_data["count"] >= 5
+    assert all(item["category"] == "Dynamic Observation and Instrumentation" for item in dynamic_data["items"])
+
+
+@pytest.mark.asyncio
+async def test_tree_analysis_endpoints_reject_malformed_cycles(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Malformed Tree"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Root",
+        "node_type": "goal",
+    })
+    assert resp.status_code == 201
+    root = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "parent_id": root["id"],
+        "title": "Child",
+    })
+    assert resp.status_code == 201
+    child = resp.json()
+
+    async with db_module.async_session_factory() as session:
+        result = await session.execute(select(Node).where(Node.id.in_([root["id"], child["id"]])))
+        by_id = {node.id: node for node in result.scalars().all()}
+        by_id[root["id"]].parent_id = child["id"]
+        await session.commit()
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}/critical-path")
+    assert resp.status_code == 409
+    assert "cycle" in resp.text.lower()
+
+    resp = await authed_client.get(f"/api/export/risk-engine/{project_id}")
+    assert resp.status_code == 409
+    assert "cycle" in resp.text.lower()
+
+    resp = await authed_client.get("/api/references/browse/software_research_patterns?q=deserialization")
+    assert resp.status_code == 200
+    search_data = resp.json()
+    assert search_data["count"] > 0
+
+    resp = await authed_client.get("/api/references/browse/owasp")
+    assert resp.status_code == 200
+    owasp_data = resp.json()
+    assert owasp_data["framework"] == "owasp"
+    assert owasp_data["count"] >= 115
+    assert owasp_data["filter_field"] == "category"
+    assert "Infrastructure" in owasp_data["filter_options"]
+    assert "Non-Human Identities" in owasp_data["filter_options"]
+    assert "MCP" in owasp_data["filter_options"]
+
+    resp = await authed_client.get("/api/references/browse/owasp?filter=Infrastructure")
+    assert resp.status_code == 200
+    infrastructure_data = resp.json()
+    assert infrastructure_data["count"] >= 10
+    assert all(item["category"] == "Infrastructure" for item in infrastructure_data["items"])
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_reparents_descendants_to_surviving_ancestor(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Bulk Delete Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Root",
+        "node_type": "goal",
+    })
+    assert resp.status_code == 201, resp.text
+    root = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "parent_id": root["id"],
+        "title": "Child",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+    child = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "parent_id": child["id"],
+        "title": "Grandchild",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+    grandchild = resp.json()
+
+    resp = await authed_client.post("/api/nodes/bulk/delete", json={
+        "node_ids": [root["id"], child["id"]],
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] == 2
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()
+    assert len(nodes) == 1
+    assert nodes[0]["id"] == grandchild["id"]
+    assert nodes[0]["parent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_critical_path_uses_local_node_risk_without_double_counting_rollups(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Critical Path Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Root",
+        "node_type": "goal",
+        "logic_type": "OR",
+    })
+    assert resp.status_code == 201, resp.text
+    root = resp.json()
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "parent_id": root["id"],
+        "title": "Child",
+        "node_type": "attack_step",
+        "likelihood": 5,
+        "impact": 10,
+        "effort": 5,
+        "exploitability": 10,
+        "detectability": 5,
+    })
+    assert resp.status_code == 201, resp.text
+    child = resp.json()
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}/critical-path")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["path"] == [root["id"], child["id"]]
+    assert body["cumulative_risk"] == pytest.approx(child["inherent_risk"])
+
     # Search
     resp = await authed_client.get("/api/references/browse/cwe?q=injection")
     assert resp.status_code == 200
     assert resp.json()["count"] > 0
+
+
+@pytest.mark.asyncio
+async def test_reference_search_ranks_exact_ids_and_applies_context_boosts(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/references/search", json={
+        "query": "T1595",
+        "artifact_type": "attack_tree",
+        "allowed_frameworks": ["attack", "infra_attack_patterns"],
+        "limit": 5,
+    })
+    assert resp.status_code == 200, resp.text
+    exact_items = resp.json()["items"]
+    assert exact_items[0]["framework"] == "attack"
+    assert exact_items[0]["ref_id"] == "T1595"
+    assert "exact id match" in exact_items[0]["reasons"]
+
+    resp = await authed_client.post("/api/references/search", json={
+        "query": "timing",
+        "artifact_type": "infra_map",
+        "context_preset": "telecoms_base_station",
+        "objective": "Assess GNSS, PTP, and timing assurance resilience",
+        "scope": "Telecom base station with GNSS antenna, PTP grandmaster, and boundary clocks",
+        "target_kind": "infra_node",
+        "target_summary": "Timing distribution and timing assurance dependencies",
+        "allowed_frameworks": ["attack", "infra_attack_patterns", "environment_catalog"],
+        "limit": 5,
+    })
+    assert resp.status_code == 200, resp.text
+    timing_items = resp.json()["items"]
+    assert timing_items[0]["framework"] in {"environment_catalog", "infra_attack_patterns"}
+    assert "artifact relevance" in timing_items[0]["reasons"]
+    assert any(item["framework"] == "environment_catalog" for item in timing_items[:3])
+
+    resp = await authed_client.post("/api/references/search", json={
+        "query": "phishing",
+        "artifact_type": "kill_chain",
+        "objective": "Run a phishing-led intrusion path",
+        "scope": "Corporate users, identity infrastructure, and cloud mail platform",
+        "allowed_frameworks": ["attack", "capec", "owasp"],
+        "limit": 5,
+    })
+    assert resp.status_code == 200, resp.text
+    phishing_items = resp.json()["items"]
+    assert phishing_items[0]["framework"] == "attack"
+    assert phishing_items[0]["ref_id"] == "T1566"
+    assert "artifact relevance" in phishing_items[0]["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_reference_mapping_validation_and_metadata_round_trip(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Reference Validation Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Review software attack surface",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+    node = resp.json()
+
+    resp = await authed_client.post("/api/references", json={
+        "node_id": node["id"],
+        "framework": "software_research_patterns",
+        "ref_id": "SRP-001",
+        "ref_name": "Attack Surface Inventory and Exposure Mapping",
+        "confidence": 0.84,
+        "rationale": "Grounds the node in concrete exposure-mapping activity.",
+        "source": "manual",
+    })
+    assert resp.status_code == 201, resp.text
+    mapping = resp.json()
+    assert mapping["framework"] == "software_research_patterns"
+    assert mapping["ref_id"] == "SRP-001"
+    assert mapping["confidence"] == 0.84
+    assert mapping["source"] == "manual"
+
+    resp = await authed_client.get(f"/api/references/node/{node['id']}")
+    assert resp.status_code == 200, resp.text
+    mappings = resp.json()
+    assert len(mappings) == 1
+    assert mappings[0]["rationale"].startswith("Grounds the node")
+
+    resp = await authed_client.patch(f"/api/references/{mapping['id']}", json={
+        "framework": "attack",
+        "ref_id": "T1595",
+        "ref_name": "Active Scanning",
+        "confidence": 0.91,
+        "rationale": "Updated to the primary ATT&CK technique for active discovery.",
+    })
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert updated["framework"] == "attack"
+    assert updated["ref_id"] == "T1595"
+    assert updated["confidence"] == 0.91
+    assert updated["rationale"].startswith("Updated to the primary")
+
+    resp = await authed_client.post("/api/references", json={
+        "node_id": node["id"],
+        "framework": "attack",
+        "ref_id": "T999999",
+        "ref_name": "Imaginary Technique",
+    })
+    assert resp.status_code == 400, resp.text
+    assert "Unknown reference identifier" in resp.text
+
+    resp = await authed_client.patch(f"/api/references/{mapping['id']}", json={
+        "framework": "environment_catalog",
+        "ref_id": "missing-reference-id",
+    })
+    assert resp.status_code == 400, resp.text
+    assert "Unknown reference identifier" in resp.text
 
 
 @pytest.mark.asyncio
@@ -797,6 +2494,54 @@ async def test_export_json(authed_client: AsyncClient):
 
     resp = await authed_client.post("/api/export/csv", json={"project_id": project_id})
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_export_import_preserves_reference_mapping_metadata(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Reference Export Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Catalogue exposed services",
+        "node_type": "attack_step",
+    })
+    assert resp.status_code == 201, resp.text
+    node = resp.json()
+
+    resp = await authed_client.post("/api/references", json={
+        "node_id": node["id"],
+        "framework": "attack",
+        "ref_id": "T1595",
+        "ref_name": "Active Scanning",
+        "confidence": 0.77,
+        "rationale": "Used to model deliberate network discovery against exposed services.",
+        "source": "manual",
+    })
+    assert resp.status_code == 201, resp.text
+
+    resp = await authed_client.post("/api/export/json", json={"project_id": project_id})
+    assert resp.status_code == 200, resp.text
+    exported = resp.json()
+    exported_node = next(item for item in exported["nodes"] if item["title"] == "Catalogue exposed services")
+    assert exported_node["reference_mappings"][0]["ref_id"] == "T1595"
+    assert exported_node["reference_mappings"][0]["confidence"] == 0.77
+    assert exported_node["reference_mappings"][0]["source"] == "manual"
+    assert exported_node["reference_mappings"][0]["rationale"].startswith("Used to model deliberate")
+
+    resp = await authed_client.post("/api/export/import", json=exported)
+    assert resp.status_code == 200, resp.text
+    imported_project_id = resp.json()["project_id"]
+
+    resp = await authed_client.get(f"/api/nodes/project/{imported_project_id}")
+    assert resp.status_code == 200, resp.text
+    imported_node = next(item for item in resp.json() if item["title"] == "Catalogue exposed services")
+    assert len(imported_node["reference_mappings"]) == 1
+    assert imported_node["reference_mappings"][0]["ref_id"] == "T1595"
+    assert imported_node["reference_mappings"][0]["confidence"] == 0.77
+    assert imported_node["reference_mappings"][0]["source"] == "manual"
+    assert imported_node["reference_mappings"][0]["rationale"].startswith("Used to model deliberate")
 
 
 @pytest.mark.asyncio
@@ -999,6 +2744,87 @@ async def test_project_scenario_simulation_with_controls_and_detections(authed_c
     assert impact["top_exposed_controls"][0]["title"] == "Mailbox detonation"
     assert impact["top_degraded_detections"][0]["title"] == "Suspicious attachment execution"
 
+    resp = await authed_client.get(f"/api/analysis-runs/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    runs = resp.json()
+    assert runs[0]["tool"] == "scenario"
+    assert runs[0]["run_type"] == "planning_pass"
+    assert runs[0]["status"] == "completed"
+    assert runs[0]["artifact_id"] == scenario["id"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_reference_mappings_round_trip(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/scenarios", json={
+        "name": "Timing Support Path Scenario",
+        "scope": "standalone",
+        "scenario_type": "campaign",
+        "operation_goal": "Assess abuse of vendor timing and support paths",
+        "reference_mappings": [
+            {
+                "framework": "infra_attack_patterns",
+                "ref_id": "IAP-004",
+                "ref_name": "Remote Support Tunnel Hijack",
+                "confidence": 0.72,
+                "rationale": "Vendor support tunnels are central to the scenario.",
+                "source": "manual",
+            },
+            {
+                "framework": "attack",
+                "ref_id": "T1566",
+                "ref_name": "Phishing",
+                "confidence": 0.64,
+                "rationale": "One plausible initial-access path for operator credential theft.",
+                "source": "manual",
+            },
+        ],
+    })
+    assert resp.status_code == 201, resp.text
+    scenario = resp.json()
+    assert len(scenario["reference_mappings"]) == 2
+    assert {item["ref_id"] for item in scenario["reference_mappings"]} == {"IAP-004", "T1566"}
+
+    resp = await authed_client.patch(f"/api/scenarios/{scenario['id']}", json={
+        "reference_mappings": [
+            {
+                "framework": "environment_catalog",
+                "ref_id": "timing_assurance_pnt_monitoring",
+                "ref_name": "GNSS Jamming, Spoofing, and Timing Assurance Monitoring",
+                "confidence": 0.66,
+                "rationale": "Captures the telecom timing branch in scope.",
+                "source": "manual",
+            },
+            {
+                "framework": "environment_catalog",
+                "ref_id": "timing_assurance_pnt_monitoring",
+                "ref_name": "GNSS Jamming, Spoofing, and Timing Assurance Monitoring",
+                "confidence": 0.41,
+                "rationale": "Lower-confidence duplicate that should be folded away.",
+                "source": "manual",
+            },
+            {
+                "framework": "infra_attack_patterns",
+                "ref_id": "IAP-004",
+                "ref_name": "Remote Support Tunnel Hijack",
+                "confidence": 0.72,
+                "rationale": "Vendor support tunnels remain relevant.",
+                "source": "manual",
+            },
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert len(updated["reference_mappings"]) == 2
+    timing_mapping = next(item for item in updated["reference_mappings"] if item["ref_id"] == "timing_assurance_pnt_monitoring")
+    assert timing_mapping["confidence"] == 0.66
+    assert timing_mapping["rationale"].startswith("Captures the telecom timing")
+
+    resp = await authed_client.get(f"/api/scenarios/{scenario['id']}")
+    assert resp.status_code == 200, resp.text
+    reloaded = resp.json()
+    assert len(reloaded["reference_mappings"]) == 2
+    assert {item["ref_id"] for item in reloaded["reference_mappings"]} == {"IAP-004", "timing_assurance_pnt_monitoring"}
+
 
 @pytest.mark.asyncio
 async def test_kill_chain_crud(authed_client: AsyncClient):
@@ -1032,6 +2858,80 @@ async def test_kill_chain_crud(authed_client: AsyncClient):
     assert resp.status_code == 200
     assert resp.json()["framework"] == "mitre_attck"
     assert resp.json()["description"] == "Updated campaign timeline"
+
+
+@pytest.mark.asyncio
+async def test_kill_chain_phase_references_round_trip(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Kill Chain Reference Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/nodes", json={
+        "project_id": project_id,
+        "title": "Enumerate exposed services",
+        "node_type": "attack_step",
+        "attack_surface": "Internet-facing management plane",
+    })
+    assert resp.status_code == 201, resp.text
+    node = resp.json()
+
+    resp = await authed_client.post("/api/kill-chains", json={
+        "project_id": project_id,
+        "name": "Reference-backed Kill Chain",
+        "framework": "mitre_attck",
+    })
+    assert resp.status_code == 201, resp.text
+    kill_chain = resp.json()
+
+    resp = await authed_client.patch(f"/api/kill-chains/{kill_chain['id']}", json={
+        "phases": [
+            {
+                "id": "phase-recon",
+                "phase": "Reconnaissance",
+                "phase_index": 1,
+                "description": "Identify reachable services and management paths before delivery.",
+                "mapped_nodes": [
+                    {
+                        "node_id": node["id"],
+                        "technique_id": "T1595",
+                        "technique_name": "Active Scanning",
+                        "confidence": 0.88,
+                    }
+                ],
+                "references": [
+                    {
+                        "framework": "attack",
+                        "ref_id": "T1595",
+                        "ref_name": "Active Scanning",
+                        "confidence": 0.88,
+                        "rationale": "Primary ATT&CK technique for this phase.",
+                        "source": "ai",
+                    },
+                    {
+                        "framework": "infra_attack_patterns",
+                        "ref_id": "IAP-001",
+                        "ref_name": "Management Interface Exposure and Enumeration",
+                        "confidence": 0.71,
+                        "rationale": "Supports the management-plane targeting in this phase.",
+                        "source": "manual",
+                    },
+                ],
+            }
+        ]
+    })
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert len(updated["phases"]) == 1
+    phase = updated["phases"][0]
+    assert phase["id"] == "phase-recon"
+    assert phase["mapped_nodes"][0]["technique_id"] == "T1595"
+    assert {item["ref_id"] for item in phase["references"]} == {"T1595", "IAP-001"}
+
+    resp = await authed_client.get(f"/api/kill-chains/{kill_chain['id']}")
+    assert resp.status_code == 200, resp.text
+    reloaded = resp.json()
+    assert reloaded["phases"][0]["id"] == "phase-recon"
+    assert {item["ref_id"] for item in reloaded["phases"][0]["references"]} == {"T1595", "IAP-001"}
 
 
 @pytest.mark.asyncio
@@ -1137,6 +3037,14 @@ async def test_kill_chain_ai_map_retries_persists_overview_fields_and_canonicali
     listed = next(item for item in resp.json() if item["id"] == kill_chain["id"])
     assert listed["total_estimated_time"] == "3-7 days"
     assert listed["weakest_links"] == ["Remote access infrastructure lacks strong pre-auth anomaly detection."]
+
+    resp = await authed_client.get(f"/api/analysis-runs/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    runs = resp.json()
+    assert runs[0]["tool"] == "kill_chain"
+    assert runs[0]["run_type"] == "ai_map"
+    assert runs[0]["status"] == "completed"
+    assert runs[0]["artifact_id"] == kill_chain["id"]
 
 
 @pytest.mark.asyncio
@@ -1303,7 +3211,12 @@ async def test_kill_chain_manual_structure_change_clears_stale_ai_analysis(authe
     assert resp.status_code == 200, resp.text
     updated = resp.json()
     assert updated["framework"] == "mitre_attck"
-    assert updated["phases"] == [{"phase": "Reconnaissance", "phase_index": 1, "description": "Manual placeholder"}]
+    assert len(updated["phases"]) == 1
+    assert updated["phases"][0]["id"] == "phase-1"
+    assert updated["phases"][0]["phase"] == "Reconnaissance"
+    assert updated["phases"][0]["phase_index"] == 1
+    assert updated["phases"][0]["description"] == "Manual placeholder"
+    assert updated["phases"][0]["references"] == []
     assert updated["ai_summary"] == ""
     assert updated["recommendations"] == []
     assert updated["overall_risk_rating"] == ""
@@ -1347,6 +3260,66 @@ async def test_threat_model_crud(authed_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_threat_model_references_round_trip(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Threat Reference Project"})
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "Reference-backed Threat Model",
+        "scope": "Internet-facing platform with admin APIs",
+        "methodology": "stride",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "components": [{"id": "comp-1", "name": "Admin API", "type": "service"}],
+        "trust_boundaries": [{"id": "tb-1", "name": "External Boundary", "component_ids": ["comp-1"]}],
+        "threats": [
+            {
+                "id": "threat-1",
+                "component_id": "comp-1",
+                "category": "Spoofing",
+                "title": "Abuse trusted admin access path",
+                "description": "Compromise or misuse a trusted ingress into the admin API.",
+                "severity": "high",
+                "references": [
+                    {
+                        "framework": "attack",
+                        "ref_id": "T1078",
+                        "ref_name": "Valid Accounts",
+                        "confidence": 0.83,
+                        "rationale": "Trusted credential abuse is central to the threat.",
+                        "source": "manual",
+                    },
+                    {
+                        "framework": "infra_attack_patterns",
+                        "ref_id": "IAP-004",
+                        "ref_name": "Remote Support Tunnel Hijack",
+                        "confidence": 0.69,
+                        "rationale": "Mirrors abuse of trusted remote access paths.",
+                        "source": "manual",
+                    },
+                ],
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert len(updated["threats"]) == 1
+    threat = updated["threats"][0]
+    assert threat["component_name"] == "Admin API"
+    assert {item["ref_id"] for item in threat["references"]} == {"T1078", "IAP-004"}
+
+    resp = await authed_client.get(f"/api/threat-models/{threat_model['id']}")
+    assert resp.status_code == 200, resp.text
+    reloaded = resp.json()
+    assert {item["ref_id"] for item in reloaded["threats"][0]["references"]} == {"T1078", "IAP-004"}
+
+
+@pytest.mark.asyncio
 async def test_threat_model_update_clears_stale_threats_when_structure_changes(authed_client: AsyncClient):
     resp = await authed_client.post("/api/projects", json={"name": "Threat Update Project"})
     assert resp.status_code == 201
@@ -1362,7 +3335,7 @@ async def test_threat_model_update_clears_stale_threats_when_structure_changes(a
     threat_model = resp.json()
 
     resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
-        "threats": [{"id": "threat-old", "title": "Stale threat", "severity": "high"}],
+        "threats": [{"id": "threat-old", "title": "Stale threat", "category": "Spoofing", "severity": "high"}],
     })
     assert resp.status_code == 200, resp.text
     assert len(resp.json()["threats"]) == 1
@@ -1375,6 +3348,329 @@ async def test_threat_model_update_clears_stale_threats_when_structure_changes(a
     assert resp.status_code == 200, resp.text
     assert resp.json()["threats"] == []
     assert resp.json()["ai_summary"] == ""
+
+
+@pytest.mark.asyncio
+async def test_threat_model_link_to_tree_is_idempotent_and_skips_existing_links(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Threat Link Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "Threat Link Model",
+        "scope": "Operator access and remote administration",
+        "methodology": "stride",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "threats": [
+            {
+                "id": "threat-1",
+                "component_id": "comp-edge",
+                "component_name": "VPN Gateway",
+                "category": "Spoofing",
+                "title": "Gateway credential abuse",
+                "description": "Replay harvested remote-access credentials.",
+                "severity": "high",
+                "attack_vector": "Replay valid remote-access credentials.",
+                "mitigation": "Require phishing-resistant MFA.",
+                "likelihood": 8,
+                "impact": 7,
+            },
+            {
+                "id": "threat-2",
+                "component_id": "comp-admin",
+                "component_name": "Admin Console",
+                "category": "Tampering",
+                "title": "Unauthorized admin workflow changes",
+                "description": "Modify trusted admin workflows after foothold.",
+                "severity": "medium",
+                "attack_vector": "Abuse weak session controls.",
+                "mitigation": "Record privileged sessions and approve changes.",
+                "likelihood": 6,
+                "impact": 7,
+            },
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+
+    resp = await authed_client.post(f"/api/threat-models/{threat_model['id']}/link-to-tree", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["created"] == 2
+    assert body["skipped"] == 0
+    assert set(body["created_threat_ids"]) == {"threat-1", "threat-2"}
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    initial_node_ids = {node["id"] for node in resp.json()}
+    assert len(initial_node_ids) == 2
+
+    resp = await authed_client.post(f"/api/threat-models/{threat_model['id']}/link-to-tree", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["created"] == 0
+    assert body["skipped"] == 2
+    assert body["node_ids"] == []
+    assert set(body["skipped_threat_ids"]) == {"threat-1", "threat-2"}
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    assert {node["id"] for node in resp.json()} == initial_node_ids
+
+    resp = await authed_client.get(f"/api/threat-models/{threat_model['id']}")
+    assert resp.status_code == 200, resp.text
+    linked_ids = {threat["linked_node_id"] for threat in resp.json()["threats"]}
+    assert linked_ids == initial_node_ids
+
+
+@pytest.mark.asyncio
+async def test_threat_model_link_to_tree_recreates_stale_linked_node(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Threat Relink Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "Threat Relink Model",
+        "scope": "Support ingress to admin tooling",
+        "methodology": "stride",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "threats": [
+            {
+                "id": "threat-1",
+                "component_id": "comp-edge",
+                "component_name": "Support Gateway",
+                "category": "Spoofing",
+                "title": "Support credential abuse",
+                "description": "Reuse weakly protected support credentials.",
+                "severity": "high",
+                "attack_vector": "Replay support credentials from a prior breach.",
+                "mitigation": "Rotate credentials and enforce hardware-backed MFA.",
+                "likelihood": 8,
+                "impact": 8,
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+
+    resp = await authed_client.post(f"/api/threat-models/{threat_model['id']}/link-to-tree", json={})
+    assert resp.status_code == 200, resp.text
+    first_node_id = resp.json()["node_ids"][0]
+
+    resp = await authed_client.delete(f"/api/nodes/{first_node_id}")
+    assert resp.status_code == 204, resp.text
+
+    resp = await authed_client.post(f"/api/threat-models/{threat_model['id']}/link-to-tree", json={})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["created"] == 1
+    assert body["skipped"] == 0
+    assert body["created_threat_ids"] == ["threat-1"]
+    assert body["node_ids"][0] != first_node_id
+
+    resp = await authed_client.get(f"/api/nodes/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()
+    assert len(nodes) == 1
+    assert nodes[0]["id"] == body["node_ids"][0]
+
+    resp = await authed_client.get(f"/api/threat-models/{threat_model['id']}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["threats"][0]["linked_node_id"] == body["node_ids"][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("methodology", "category_input", "expected_category"),
+    [
+        ("stride", "dos", "Denial of Service"),
+        ("linddun", "non compliance", "Non-compliance"),
+    ],
+)
+async def test_threat_model_update_normalizes_methodology_categories(
+    authed_client: AsyncClient,
+    methodology: str,
+    category_input: str,
+    expected_category: str,
+):
+    resp = await authed_client.post("/api/projects", json={"name": f"{methodology} Category Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": f"{methodology.upper()} Category Model",
+        "scope": "Threat category normalization coverage",
+        "methodology": methodology,
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "threats": [
+            {
+                "id": "threat-1",
+                "component_id": "target-1",
+                "component_name": "Test Target",
+                "category": category_input,
+                "title": "Category normalization check",
+                "description": "Ensure non-canonical categories are stored canonically.",
+                "severity": "high",
+                "attack_vector": "Exercise normalization path.",
+                "mitigation": "Not relevant for this test.",
+                "likelihood": 5,
+                "impact": 6,
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["threats"][0]["category"] == expected_category
+
+    resp = await authed_client.get(f"/api/threat-models/{threat_model['id']}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["threats"][0]["category"] == expected_category
+
+
+@pytest.mark.asyncio
+async def test_threat_model_update_normalizes_pasta_stage_and_preserves_technical_category(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "PASTA Stage Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "PASTA Stage Model",
+        "scope": "Threat stage normalization coverage",
+        "methodology": "pasta",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "threats": [
+            {
+                "id": "threat-1",
+                "component_id": "target-1",
+                "component_name": "Test Target",
+                "category": "risk",
+                "technical_category": "Credential abuse",
+                "title": "PASTA stage normalization check",
+                "description": "Ensure legacy stage values map into pasta_stage while preserving the technical category.",
+                "severity": "high",
+                "attack_vector": "Exercise PASTA normalization path.",
+                "mitigation": "Not relevant for this test.",
+                "likelihood": 5,
+                "impact": 6,
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+    threat = resp.json()["threats"][0]
+    assert threat["pasta_stage"] == "Risk Analysis"
+    assert threat["category"] == "Credential abuse"
+
+    resp = await authed_client.get(f"/api/threat-models/{threat_model['id']}")
+    assert resp.status_code == 200, resp.text
+    threat = resp.json()["threats"][0]
+    assert threat["pasta_stage"] == "Risk Analysis"
+    assert threat["category"] == "Credential abuse"
+
+
+@pytest.mark.asyncio
+async def test_threat_model_update_rejects_pasta_threats_without_stage(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "PASTA Validation Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "PASTA Validation Model",
+        "scope": "Threat stage validation coverage",
+        "methodology": "pasta",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "threats": [
+            {
+                "id": "threat-1",
+                "component_id": "target-1",
+                "component_name": "Test Target",
+                "category": "Credential abuse",
+                "title": "PASTA validation check",
+                "description": "Reject PASTA threats that do not identify a canonical stage.",
+                "severity": "high",
+                "attack_vector": "Exercise PASTA validation path.",
+                "mitigation": "Not relevant for this test.",
+                "likelihood": 5,
+                "impact": 6,
+            }
+        ],
+    })
+    assert resp.status_code == 422, resp.text
+    assert "PASTA stage labels" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_threat_model_update_normalizes_flow_targeted_threats(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/projects", json={"name": "Flow Threat Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "Flow Threat Model",
+        "scope": "Remote engineering path to operator systems",
+        "methodology": "stride",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "components": [
+            {"id": "comp-edge", "name": "Gateway", "type": "service"},
+            {"id": "comp-hmi", "name": "HMI", "type": "process"},
+        ],
+        "data_flows": [
+            {
+                "id": "flow-1",
+                "source": "comp-edge",
+                "target": "comp-hmi",
+                "label": "Engineering session",
+                "protocol": "RDP",
+                "data_classification": "restricted",
+            }
+        ],
+        "threats": [
+            {
+                "id": "threat-flow",
+                "component_id": "flow-1",
+                "category": "tamper",
+                "title": "Session hijack on engineering flow",
+                "description": "Abuse the engineering channel to alter operator traffic.",
+                "severity": "high",
+                "attack_vector": "Proxy and manipulate the engineering session.",
+                "mitigation": "Record and isolate engineering sessions.",
+                "likelihood": 6,
+                "impact": 9,
+            }
+        ],
+    })
+    assert resp.status_code == 200, resp.text
+    threat = resp.json()["threats"][0]
+    assert threat["category"] == "Tampering"
+    assert threat["target_type"] == "data_flow"
+    assert threat["component_name"] == "Engineering session (Gateway -> HMI)"
+    assert threat["risk_score"] == 54
 
 
 @pytest.mark.asyncio
@@ -1395,7 +3691,7 @@ async def test_threat_model_ai_generate_dfd_replaces_stale_analysis(authed_clien
     threat_model = resp.json()
 
     resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
-        "threats": [{"id": "threat-old", "title": "Stale threat", "severity": "high"}],
+        "threats": [{"id": "threat-old", "title": "Stale threat", "category": "Spoofing", "severity": "high"}],
     })
     assert resp.status_code == 200, resp.text
 
@@ -2181,6 +4477,7 @@ async def test_threat_model_ai_deep_dive_returns_structured_analysis_and_uses_ca
         "threats": [{
             "id": "threat-1",
             "component_id": "comp-1",
+            "category": "Tampering",
             "title": "Unauthorized baggage-routing changes",
             "description": "Abuse baggage HMI access to alter sortation logic",
             "severity": "high",
@@ -2270,6 +4567,65 @@ async def test_threat_model_ai_deep_dive_returns_structured_analysis_and_uses_ca
     })
     assert resp.status_code == 200, resp.text
     assert resp.json()["risk_rating"]["overall"] == 64
+
+
+@pytest.mark.asyncio
+async def test_threat_model_ai_deep_dive_rejects_incomplete_payload_without_caching(authed_client: AsyncClient, monkeypatch):
+    await _create_active_provider(authed_client, name="Threat Deep Dive Incomplete Provider")
+
+    resp = await authed_client.post("/api/projects", json={"name": "Deep Dive Incomplete Project"})
+    assert resp.status_code == 201
+    project_id = resp.json()["id"]
+
+    resp = await authed_client.post("/api/threat-models", json={
+        "project_id": project_id,
+        "name": "Deep Dive Incomplete Model",
+        "scope": "Airport support access and operator systems",
+        "methodology": "stride",
+    })
+    assert resp.status_code == 201, resp.text
+    threat_model = resp.json()
+
+    resp = await authed_client.patch(f"/api/threat-models/{threat_model['id']}", json={
+        "components": [{"id": "comp-1", "name": "Operations HMI", "type": "process"}],
+        "threats": [{
+            "id": "threat-1",
+            "component_id": "comp-1",
+            "category": "Tampering",
+            "title": "Unauthorized operations changes",
+            "description": "Alter operator workflows through abused maintenance access.",
+            "severity": "high",
+            "attack_vector": "Exploit weak maintenance segmentation.",
+            "mitigation": "Record and approve privileged maintenance sessions.",
+            "likelihood": 7,
+            "impact": 8,
+        }],
+    })
+    assert resp.status_code == 200, resp.text
+
+    call_count = 0
+
+    async def fake_chat_completion(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {
+            "status": "success",
+            "content": json.dumps({
+                "exploitation_narrative": "Incomplete payload without an attack chain should be rejected.",
+            }),
+        }
+
+    monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
+
+    resp = await authed_client.post(f"/api/threat-models/{threat_model['id']}/ai-deep-dive", json={
+        "threat_id": "threat-1",
+    })
+    assert resp.status_code == 502
+    assert call_count == 3
+
+    resp = await authed_client.get(f"/api/threat-models/{threat_model['id']}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deep_dive_cache"] == {}
 
 
 @pytest.mark.asyncio
@@ -2451,6 +4807,14 @@ async def test_full_threat_model_analysis_returns_persisted_overview_fields(auth
     assert body["analysis_metadata"]["generation_strategy"] == "chunked"
     assert body["analysis_metadata"]["chunk_count"] == 2
 
+    resp = await authed_client.get(f"/api/analysis-runs/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    runs = resp.json()
+    run_types = [item["run_type"] for item in runs]
+    assert "dfd_generation" in run_types
+    assert "threat_generation" in run_types
+    assert all(item["tool"] == "threat_model" for item in runs[:2])
+
 @pytest.mark.asyncio
 async def test_infra_map_crud_for_project_and_standalone(authed_client: AsyncClient):
     resp = await authed_client.post("/api/projects", json={"name": "Infra Map Project"})
@@ -2527,6 +4891,69 @@ async def test_infra_map_create_validates_project_and_update_normalizes_nodes(au
 
 
 @pytest.mark.asyncio
+async def test_infra_map_node_references_round_trip(authed_client: AsyncClient):
+    resp = await authed_client.post("/api/infra-maps", json={"name": "Reference-backed Infra Map"})
+    assert resp.status_code == 201, resp.text
+    infra_map = resp.json()
+
+    resp = await authed_client.patch(f"/api/infra-maps/{infra_map['id']}", json={
+        "nodes": [
+            {
+                "id": "root",
+                "label": "Telecom Timing Stack",
+                "category": "infrastructure",
+                "parent_id": None,
+            },
+            {
+                "id": "timing",
+                "label": "Timing Assurance",
+                "category": "service",
+                "parent_id": "root",
+                "references": [
+                    {
+                        "framework": "environment_catalog",
+                        "ref_id": "timing_assurance_pnt_monitoring",
+                        "ref_name": "GNSS Jamming, Spoofing, and Timing Assurance Monitoring",
+                        "confidence": 0.74,
+                        "rationale": "Directly describes the timing assurance branch.",
+                        "source": "manual",
+                    },
+                    {
+                        "framework": "environment_catalog",
+                        "ref_id": "timing_assurance_pnt_monitoring",
+                        "ref_name": "GNSS Jamming, Spoofing, and Timing Assurance Monitoring",
+                        "confidence": 0.51,
+                        "rationale": "Duplicate that should be folded away.",
+                        "source": "manual",
+                    },
+                    {
+                        "framework": "infra_attack_patterns",
+                        "ref_id": "IAP-019",
+                        "ref_name": "GNSS Jamming and Timing Denial",
+                        "confidence": 0.81,
+                        "rationale": "Captures the cross-domain timing attack pattern.",
+                        "source": "manual",
+                    },
+                ],
+            },
+        ]
+    })
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    timing_node = next(node for node in updated["nodes"] if node["id"] == "timing")
+    assert len(timing_node["references"]) == 2
+    timing_catalog_ref = next(item for item in timing_node["references"] if item["framework"] == "environment_catalog")
+    assert timing_catalog_ref["confidence"] == 0.74
+    assert {item["ref_id"] for item in timing_node["references"]} == {"timing_assurance_pnt_monitoring", "IAP-019"}
+
+    resp = await authed_client.get(f"/api/infra-maps/{infra_map['id']}")
+    assert resp.status_code == 200, resp.text
+    reloaded = resp.json()
+    reloaded_timing = next(node for node in reloaded["nodes"] if node["id"] == "timing")
+    assert {item["ref_id"] for item in reloaded_timing["references"]} == {"timing_assurance_pnt_monitoring", "IAP-019"}
+
+
+@pytest.mark.asyncio
 async def test_infra_map_ai_generate_uses_multi_pass_generation_and_branch_fallback(
     authed_client: AsyncClient,
     monkeypatch,
@@ -2599,6 +5026,13 @@ async def test_infra_map_ai_generate_uses_multi_pass_generation_and_branch_fallb
     assert "Network and Segmentation Access" in labels
     assert overview_calls == 2
     assert len(recorded_prompts) >= 5
+
+    resp = await authed_client.get(f"/api/analysis-runs/project/{project_id}")
+    assert resp.status_code == 200, resp.text
+    runs = resp.json()
+    assert runs[0]["tool"] == "infra_map"
+    assert runs[0]["run_type"] == "map_generation"
+    assert runs[0]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -2687,17 +5121,42 @@ async def test_infra_map_ai_expand_retries_invalid_json_and_records_generation_m
     infra_map = resp.json()
 
     resp = await authed_client.patch(f"/api/infra-maps/{infra_map['id']}", json={
-        "nodes": [{"id": "root", "label": "Data Centre", "category": "infrastructure", "parent_id": None}],
+        "nodes": [
+            {
+                "id": "root",
+                "label": "Data Centre",
+                "category": "infrastructure",
+                "parent_id": None,
+                "description": "Primary operations facility.",
+            },
+            {
+                "id": "network",
+                "label": "Network and Segmentation",
+                "category": "networking",
+                "parent_id": "root",
+                "description": "Switching, routing, and perimeter controls.",
+            },
+            {
+                "id": "firewalls",
+                "label": "Firewalls",
+                "category": "security",
+                "parent_id": "network",
+                "description": "Perimeter and internal enforcement points.",
+            },
+        ],
     })
     assert resp.status_code == 200, resp.text
 
     await _create_active_provider(authed_client, name="Infra Expand Provider")
 
     expand_calls = 0
+    recorded_prompts: list[str] = []
 
     async def fake_chat_completion(*args, **kwargs):
         nonlocal expand_calls
         expand_calls += 1
+        messages = args[1]
+        recorded_prompts.append("\n".join(str(message.get("content", "")) for message in messages))
         if expand_calls == 1:
             return {"status": "success", "content": "not-json"}
         return {
@@ -2724,15 +5183,22 @@ async def test_infra_map_ai_expand_retries_invalid_json_and_records_generation_m
     monkeypatch.setattr(llm_service, "chat_completion", fake_chat_completion)
 
     resp = await authed_client.post(f"/api/infra-maps/{infra_map['id']}/ai-expand", json={
-        "node_id": "root",
+        "node_id": "network",
         "planning_profile": "balanced",
     })
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert len(payload["nodes"]) == 3
+    assert len(payload["nodes"]) == 5
     assert payload["analysis_metadata"]["last_generation_strategy"] == "branch_expand"
     assert payload["analysis_metadata"]["last_generation_status"] == "completed"
     assert expand_calls == 2
+    full_prompt = "\n".join(recorded_prompts)
+    assert "**Node path (root → current):** Data Centre → Network and Segmentation" in full_prompt
+    assert "**Ancestor branch context:**" in full_prompt
+    assert '"label": "Data Centre"' in full_prompt
+    assert "**Existing child detail under this branch:**" in full_prompt
+    assert "Firewalls" in full_prompt
+    assert "Perimeter and internal enforcement points." in full_prompt
 
 
 @pytest.mark.asyncio
@@ -2760,6 +5226,8 @@ async def test_environment_catalog_reference_endpoints(authed_client: AsyncClien
     assert "satellite_ground_station" in ids
     assert "port_maritime_terminal" in ids
     assert "oil_gas_pipeline" in ids
+    telecom_summary = next(catalog for catalog in payload["catalogs"] if catalog["id"] == "telecoms_base_station")
+    assert any(concept["label"] == "Timing / PNT" for concept in telecom_summary["shared_concepts"])
 
     resp = await authed_client.get("/api/references/environment-catalogs/data_centre")
     assert resp.status_code == 200, resp.text
@@ -2769,6 +5237,44 @@ async def test_environment_catalog_reference_endpoints(authed_client: AsyncClien
     labels = {node["label"] for node in catalog["nodes"]}
     assert "People and Trusted Roles" in labels
     assert "OT / BMS / Power / Cooling" in labels
+    assert "Doors, Mantraps, Badge Readers, and PACS" in labels
+    assert "CCTV Cameras, NVR/VMS, and Guard Monitoring" in labels
+    assert "DCIM, Asset Telemetry, and Rack Capacity Platforms" in labels
+    assert "BMS Head-End, Supervisors, and Field Controllers" in labels
+    assert "CRAH/CRAC, In-Row, Rear-Door, and Chilled-Water Cooling" in labels
+    assert "Automation, CMDB, ITSM, and Secrets Management" in labels
+    assert "Active Directory, LDAP, SSO, and Federation Services" in labels
+    assert "SIEM, Log Pipelines, and Analytics Backends" in labels
+
+    resp = await authed_client.get("/api/references/environment-catalogs/telecoms_base_station")
+    assert resp.status_code == 200, resp.text
+    telecom_site_catalog = resp.json()
+    assert telecom_site_catalog["name"] == "Telecoms Base Station"
+    telecom_site_labels = {node["label"] for node in telecom_site_catalog["nodes"]}
+    assert "Radio Units, Massive MIMO, Antennas, and RET Control" in telecom_site_labels
+    assert "GNSS, PTP, SyncE, and Timing Distribution" in telecom_site_labels
+    assert "PTP Grandmasters, Boundary Clocks, and SyncE Distribution" in telecom_site_labels
+    assert "OSS, SON, Inventory, and Provisioning Platforms" in telecom_site_labels
+    assert "PM Counters, Trace, and Service Assurance Analytics" in telecom_site_labels
+    assert "GNSS Jamming, Spoofing, and Timing Assurance Monitoring" in telecom_site_labels
+    timing_node = next(node for node in telecom_site_catalog["nodes"] if node["id"] == "timing_sync")
+    timing_concepts = {concept["label"] for concept in timing_node["shared_concepts"]}
+    timing_related = {catalog["id"] for catalog in timing_node["related_catalogs"]}
+    assert "Timing / PNT" in timing_concepts
+    assert "Networking / Transport" in timing_concepts
+    assert "telecoms_5g_core" in timing_related
+    assert "electrical_substation" in timing_related
+
+    resp = await authed_client.get("/api/references/environment-catalogs/telecoms_5g_core")
+    assert resp.status_code == 200, resp.text
+    telecom_core_catalog = resp.json()
+    assert telecom_core_catalog["name"] == "Telecoms 5G Core"
+    telecom_core_labels = {node["label"] for node in telecom_core_catalog["nodes"]}
+    assert "NSSF, PCF, CHF/OCS, and Policy or Charging Services" in telecom_core_labels
+    assert "ePRTC, PTP Grandmasters, Boundary Clocks, and Time Distribution" in telecom_core_labels
+    assert "SEPP, IPX, and Roaming Security Functions" in telecom_core_labels
+    assert "Signalling Firewalls, Fraud, and Abuse Detection" in telecom_core_labels
+    assert "Timing Assurance, Holdover, and PNT Resilience" in telecom_core_labels
 
     resp = await authed_client.get("/api/references/environment-catalogs/electrical_substation")
     assert resp.status_code == 200, resp.text
@@ -2900,7 +5406,7 @@ async def test_admin_user_management_and_non_admin_restrictions(client: AsyncCli
 
     resp = await admin_client.get("/api/auth/users")
     assert resp.status_code == 200, resp.text
-    assert len(resp.json()) >= 6
+    assert len(resp.json()) >= 2
 
     resp = await admin_client.post("/api/auth/users", json={
         "name": "Managed User",
@@ -3068,6 +5574,11 @@ def test_agent_prompt_planning_first_uses_data_centre_domain_skeleton():
     assert "Operational Technology / BMS / Power / Cooling" in user_prompt
     assert "Do not use raw CWE, CAPEC, ATT&CK technique IDs, or CVE identifiers as second-level nodes." in user_prompt
     assert "Environment catalog anchor: Data Centre" in user_prompt
+    assert "Doors, Mantraps, Badge Readers, and PACS" in user_prompt
+    assert "DCIM, Asset Telemetry, and Rack Capacity Platforms" in user_prompt
+    assert "CRAH/CRAC, In-Row, Rear-Door, and Chilled-Water Cooling" in user_prompt
+    assert "Automation, CMDB, ITSM, and Secrets Management" in user_prompt
+    assert "Detection, Response, and Process Weaknesses (SIEM, EDR/XDR" in user_prompt
 
 
 def test_find_best_template_prefers_data_centre_context():
@@ -3079,6 +5590,32 @@ def test_find_best_template_prefers_data_centre_context():
 
     assert template is not None
     assert template["context_preset"] == "data_centre"
+
+
+def test_environment_catalog_outline_detects_data_centre_from_physical_security_and_facility_terms():
+    outline = build_environment_catalog_outline_for_context(
+        "Assess data-centre facility intrusion and management-plane exposure",
+        "Colocation hall with PACS, badge readers, CCTV, NVR, DCIM, CRAC units, chillers, and a BMS head-end",
+        "",
+    )
+
+    assert "Environment catalog anchor: Data Centre" in outline
+    assert "Doors, Mantraps, Badge Readers, and PACS" in outline
+    assert "CCTV Cameras, NVR/VMS, and Guard Monitoring" in outline
+    assert "DCIM, Asset Telemetry, and Rack Capacity Platforms" in outline
+
+
+def test_environment_catalog_outline_detects_data_centre_from_software_platform_terms():
+    outline = build_environment_catalog_outline_for_context(
+        "Assess data-centre control plane compromise",
+        "Platform with vCenter, Kubernetes, CyberArk PAM, Veeam backup, ServiceNow change, Ansible automation, and Splunk monitoring",
+        "",
+    )
+
+    assert "Environment catalog anchor: Data Centre" in outline
+    assert "Information Technology and Management Plane" in outline
+    assert "Automation, CMDB, ITSM, and Secrets Management" in outline
+    assert "Storage, Backup, and Recovery" in outline
 
 
 @pytest.mark.parametrize(
@@ -3146,6 +5683,9 @@ def test_environment_catalog_outline_and_prompt_anchor_for_telecoms_site():
     )
     assert "Environment catalog anchor: Telecoms Base Station" in outline
     assert "Transport, Networking, and OAM" in outline
+    assert "Radio Units, Massive MIMO, Antennas, and RET Control" in outline
+    assert "GNSS, PTP, SyncE, and Timing Distribution" in outline
+    assert "OSS, SON, Inventory, and Provisioning Platforms" in outline
 
     messages = llm_service.build_agent_tree_prompt(
         objective="Disrupt a telecoms base station via OAM and transport compromise",
@@ -3156,6 +5696,34 @@ def test_environment_catalog_outline_and_prompt_anchor_for_telecoms_site():
         context_preset="telecoms_base_station",
     )
     assert "Environment catalog anchor: Telecoms Base Station" in messages[1]["content"]
+    assert "Cloud-Native Management, OSS/BSS, OAM, and Orchestration Planes" in messages[1]["content"]
+    assert "GNSS/PTP Timing" in messages[1]["content"]
+
+
+def test_environment_catalog_outline_detects_telecom_site_from_ran_terms():
+    outline = build_environment_catalog_outline_for_context(
+        "Assess a telecom radio site for compromise",
+        "Open RAN gNodeB with RU/DU/CU, cell-site gateway, ENM, SON, microwave backhaul, PTP grandmaster, boundary clock, holdover, and GNSS timing",
+        "",
+    )
+
+    assert "Environment catalog anchor: Telecoms Base Station" in outline
+    assert "Transport, Networking, and OAM" in outline
+    assert "Radio Access Network Equipment" in outline
+    assert "GNSS, PTP, SyncE, and Timing Distribution" in outline
+
+
+def test_environment_catalog_outline_detects_5g_core_from_signalling_and_service_terms():
+    outline = build_environment_catalog_outline_for_context(
+        "Assess carrier core exposure",
+        "5G core with AMF, UPF, SEPP, NEF, IMS, UDM, HSS, charging mediation, ePRTC, boundary clocks, and timing-assurance analytics",
+        "",
+    )
+
+    assert "Environment catalog anchor: Telecoms 5G Core" in outline
+    assert "5G Core Network Functions and Subscriber Services" in outline
+    assert "ePRTC, PTP Grandmasters, Boundary Clocks, and Time Distribution" in outline
+    assert "Interconnect, Signalling, and External Interfaces" in outline
 
 
 @pytest.mark.parametrize(

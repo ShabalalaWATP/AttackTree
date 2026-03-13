@@ -17,6 +17,7 @@ class User(Base):
     password_hash = Column(String(512), nullable=False)
     role = Column(String(20), nullable=False, default="user")
     is_active = Column(Boolean, nullable=False, default=True)
+    approval_status = Column(String(20), nullable=False, default="approved")
     password_reset_required = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(

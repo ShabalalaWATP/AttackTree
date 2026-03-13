@@ -16,7 +16,7 @@ interface AIAgentDialogProps {
   projectId: string;
   open: boolean;
   onClose: () => void;
-  onComplete: () => void;
+  onComplete: () => void | Promise<void>;
 }
 
 const MODE_OPTIONS: { value: LLMAgentMode; label: string; description: string; icon: typeof Wand2 }[] = [
@@ -88,7 +88,8 @@ const PRESET_CATEGORIES = [
   },
 ];
 
-const MAX_RECOMMENDED_AGENT_NODES = 240;
+const MAX_RECOMMENDED_AGENT_NODES = 300;
+const TERMINAL_AGENT_RUN_STATUSES = new Set(['completed', 'completed_with_warnings', 'failed']);
 
 function estimateTreeNodeBudget(depth: number, breadth: number): number {
   let total = 1;
@@ -132,9 +133,63 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
     return () => clearInterval(t);
   }, [loading]);
 
+  useEffect(() => {
+    if (!open || !result?.agent_run_id || !result.background_processing) return;
+
+    let cancelled = false;
+
+    const pollStatus = async () => {
+      try {
+        const status = await api.getAgentRunStatus(result.agent_run_id!);
+        if (cancelled) return;
+
+        setResult((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            nodes_created: status.nodes_created,
+            model_used: status.model_used || prev.model_used,
+            elapsed_ms: status.elapsed_ms,
+            passes_completed: status.passes_completed,
+            total_passes: status.total_passes,
+            warnings: status.warnings,
+            background_processing: status.background_processing,
+            current_stage: status.current_stage,
+            post_processing_status: status.status,
+            error_message: status.error_message,
+            checkpoints: status.checkpoints,
+          };
+        });
+
+        if (TERMINAL_AGENT_RUN_STATUSES.has(status.status)) {
+          if (status.status === 'completed') {
+            toast.success('Background AI post-processing completed');
+          } else if (status.status === 'completed_with_warnings') {
+            toast.success('Background AI post-processing completed with warnings');
+          } else {
+            toast.error(status.error_message || 'Background AI post-processing failed');
+          }
+          await onComplete();
+        }
+      } catch {
+        // Best-effort polling; keep the generated tree usable even if status refresh fails.
+      }
+    };
+
+    void pollStatus();
+    const timer = setInterval(() => {
+      void pollStatus();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [open, result?.agent_run_id, result?.background_processing, onComplete]);
+
   const PROGRESS_STEPS = [
     'Preparing prompts, templates, and planning context...',
-    'Estimated stage: generating attack-tree structure...',
+    'Estimated stage: generating skeleton and expanding branches...',
     'Estimated stage: enriching node detail...',
     'Estimated stage: mapping references and controls...',
     'Estimated stage: finalizing the generated tree...',
@@ -165,9 +220,13 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
         generation_profile: generationProfile,
       });
       setResult(res);
-      const passesMsg = res.passes_completed ? ` (${res.passes_completed} passes)` : '';
-      const warningsMsg = res.warnings?.length ? ` with ${res.warnings.length} warning${res.warnings.length === 1 ? '' : 's'}` : '';
-      toast.success(`Generated ${res.nodes_created} nodes${passesMsg}${warningsMsg}`);
+      if (res.background_processing && res.agent_run_id) {
+        toast.success(`Generated ${res.nodes_created} nodes. Background AI post-processing started.`);
+      } else {
+        const passesMsg = res.passes_completed ? ` (${res.passes_completed} passes)` : '';
+        const warningsMsg = res.warnings?.length ? ` with ${res.warnings.length} warning${res.warnings.length === 1 ? '' : 's'}` : '';
+        toast.success(`Generated ${res.nodes_created} nodes${passesMsg}${warningsMsg}`);
+      }
     } catch (e: any) {
       const msg = e.message || 'Unknown error';
       let friendly = msg;
@@ -192,6 +251,10 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
       setLoading(false);
     }
   };
+
+  const postProcessingStageLabel = result?.current_stage
+    ? result.current_stage.replace(/_/g, ' ')
+    : 'queued';
 
   const handleDone = () => {
     setObjective('');
@@ -434,9 +497,9 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
           {/* Info box */}
           <div className="p-3 rounded-lg bg-muted/50 text-xs text-muted-foreground">
             {mode === 'generate' && (
-              <>The AI agent performs <strong>4 passes</strong>: (1) generate tree structure with domain-specific prompting and the selected planning profile,
-              (2) enrich missing node attributes, (3) map MITRE ATT&amp;CK / CAPEC / CWE references,
-              (4) generate mitigations &amp; detections for leaf nodes. A matching template is auto-selected for few-shot guidance.</>
+              <>The AI agent performs staged generation: it first builds a compact skeleton, then expands each major branch with local context so later prompts do not resend the full tree.
+              After structure generation it enriches missing node attributes, maps MITRE ATT&amp;CK / CAPEC / CWE references,
+              and generates mitigations &amp; detections for leaf nodes. A matching template is auto-selected for few-shot guidance.</>
             )}
             {mode === 'from_template' && (
               <>The AI agent takes the selected template as a skeleton and expands it with additional attack paths,
@@ -474,11 +537,22 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
           {result && (
             <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/30 text-sm space-y-2">
               <p className="font-medium text-green-600 dark:text-green-400">
-                Tree generated successfully
+                {result.background_processing ? 'Tree generated. Background post-processing is running.' : 'Tree generated successfully'}
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {result.nodes_created} nodes created &middot; {result.passes_completed || 1} passes &middot; Model: {result.model_used} &middot; {(result.elapsed_ms / 1000).toFixed(1)}s
+                {result.nodes_created} nodes created &middot; {result.passes_completed || 1}/{result.total_passes || 4} passes completed &middot; Model: {result.model_used} &middot; {(result.elapsed_ms / 1000).toFixed(1)}s
               </p>
+              {result.background_processing && (
+                <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-800 dark:text-blue-200">
+                  <div className="flex items-center gap-2">
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>Current stage: {postProcessingStageLabel}</span>
+                  </div>
+                  <p className="mt-2 text-muted-foreground">
+                    The tree structure is already saved. Enrichment, reference mapping, and control generation are checkpointed in the background.
+                  </p>
+                </div>
+              )}
               {result.warnings && result.warnings.length > 0 && (
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
                   <p className="font-medium">Generation warnings</p>
@@ -487,6 +561,11 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                       <li key={index}>{warning}</li>
                     ))}
                   </ul>
+                </div>
+              )}
+              {result.error_message && !result.background_processing && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-800 dark:text-red-200">
+                  {result.error_message}
                 </div>
               )}
             </div>
@@ -510,7 +589,7 @@ export function AIAgentDialog({ projectId, open, onClose, onComplete }: AIAgentD
                 onClick={handleDone}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:opacity-90"
               >
-                View Tree
+                {result.background_processing ? 'View Tree While Background Runs' : 'View Tree'}
               </button>
             ) : (
               <>

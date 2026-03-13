@@ -172,7 +172,7 @@ export function UserManagementDialog({
             </div>
 
             <div className="mt-5 rounded-2xl border border-amber-500/15 bg-amber-500/5 p-4 text-xs leading-5 text-muted-foreground">
-              Seeded placeholder accounts should be treated as temporary bootstrap users. Rotate or disable them before wider deployment.
+              Self-service signups land here as inactive pending requests. Approve an account by opening Edit and enabling Account active, then optionally promote it to admin.
             </div>
           </aside>
 
@@ -211,7 +211,11 @@ export function UserManagementDialog({
                             )}>
                               {user.role}
                             </span>
-                            {!user.is_active && (
+                            {user.approval_status === 'pending' ? (
+                              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-400">
+                                pending approval
+                              </span>
+                            ) : !user.is_active && (
                               <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-red-400">
                                 disabled
                               </span>

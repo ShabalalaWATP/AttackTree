@@ -736,5 +736,509 @@
     "name": "Observable Timing Discrepancy",
     "description": "This is a specific case of observable discrepancy (CWE-203) focused on timing variations that leak sensitive information. Software that takes measurably different amounts of time to process valid vs invalid inputs, correct vs incorrect credentials, or existent vs non-existent users creates a timing oracle that attackers can exploit. Network-level timing measurements may seem noisy but statistical techniques with sufficient samples reliably extract the signal. Concurrency-based techniques (sending requests in parallel and comparing completion order) further improve timing attack accuracy. Critical areas requiring constant-time implementation include password verification, HMAC comparison, cryptographic operations, authorization checks, and token validation. Languages and frameworks provide constant-time comparison functions (hmac.compare_digest in Python, crypto.timingSafeEqual in Node.js, MessageDigest.isEqual in Java) that should be used for all secret comparisons.",
     "severity": "Medium"
+  },
+  {
+    "id": "CWE-121",
+    "name": "Stack-based Buffer Overflow",
+    "description": "A stack-based buffer overflow occurs when a program writes data beyond the bounds of a buffer allocated on the call stack. Because the stack stores return addresses and frame pointers, an attacker who controls the overflow data can overwrite the return address to redirect execution to injected shellcode or ROP gadgets. Stack-based overflows are among the most commonly exploited memory corruption vulnerabilities, mitigated in modern systems by stack canaries, ASLR, and DEP/NX, though bypasses exist for each.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-122",
+    "name": "Heap-based Buffer Overflow",
+    "description": "A heap-based buffer overflow occurs when a program writes beyond the boundaries of a heap-allocated buffer, corrupting adjacent heap metadata or other heap objects. Exploitation typically involves overwriting function pointers, vtable entries, or heap management structures to achieve arbitrary code execution. Heap overflows are harder to exploit reliably than stack overflows due to heap layout randomization, but techniques like heap spraying and heap grooming improve reliability.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-123",
+    "name": "Write-what-where Condition",
+    "description": "A write-what-where condition exists when an attacker can write an arbitrary value to an arbitrary memory location. This primitive arises from heap corruption, format string vulnerabilities, or improper pointer arithmetic. With a write-what-where primitive, attackers can overwrite GOT entries, function pointers, vtables, or security-critical variables to gain complete control of program execution flow.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-126",
+    "name": "Buffer Over-read",
+    "description": "A buffer over-read occurs when a program reads data past the end of an allocated buffer, potentially exposing sensitive information from adjacent memory regions. The Heartbleed vulnerability (CVE-2014-0160) in OpenSSL is the most well-known example, where a missing bounds check allowed attackers to read up to 64KB of server memory per request, leaking private keys, session tokens, and user credentials.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-131",
+    "name": "Incorrect Calculation of Buffer Size",
+    "description": "When software incorrectly calculates the required size for a buffer—due to integer overflow in size computation, off-by-one errors, failure to account for null terminators, or miscounting multi-byte characters—the resulting undersized allocation leads to heap or stack buffer overflows. Size miscalculations are particularly dangerous because they create exploitable conditions in code that appears to perform bounds checking.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-170",
+    "name": "Improper Null Termination",
+    "description": "Software that fails to properly null-terminate strings can cause string-handling functions to read or write beyond the intended buffer boundary. When strncpy fills a buffer without leaving room for a null terminator, subsequent strlen or strcpy calls process memory beyond the buffer, leading to information disclosure or memory corruption. This weakness is prevalent in C/C++ code that mixes bounded and unbounded string operations.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-401",
+    "name": "Missing Release of Memory after Effective Lifetime",
+    "description": "Software that allocates memory but fails to free it after use causes memory leaks that progressively consume available system memory. In long-running services such as web servers, databases, and daemons, memory leaks eventually lead to resource exhaustion, performance degradation, and denial of service. Attackers can accelerate memory leak exploitation by sending specific request patterns that trigger allocation without deallocation paths.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-762",
+    "name": "Mismatched Memory Management Routines",
+    "description": "Using mismatched memory allocation and deallocation functions—such as allocating with malloc and freeing with delete, or allocating with new[] and freeing with delete instead of delete[]—leads to undefined behavior including heap corruption, memory leaks, and exploitable conditions. Different allocators maintain separate metadata, and mismatched operations corrupt internal state of the memory manager.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-763",
+    "name": "Release of Invalid Pointer or Reference",
+    "description": "Freeing a pointer that was not returned by an allocation function, or freeing a modified pointer that no longer points to the start of an allocated block, corrupts heap metadata and leads to exploitable memory corruption conditions. This includes freeing stack-allocated variables, freeing pointers into the middle of heap blocks, and freeing values received from untrusted sources that may not represent valid heap addresses.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-824",
+    "name": "Access of Uninitialized Pointer",
+    "description": "Dereferencing a pointer variable that has been declared but not assigned a valid address leads to undefined behavior. Depending on the residual value on the stack or heap, the program may crash, access arbitrary memory, or execute attacker-controlled code if the uninitialized pointer value can be influenced by prior heap layouts. Compilers may or may not zero-initialize pointer variables depending on optimization level and language standard.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-825",
+    "name": "Expired Pointer Dereference",
+    "description": "Accessing memory through a pointer whose referenced object has been deallocated or has gone out of scope results in a dangling pointer dereference. If the freed memory has been reallocated for a different object, the dangling pointer now references attacker-controllable data, enabling type confusion, information disclosure, or arbitrary code execution. This is closely related to use-after-free (CWE-416) but applies broadly to any pointer whose referent is no longer valid.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-191",
+    "name": "Integer Underflow (Wrap or Wraparound)",
+    "description": "An integer underflow occurs when an arithmetic operation produces a result smaller than the minimum representable value for the integer type, causing the value to wrap around to a very large positive number (for unsigned integers) or to an unexpected value (for signed integers). In security contexts, integer underflows in length calculations or index computations commonly lead to buffer overflows, excessive memory allocation, or logic bypasses.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-192",
+    "name": "Integer Coercion Error",
+    "description": "Integer coercion errors occur when a value is converted between integer types of different sizes or signedness, causing silent data loss or sign changes. Truncating a large value to a smaller type discards high-order bits, while converting a negative signed integer to an unsigned type produces a very large positive value. These implicit conversions in security-critical code paths lead to buffer overflows, access control bypasses, and incorrect size calculations.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-193",
+    "name": "Off-by-one Error",
+    "description": "An off-by-one error occurs when a loop iterates one time too many or too few, or when a buffer is allocated one byte too small. In boundary calculations, confusing '<' with '<=' or failing to account for a null terminator creates conditions where a single byte overflow or under-read can corrupt adjacent memory. While seemingly minor, off-by-one errors in heap allocations can overwrite heap metadata, and in stack buffers can overwrite the saved frame pointer for exploitation.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-194",
+    "name": "Unexpected Sign Extension",
+    "description": "When a signed integer is widened to a larger signed type, the sign bit is extended, converting a small negative value (e.g., -1 as a char, 0xFF) into a very large negative number when cast to int. If this extended value is subsequently used as an unsigned size or index, it wraps to a very large positive value, enabling buffer overflows and out-of-bounds memory access in size-checking code that appears correct.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-197",
+    "name": "Numeric Truncation Error",
+    "description": "A numeric truncation error occurs when a value is stored in a variable that is too small to hold it, silently discarding high-order bits. For example, storing a 32-bit size value in a 16-bit variable truncates values above 65535, potentially causing undersized buffer allocations that lead to buffer overflows. Truncation errors are insidious because the code compiles without warnings in many configurations and the data loss occurs silently.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-284",
+    "name": "Improper Access Control",
+    "description": "Software that does not properly restrict access to resources allows unauthorized users to read, modify, or delete protected data and functionality. This encompasses missing authorization checks, inconsistent enforcement across different access paths (direct object references, API endpoints, file system), and failure to apply the principle of least privilege. Improper access control is the #1 vulnerability category in the OWASP Top 10 (2021) and enables unauthorized data access, privilege escalation, and system compromise.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-288",
+    "name": "Authentication Bypass Using an Alternate Path or Channel",
+    "description": "When software provides multiple authentication paths (web interface, API, mobile endpoint, administrative console) but does not consistently enforce authentication across all of them, attackers can bypass authentication by using an alternate path. Common examples include unprotected REST API endpoints, debug interfaces left accessible in production, backup admin pages, and mobile API endpoints that skip authentication middleware.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-290",
+    "name": "Authentication Bypass by Spoofing",
+    "description": "Software that relies on easily spoofable attributes—such as IP addresses, HTTP headers (X-Forwarded-For, Referer), MAC addresses, or client-supplied identity claims—for authentication can be bypassed by attackers who forge these values. Any authentication mechanism based on client-controlled data without cryptographic verification is vulnerable to spoofing attacks. This commonly affects IP-based access controls and header-based internal service authentication.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-294",
+    "name": "Authentication Bypass by Capture-replay",
+    "description": "Software that does not protect against replay attacks allows an attacker to capture valid authentication credentials or session tokens and retransmit them to gain unauthorized access. Without nonces, timestamps, sequence numbers, or other anti-replay mechanisms, captured authentication messages (OTP codes, challenge-response tokens, API keys) can be replayed within or beyond their intended validity period.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-297",
+    "name": "Improper Validation of Certificate with Host Mismatch",
+    "description": "Software that validates TLS/SSL certificates but does not verify that the certificate's Common Name (CN) or Subject Alternative Name (SAN) matches the intended hostname is vulnerable to man-in-the-middle attacks. An attacker with any valid certificate (including one for a different domain) can intercept and decrypt communications. This weakness commonly occurs in custom HTTP clients, API integrations, and microservice-to-microservice communications.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-302",
+    "name": "Authentication Bypass by Assumed-Immutable Data",
+    "description": "Software that trusts client-supplied data (cookies, hidden form fields, URL parameters, HTTP headers) as proof of authentication or authorization can be bypassed by attackers who modify these values. Examples include isAdmin=true cookies, user_role hidden fields, price parameters in shopping carts, and JWT tokens modified without signature verification. All client-side data must be treated as attacker-controlled.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-308",
+    "name": "Use of Single-factor Authentication",
+    "description": "Software that relies solely on a single authentication factor (typically a password) for access to sensitive resources fails to provide adequate protection against credential theft, phishing, and brute-force attacks. Single-factor authentication is insufficient for protecting high-value accounts, administrative interfaces, financial transactions, and systems containing sensitive personal data. Multi-factor authentication significantly reduces the risk of account compromise.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-620",
+    "name": "Unverified Password Change",
+    "description": "Software that allows users to change their password without first verifying the current password enables unauthorized password changes by attackers who gain temporary access to an authenticated session (via XSS, CSRF, or unattended workstation). Requiring current password verification ensures that session hijacking alone is insufficient for permanent account takeover through credential modification.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-645",
+    "name": "Overly Restrictive Account Lockout Mechanism",
+    "description": "An account lockout mechanism that is too aggressive—locking accounts after very few failed attempts with long lockout durations—creates a denial-of-service vulnerability where attackers intentionally trigger lockouts on legitimate user accounts. This can be weaponized to lock out administrators during an attack, disrupt business operations, or as a secondary attack vector combined with other compromises.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-323",
+    "name": "Reusing a Nonce, Key Pair in Encryption",
+    "description": "Reusing a nonce (number used once) with the same encryption key in stream ciphers or AEAD modes (AES-GCM, ChaCha20-Poly1305) completely breaks the confidentiality and integrity guarantees of the encryption. In AES-GCM, nonce reuse enables the GHASH key to be recovered, allowing authentication tag forgery and plaintext recovery. Nonce reuse vulnerabilities are particularly dangerous because they silently compromise encryption without causing functional errors.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-324",
+    "name": "Use of a Key Past its Expiration Date",
+    "description": "Continuing to use cryptographic keys beyond their designated expiration date increases the risk of key compromise through cryptanalysis, exposure, or brute force over time. Expired keys may also use outdated algorithms or insufficient key lengths that no longer meet current security standards. Proper key lifecycle management requires automated rotation, revocation capabilities, and enforcement of expiration policies across all systems using shared keys.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-325",
+    "name": "Missing Required Cryptographic Step",
+    "description": "Software that omits a required step in a cryptographic operation—such as skipping IV generation, omitting HMAC verification before decryption, not validating digital signatures, or failing to check certificate revocation status—weakens or completely negates the security provided by the cryptographic scheme. Partial implementation of cryptographic protocols is often worse than no encryption because it provides a false sense of security.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-329",
+    "name": "Generation of Predictable IV with CBC Mode",
+    "description": "Using predictable initialization vectors (IVs) with AES-CBC or other CBC-mode block ciphers enables chosen-plaintext attacks where an adversary can determine whether a guessed plaintext matches the actual plaintext. The BEAST attack against TLS 1.0 exploited predictable IVs (the previous ciphertext block served as the next IV) to decrypt HTTPS traffic. IVs for CBC mode must be generated using a cryptographically secure random number generator and must be unpredictable.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-331",
+    "name": "Insufficient Entropy",
+    "description": "Cryptographic operations that use insufficient entropy for key generation, nonce creation, or random number generation produce values that attackers can predict or brute-force. Entropy sources can be insufficient due to limited randomness pool (booting systems, embedded devices, virtual machines without virtio-rng), flawed entropy gathering algorithms, or using time-based seeds with second-level precision. Weak entropy in key generation renders the entire cryptographic system vulnerable.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-335",
+    "name": "Incorrect Usage of Seeds in Pseudo-Random Number Generator (PRNG)",
+    "description": "Using predictable, fixed, or insufficiently random values to seed a PRNG produces a predictable sequence of outputs. Common mistakes include seeding with timestamps, process IDs, sequential counters, or constant values. If an attacker can determine or guess the seed, they can reproduce the entire sequence of 'random' values, compromising session tokens, nonces, cryptographic keys, and any other security-sensitive values derived from the PRNG.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-340",
+    "name": "Generation of Predictable Numbers or Identifiers",
+    "description": "Software that generates predictable identifiers for security-sensitive purposes—such as session IDs, password reset tokens, CSRF tokens, API keys, or transaction references—enables attackers to guess valid values and hijack sessions, bypass security controls, or impersonate users. Predictable identifiers are generated by sequential counters, insufficient randomness, time-based algorithms without sufficient entropy, or use of non-cryptographic PRNGs like Math.random() or rand().",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-760",
+    "name": "Use of a One-Way Hash with a Predictable Salt",
+    "description": "Using predictable, hardcoded, or user-derived values as salt for password hashing enables precomputation attacks (rainbow tables) across all accounts sharing the same salt. Effective salts must be unique per password, sufficiently long (at least 16 bytes), and generated from a cryptographically secure random source. Common mistakes include using the username as the salt, using a global application-wide salt, or using short salts that still allow feasible precomputation.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-23",
+    "name": "Relative Path Traversal",
+    "description": "Software that constructs file paths using user-supplied input without neutralizing '../' sequences allows attackers to traverse directory boundaries and access files outside the intended directory. Relative path traversal enables reading sensitive configuration files (/etc/passwd, web.config, .env), source code, and database files. Encoding variations (..%2F, %2e%2e/, ..%252f) bypass naive sanitization that only checks for literal '../' strings.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-36",
+    "name": "Absolute Path Traversal",
+    "description": "Software that accepts user input used in file path construction without validating against absolute path specifications (paths beginning with / on Unix or drive letters like C:\\ on Windows) allows attackers to specify arbitrary filesystem locations. Unlike relative path traversal which uses '../', absolute path traversal directly specifies the target path, bypassing any base directory concatenation the application intends to enforce.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-73",
+    "name": "External Control of File Name or Path",
+    "description": "When software allows external input to control or influence the file name or path used in filesystem operations (open, read, write, delete, include), attackers can access or manipulate arbitrary files. This weakness encompasses path traversal, file inclusion, and arbitrary file operations. Applications that allow user-controlled filenames in upload, download, delete, or template inclusion functionality are particularly vulnerable.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-80",
+    "name": "Improper Neutralization of Script-Related HTML Tags in a Web Page (Basic XSS)",
+    "description": "Software that filters some HTML tags but fails to neutralize all script-execution vectors allows attackers to inject executable JavaScript through overlooked tags and attributes. Beyond <script>, JavaScript can execute through event handlers (onerror, onload, onfocus), the javascript: URI scheme in href/src attributes, CSS expressions, SVG elements, and MathML. Incomplete HTML sanitization that blocks only <script> tags provides a false sense of security.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-88",
+    "name": "Improper Neutralization of Argument Delimiters in a Command (Argument Injection)",
+    "description": "When software constructs OS commands using user input and fails to properly handle argument delimiters (spaces, quotes, dashes/hyphens for option flags), attackers can inject additional command arguments that alter program behavior. For example, injecting '--admin' or '-o output.txt' as arguments to a command-line tool can escalate privileges or redirect output. Argument injection differs from command injection (CWE-78) in that the attacker modifies arguments to an existing command rather than injecting entirely new commands.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-93",
+    "name": "Improper Neutralization of CRLF Sequences (CRLF Injection)",
+    "description": "Software that includes user input in contexts delimited by carriage return and line feed characters (\\r\\n) without neutralizing these sequences is vulnerable to CRLF injection. In HTTP responses, CRLF injection enables header injection and HTTP response splitting, allowing attackers to set arbitrary headers (including Set-Cookie for session fixation), inject malicious response bodies, or poison web caches. In log files, CRLF injection enables log forgery and log injection attacks.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-96",
+    "name": "Improper Neutralization of Directives in Statically Saved Code (Static Code Injection)",
+    "description": "Software that writes user input into files that are later interpreted as code—such as PHP files, server configuration files, cron entries, or script files—enables attackers to achieve persistent code execution. Unlike dynamic injection where the code executes immediately, static code injection creates a persistent backdoor that executes every time the written file is processed, loaded, or included by the application or system.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-113",
+    "name": "Improper Neutralization of CRLF Sequences in HTTP Headers (HTTP Response Splitting)",
+    "description": "When user input is included in HTTP response headers without neutralizing CR (\\r) and LF (\\n) characters, attackers can inject arbitrary HTTP headers and split the response into multiple responses. HTTP response splitting enables cache poisoning (storing malicious content in shared caches), cross-site scripting (injecting a response body with script content), and session fixation (setting arbitrary Set-Cookie headers).",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-643",
+    "name": "Improper Neutralization of Data within XPath Expressions (XPath Injection)",
+    "description": "Software that constructs XPath queries using unsanitized user input allows attackers to modify the query logic to bypass authentication, extract data from XML documents, or enumerate the XML structure. XPath injection is analogous to SQL injection but targets XML data stores. Attacks can extract entire XML documents using expression manipulation, and unlike SQL injection, XPath has no concept of permissions—a successful injection provides full access to the entire XML document.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-776",
+    "name": "Improper Restriction of Recursive Entity References in DTDs (XML Entity Expansion)",
+    "description": "XML parsers that process Document Type Definitions (DTDs) without limiting recursive entity expansion are vulnerable to 'billion laughs' attacks where a small XML document expands exponentially in memory. A crafted DTD defining nested entity references can expand a few kilobytes of XML into gigabytes of text, causing memory exhaustion and denial of service. This is related to but distinct from XXE (CWE-611) and affects any application parsing untrusted XML with DTD processing enabled.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-444",
+    "name": "Inconsistent Interpretation of HTTP Requests (HTTP Request Smuggling)",
+    "description": "When front-end and back-end HTTP servers disagree on how to parse request boundaries—specifically the Content-Length and Transfer-Encoding headers—attackers can smuggle hidden requests within apparently normal ones. HTTP request smuggling enables cache poisoning, bypassing security controls (WAFs, access controls), hijacking other users' requests, and gaining unauthorized access to internal endpoints. CL.TE, TE.CL, and TE.TE variants exploit different parsing discrepancies.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-364",
+    "name": "Signal Handler Race Condition",
+    "description": "Signal handlers that access shared state with the main program create race conditions because signals can interrupt execution at any point, including in the middle of non-atomic operations. If a signal handler modifies global variables, calls non-reentrant functions (malloc, printf, syslog), or accesses shared data structures without proper synchronization, the program can enter an inconsistent state exploitable for code execution or denial of service.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-366",
+    "name": "Race Condition within a Thread",
+    "description": "When multiple threads access shared data without adequate synchronization—missing mutexes, locks, or atomic operations—race conditions produce unpredictable behavior depending on thread scheduling. In security contexts, TOCTOU races on file operations allow symlink attacks, unsynchronized balance checks enable double-spending, and races in authentication state management allow session bypass. Race conditions are notoriously difficult to detect through testing because they depend on specific timing.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-412",
+    "name": "Unrestricted Externally Accessible Lock",
+    "description": "Software that exposes a locking mechanism that external actors can acquire and hold indefinitely creates a denial-of-service vulnerability. If an attacker can acquire a file lock, database lock, or distributed lock used by the application for critical operations, they can prevent the application from functioning until the lock is released. This affects systems using named mutexes, file locks, database advisory locks, or distributed locking services without timeout enforcement.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-833",
+    "name": "Deadlock",
+    "description": "A deadlock occurs when two or more threads each hold a resource the other needs and neither can proceed. Deadlocked threads consume system resources indefinitely, causing the application to hang and eventually exhaust available threads or connections. In server applications, deadlocks caused by specific request patterns enable denial-of-service attacks. Lock ordering violations, nested lock acquisition, and missing timeout mechanisms are common causes of exploitable deadlocks.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-248",
+    "name": "Uncaught Exception",
+    "description": "Software that fails to catch exceptions in critical code paths crashes or enters an undefined state, resulting in denial of service, incomplete transaction processing, or exposure of internal state through error messages. In multi-threaded servers, an uncaught exception in a worker thread may terminate only that thread or the entire process, depending on the framework, potentially leaving shared resources in an inconsistent or locked state.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-252",
+    "name": "Unchecked Return Value",
+    "description": "When software does not check the return value of a function—particularly security-critical functions like authentication, authorization, cryptographic operations, or resource allocation—it may proceed under incorrect assumptions. A failed malloc returning NULL leads to null pointer dereference, an unchecked authentication function leads to access without verification, and an unchecked write operation leads to silent data loss. This is especially critical for security functions where failure must halt execution.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-390",
+    "name": "Detection of Error Condition Without Action",
+    "description": "Software that detects an error condition but takes no action to address it—such as catching an exception with an empty handler, logging an error without stopping the operation, or checking a return code without branching on failure—continues executing in a potentially compromised or inconsistent state. Empty catch blocks and ignored error returns in security-critical code paths can mask vulnerabilities and allow attacks to proceed undetected.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-391",
+    "name": "Unchecked Error Condition",
+    "description": "Software that does not check for error conditions from function calls, system operations, or external service responses may proceed with invalid data or in an insecure state. Common examples include not checking file operation errors, ignoring database query failures, and not verifying return status of security functions. In security contexts, unchecked errors in authentication, encryption, or access control operations can silently fail to a permissive state.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-396",
+    "name": "Declaration of Catch for Generic Exception",
+    "description": "Catching overly broad exception types (Exception, Throwable, BaseException) in security-critical code risks silently swallowing specific exceptions that indicate security violations or data integrity failures. When a broad catch block handles authentication failures, access control violations, and cryptographic errors identically, the application may continue operating after security-critical failures that should halt execution or trigger specific remediation.",
+    "severity": "Low"
+  },
+  {
+    "id": "CWE-525",
+    "name": "Use of Web Browser Cache Containing Sensitive Information",
+    "description": "Web applications that do not set appropriate cache-control headers (Cache-Control: no-store, Pragma: no-cache) for responses containing sensitive data allow browsers and intermediate proxies to cache confidential information. Cached pages containing personal data, financial information, session tokens, or authentication forms can be retrieved by subsequent users of shared computers, from browser cache directories, or from proxy caches.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-539",
+    "name": "Use of Persistent Cookies Containing Sensitive Information",
+    "description": "Storing sensitive information (user credentials, session identifiers, personal data, authorization tokens) in persistent cookies that survive browser restarts creates a prolonged window for cookie theft and unauthorized access. Persistent cookies written to disk can be stolen by malware, extracted during forensic analysis of stolen devices, or recovered from browser profiles. Sensitive authentication data should use session cookies that are deleted when the browser closes.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-602",
+    "name": "Client-Side Enforcement of Server-Side Security",
+    "description": "Software that relies on client-side controls (JavaScript validation, hidden form fields, UI element disabling, client-side role checks) for security enforcement without corresponding server-side verification is trivially bypassed. Attackers using browser developer tools, proxy interceptors (Burp Suite), or custom scripts can modify any client-side check. All security decisions—input validation, authorization, price calculations, workflow enforcement—must be verified server-side.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-644",
+    "name": "Improper Neutralization of HTTP Headers for Scripting Syntax",
+    "description": "When HTTP response headers contain user-controlled data without proper sanitization, attackers can inject script content through headers that are processed by the browser. This includes injecting Content-Type headers to force script interpretation, manipulating Content-Disposition for XSS via filename parameters, and injecting headers that influence browser security policies such as Content-Security-Policy or X-Frame-Options.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-61",
+    "name": "UNIX Symbolic Link (Symlink) Following",
+    "description": "Software that follows symbolic links without verification can be tricked into reading, writing, or deleting files in unintended locations. If a program creates temporary files in a world-writable directory (e.g., /tmp), an attacker can create a symlink at the expected file path pointing to a sensitive file (such as /etc/passwd or /etc/shadow). When the program writes to or deletes the expected path, it instead modifies the symlink target. This is a classic TOCTOU (time-of-check-time-of-use) attack on file operations.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-403",
+    "name": "Exposure of File Descriptor to Unintended Control Sphere",
+    "description": "Software that passes open file descriptors to child processes without setting the close-on-exec flag, or that uses overly permissive file descriptor inheritance, exposes sensitive file handles to processes that should not have access. In privilege-separation architectures, inherited file descriptors to log files, databases, configuration files, or network sockets in spawned processes can be exploited to bypass intended access restrictions.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-459",
+    "name": "Incomplete Cleanup",
+    "description": "Software that does not completely clean up temporary files, sensitive data in memory, session state, or system resources after use may leave sensitive information accessible to subsequent processes or users. Incomplete cleanup of temporary files containing passwords, cryptographic keys, or personal data in shared directories, combined with failure to securely overwrite memory containing secrets before deallocation, creates information disclosure vulnerabilities.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-379",
+    "name": "Creation of Temporary File in Directory with Insecure Permissions",
+    "description": "Software that creates temporary files in shared directories (such as /tmp or C:\\Temp) with overly permissive access rights or predictable filenames is vulnerable to symlink attacks, information disclosure, and file manipulation. Other users on the system can read sensitive data written to world-readable temporary files, replace them with malicious content, or exploit race conditions between file creation and use.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-840",
+    "name": "Business Logic Errors",
+    "description": "Business logic errors are flaws in the application's workflow, rules, or constraints that allow attackers to abuse legitimate functionality in unintended ways. Examples include purchasing items at negative prices, applying discount codes multiple times, bypassing payment verification in multi-step checkout flows, manipulating loyalty point calculations, and circumventing rate limits through state manipulation. These vulnerabilities cannot be detected by automated scanners because they require understanding the intended business rules.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-841",
+    "name": "Improper Enforcement of Behavioral Workflow",
+    "description": "Software that does not properly enforce the expected sequence of steps in a multi-step process allows attackers to skip, reorder, or repeat steps to bypass security controls. Examples include bypassing payment in e-commerce checkout by jumping directly to the order confirmation step, repeating a password reset step to enumerate valid accounts, or skipping consent verification in authorization flows. Server-side state machines must enforce valid transitions.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-799",
+    "name": "Improper Control of Interaction Frequency",
+    "description": "Software that does not limit the rate or frequency of user interactions enables abuse through automated rapid requests. Without rate limiting, attackers can perform credential brute-forcing, API abuse, resource exhaustion, rapid-fire transactions, scraping, and denial of service. Rate limiting must be enforced server-side based on multiple signals (IP address, user account, API key, session) and apply to both authenticated and unauthenticated endpoints.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-837",
+    "name": "Improper Enforcement of a Single, Unique Action",
+    "description": "Software that fails to ensure certain actions are performed exactly once—such as voting, coupon redemption, password reset token usage, or payment processing—allows attackers to repeat actions for duplicate benefits. Without idempotency controls like unique transaction tokens, database constraints, or distributed locking, race conditions and request replay can cause double-charging, multiple vote counting, or repeated reward redemption.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1007",
+    "name": "Insufficient Visual Distinction of Homoglyphs",
+    "description": "Software that does not detect or prevent the use of visually similar characters (homoglyphs) from different character sets—such as Cyrillic 'а' vs Latin 'a', or Greek 'ο' vs Latin 'o'—enables phishing attacks through lookalike domain names (IDN homograph attacks), user impersonation through similar usernames, and confusion attacks in code repositories. URL bars, username displays, and email addresses are common attack surfaces for homoglyph exploitation.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1270",
+    "name": "Generation of Incorrect Security Tokens",
+    "description": "Software that generates security tokens (session IDs, CSRF tokens, API keys, JWT tokens) with insufficient randomness, improper signing, missing claims validation, or incorrect expiration settings produces tokens that can be forged, predicted, or abused beyond their intended scope. This includes JWT tokens signed with weak algorithms (none, HS256 with guessable secrets), tokens missing audience or issuer validation, and tokens with excessive validity periods.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1283",
+    "name": "Mutable Attestation or Measurement Reporting Data",
+    "description": "Software or hardware that allows modification of attestation measurements, integrity reports, or compliance evidence after generation compromises the trust chain. In cloud and container environments, this includes tamperable boot measurements, modifiable container image digests, mutable software bill of materials (SBOM) records, and alterable audit logs. Integrity evidence must be cryptographically protected against post-generation modification.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-470",
+    "name": "Use of Externally-Controlled Input to Select Classes or Code (Unsafe Reflection)",
+    "description": "Software that uses externally-controlled input to determine which class to instantiate or which method to invoke enables attackers to execute arbitrary code by specifying malicious class names. In Java, this occurs with Class.forName() using untrusted input; in .NET, with Activator.CreateInstance(); and in dynamic languages, with eval-based object instantiation. Unsafe reflection enables remote code execution by instantiating dangerous classes like Runtime.exec() wrappers.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-1287",
+    "name": "Improper Validation of Specified Type of Input",
+    "description": "Software that validates the format of input but not its semantic type—for example, accepting any string where an email address is expected, or accepting a float where an integer is required—allows type confusion attacks and logic bypasses. In APIs, accepting array parameters where strings are expected, or object parameters where scalars are expected, can bypass validation logic engineered for the intended type and lead to unexpected behavior including injection attacks.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1288",
+    "name": "Improper Validation of Consistency within Input",
+    "description": "Software that validates individual input fields but does not verify logical consistency between related fields enables attack vectors where conflicting values bypass business rules. Examples include mismatched Content-Length and actual body size (enabling request smuggling), conflicting start and end dates (achieving negative time periods), and contradictory permission settings (requesting admin access while specifying guest role parameters).",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-1357",
+    "name": "Reliance on Insufficiently Trustworthy Component",
+    "description": "Software that depends on third-party components, libraries, or services without adequate vetting for security—including unmaintained packages, components with known vulnerabilities, dependencies from unverified sources, or packages subject to typosquatting—inherits the security weaknesses and risks of those components. Supply chain attacks increasingly target popular package registries (npm, PyPI, Maven Central) by publishing malicious packages with names similar to legitimate ones.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-235",
+    "name": "Improper Handling of Extra Parameters",
+    "description": "Software that accepts and processes additional unexpected parameters in API requests or form submissions enables mass assignment attacks, parameter pollution, and logic bypasses. When REST APIs bind request bodies directly to internal objects without allowlisting permitted fields, attackers can set unintended properties like isAdmin, accountBalance, or role. Similarly, HTTP parameter pollution allows attackers to bypass WAF rules and input validation by duplicating parameters.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-436",
+    "name": "Interpretation Conflict",
+    "description": "When different components in a system (web server, application server, WAF, proxy, browser) interpret the same data differently, the discrepancy creates security vulnerabilities. Examples include differing URL normalization rules allowing path traversal to bypass WAFs, charset misinterpretation enabling XSS through encoding tricks, and content-type sniffing overriding declared types to execute uploaded files as scripts. Each component in the processing chain must interpret security-relevant data consistently.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-15",
+    "name": "External Control of System or Configuration Setting",
+    "description": "Software that allows external actors to modify system-level or application configuration settings—such as environment variables, configuration file paths, debug flags, database connection strings, or logging levels—without proper authorization can be manipulated to weaken security controls, redirect connections to malicious servers, enable verbose error output containing sensitive information, or disable security features.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-11",
+    "name": "ASP.NET Misconfiguration: Creating Debug Binary",
+    "description": "ASP.NET applications deployed with debug mode enabled (compilation debug='true') expose detailed error messages, stack traces, and debug symbols that reveal internal application structure, file paths, database schemas, and code logic to attackers. Debug mode also disables request timeouts, increases memory usage, and prevents script and content caching, degrading performance and expanding the attack surface in production environments.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-921",
+    "name": "Storage of Sensitive Data in a Mechanism without Access Control",
+    "description": "Mobile and desktop applications that store sensitive data (credentials, tokens, personal information, encryption keys) in storage mechanisms without access controls—such as shared preferences, public external storage, unprotected SQLite databases, or plist files—allow other applications on the same device or users with physical access to read the sensitive data. On Android, using MODE_WORLD_READABLE or storing secrets on external storage (SD card) exposes data to all apps.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-927",
+    "name": "Use of Implicit Intent for Sensitive Communication",
+    "description": "Android applications that use implicit intents to transmit sensitive data (credentials, tokens, personal information) between components allow any application with a matching intent filter to intercept the communication. A malicious app can register an intent filter for the same action and receive the sensitive data. Sensitive inter-component communication should use explicit intents that specify the exact target component by class name.",
+    "severity": "High"
+  },
+  {
+    "id": "CWE-409",
+    "name": "Improper Handling of Highly Compressed Data (Data Amplification)",
+    "description": "Software that decompresses user-supplied data without limiting the decompression ratio or output size is vulnerable to decompression bomb (zip bomb) attacks. A small compressed file (42 KB) can expand to petabytes of data, exhausting memory, disk space, or CPU during decompression. This affects any service processing compressed uploads including ZIP, GZIP, BZIP2, and LZ4 formats. Antivirus scanners, file upload handlers, and API gateways are common targets.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-405",
+    "name": "Asymmetric Resource Consumption (Amplification)",
+    "description": "Software features where a small input triggers disproportionately large resource consumption enable amplification-based denial-of-service attacks. Examples include regex engines with catastrophic backtracking on crafted input (ReDoS), XML/JSON parsers with deeply nested structures, hash table implementations vulnerable to collision attacks, and cryptographic operations triggered by unauthenticated requests. Attackers exploit the asymmetry to exhaust server resources with minimal bandwidth.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-215",
+    "name": "Insertion of Sensitive Information Into Debugging Code",
+    "description": "Software that includes sensitive information in debug output—such as debug logging of full request/response bodies containing credentials, print statements dumping database queries with parameter values, or debug endpoints exposing internal application state—leaks sensitive data when debug features are inadvertently left active in production or when debug logs are accessible to unauthorized users.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-214",
+    "name": "Invocation of Process Using Visible Sensitive Information",
+    "description": "Software that passes sensitive information (passwords, API keys, cryptographic keys, tokens) as command-line arguments to spawned processes exposes these values through process listings (ps, /proc, Task Manager), system monitoring tools, audit logs, and crash dumps. On multi-user systems, any user can view command-line arguments of all running processes. Sensitive values should be passed through environment variables, stdin, configuration files, or secure IPC mechanisms.",
+    "severity": "Medium"
+  },
+  {
+    "id": "CWE-497",
+    "name": "Exposure of Sensitive System Information to an Unauthorized Control Sphere",
+    "description": "Software that exposes internal system information—such as server software versions, framework details, internal IP addresses, file paths, database versions, and middleware configurations—in HTTP headers, error responses, or API outputs enables attackers to fingerprint the technology stack and select targeted exploits. Server header banners, X-Powered-By headers, detailed error messages, and version strings in public APIs should be suppressed in production.",
+    "severity": "Low"
+  },
+  {
+    "id": "CWE-548",
+    "name": "Exposure of Information Through Directory Listing",
+    "description": "Web servers configured to display directory listings when no index file is present expose the file structure, backup files, configuration files, and other sensitive content to anyone who browses to the directory URL. Directory listings reveal file naming conventions, backup file patterns (.bak, .old, .swp), version control directories (.git, .svn), and temporary files that attackers can download for source code, credentials, and configuration details.",
+    "severity": "Medium"
   }
 ]

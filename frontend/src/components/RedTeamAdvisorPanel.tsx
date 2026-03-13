@@ -16,8 +16,15 @@ interface Props {
   onClose: () => void;
 }
 
+function formatViewLabel(viewMode: string) {
+  return viewMode
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 export function RedTeamAdvisorPanel({ open, onClose }: Props) {
-  const { currentProject, nodes } = useStore();
+  const { currentProject, nodes, viewMode, advisorPageContext } = useStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -56,6 +63,10 @@ export function RedTeamAdvisorPanel({ open, onClose }: Props) {
         project_name: currentProject?.name ?? '',
         root_objective: currentProject?.root_objective ?? '',
         tree_context: buildTreeContext(),
+        view_mode: advisorPageContext?.view || viewMode,
+        page_title: advisorPageContext?.title || formatViewLabel(viewMode),
+        page_summary: advisorPageContext?.summary || (currentProject ? `The operator is currently on the ${formatViewLabel(viewMode)} page inside ${currentProject.name}.` : ''),
+        context_packets: advisorPageContext?.packets || [],
       });
 
       if (res.status === 'success') {
@@ -116,6 +127,17 @@ export function RedTeamAdvisorPanel({ open, onClose }: Props) {
         {messages.length === 0 && (
           <div className="text-center py-10">
             <Swords size={28} className="mx-auto text-muted-foreground/50 mb-3" />
+            {(advisorPageContext?.title || viewMode) && (
+              <div className="mb-4 rounded-lg border border-border/50 bg-background/40 px-3 py-2 text-left">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Current Page Context</div>
+                <div className="mt-1 text-xs font-medium">{advisorPageContext?.title || formatViewLabel(viewMode)}</div>
+                {(advisorPageContext?.summary || currentProject) && (
+                  <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                    {advisorPageContext?.summary || `The operator is currently on the ${formatViewLabel(viewMode)} page.`}
+                  </p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-muted-foreground mb-2">Ask the Red Team Advisor about:</p>
             <div className="space-y-1.5 text-[11px]">
               {[

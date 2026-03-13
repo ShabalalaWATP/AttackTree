@@ -526,5 +526,185 @@
     "name": "Model Theft",
     "description": "Model theft (also called model extraction or model stealing) involves recreating a proprietary machine learning model's functionality through systematic querying of its API. Attackers submit carefully chosen inputs, observe the model's predictions, and train a surrogate model that approximates the original model's behavior. Stolen models can be used to generate adversarial examples that transfer to the original model, replicate a competitor's AI capabilities without their R&D investment, circumvent usage-based pricing by running the stolen model locally, and analyze the model's decision boundary to find exploitable weaknesses. Efficient extraction techniques require only a fraction of the queries needed to train the original model from scratch. The stolen model need not be architecturally identical to the original; a simpler model trained on the original's outputs can achieve comparable performance for the target task. Prevention requires implementing rate limiting and query budgeting, monitoring for distribution shift in query patterns (extraction attempts often use out-of-distribution inputs), watermarking model outputs (adding detectable patterns to predictions that survive extraction), requiring authentication and tracking API usage per user, and implementing prediction perturbation that degrades extraction quality while maintaining utility for legitimate users.",
     "category": "ML"
+  },
+  {
+    "id": "ISR01:2024",
+    "name": "Outdated Software",
+    "description": "Outdated infrastructure software leaves organizations exposed to publicly known flaws in operating systems, hypervisors, network appliances, VPN gateways, directory services, storage platforms, management consoles, and monitoring stacks. In real environments this often means unsupported appliances, delayed firmware rollouts, and internal systems that defenders assume are low-risk because they are not internet-facing. Once an attacker gains any foothold, outdated internal infrastructure becomes a reliable path for lateral movement, credential theft, or domain-wide escalation. Defensive planning should track unsupported versions, patch latency, and compensating controls across both production and management-plane assets.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR02:2024",
+    "name": "Insufficient Threat Detection",
+    "description": "Internal infrastructure frequently lacks the telemetry depth needed to detect post-compromise activity. Gaps include missing endpoint visibility on servers and appliances, weak east-west network monitoring, no alerting on administrative protocol use, and poor coverage of management-plane actions such as directory changes, hypervisor operations, or backup-system access. This weakness turns otherwise containable incidents into prolonged intrusions. Defensive reviews should map detection coverage to likely attacker paths, not just perimeter events.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR03:2024",
+    "name": "Insecure Configurations",
+    "description": "Insecure infrastructure configurations include permissive shares, weak service settings, exposed admin interfaces, dangerous trust relationships, insecure defaults, and hardening baselines that drift over time. These issues are often systemic because they are templated into images, inherited from legacy deployments, or replicated through automation without review. The result is broad attack surface expansion across otherwise well-managed estates. Defensive assessments should treat configuration drift and baseline exceptions as first-class risks alongside software vulnerabilities.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR04:2024",
+    "name": "Insecure Resource and User Management",
+    "description": "Infrastructure security degrades when local admins, service accounts, shared credentials, directory groups, delegated roles, and resource ownership are not managed rigorously. Common patterns include orphaned admin memberships, stale contractor access, unreviewed privileged groups, and service identities with unclear owners. These issues make privilege escalation and persistence easier after initial compromise. Defensive planning should include ownership clarity, periodic entitlement review, and rapid deprovisioning paths for both users and machine identities.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR05:2024",
+    "name": "Insecure Use of Cryptography",
+    "description": "Infrastructure often relies on cryptography for VPNs, management channels, backups, certificates, directory trust, secrets distribution, and storage protection, yet weak implementation remains common. Problems include deprecated protocols, weak key sizes, poor certificate lifecycle management, reused keys, plaintext secrets in scripts, and inconsistent encryption between control planes and data planes. These failures enable interception, impersonation, and secret recovery even when systems appear segmented. Reviews should cover algorithm choice, key handling, certificate trust, and operational crypto hygiene together.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR06:2024",
+    "name": "Insecure Network Access Management",
+    "description": "Flat internal networks, permissive ACLs, unrestricted management protocols, broad VPN reachability, and unmanaged remote-access paths give attackers room to move once they enter the environment. In many estates, administrative access is available from too many segments or through too many jump paths, and outbound controls are too weak to stop data staging or command-and-control. The weakness is not only exposure but also lack of deliberate path design. Defensive testing should examine who can reach what, from where, over which protocols, and with what controls or monitoring in place.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR07:2024",
+    "name": "Insecure Authentication Methods and Default Credentials",
+    "description": "Infrastructure platforms still fail through weak or inherited authentication models such as default credentials, shared local admin passwords, legacy protocols, weak fallback mechanisms, and poor MFA coverage on administrative interfaces. Appliances, OT-adjacent systems, and management consoles are especially prone to these patterns. Once an attacker finds one weak interface, the credential often opens multiple downstream systems. Defensive reviews should focus on authentication strength, uniqueness, shared-secret sprawl, and where strong auth is absent on high-value admin paths.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR08:2024",
+    "name": "Information Leakage",
+    "description": "Infrastructure leaks valuable information through banners, directory metadata, backup catalogs, debug endpoints, open shares, monitoring dashboards, inventory systems, and verbose error handling. Even when none of these exposures are independently critical, together they give attackers a high-quality map of hosts, users, trust boundaries, privileged systems, and recovery assets. That accelerates later exploitation and privilege escalation. Defensive assessments should treat enumeration-enabling exposures as meaningful risk, not harmless noise.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR09:2024",
+    "name": "Insecure Access to Resources and Management Components",
+    "description": "The management plane is often less protected than the workloads it controls. Weak segmentation around hypervisors, backup consoles, storage managers, remote KVM, BMC interfaces, virtualization APIs, and orchestration platforms lets an attacker turn one administrative foothold into estate-wide control. This category is especially relevant in data centres and telecom environments where a small number of control systems govern large numbers of assets. Defensive planning should explicitly model compromise of the management plane rather than assuming it is merely a trusted support layer.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "ISR10:2024",
+    "name": "Insufficient Asset Management and Documentation",
+    "description": "You cannot harden or monitor infrastructure you do not reliably know exists. Shadow systems, undocumented network paths, stale diagrams, unmanaged appliances, and unknown software versions produce blind spots that survive for years. These gaps also break response and recovery because defenders do not know which systems are authoritative, internet-exposed, or business-critical. Defensive reviews should measure discovery quality, ownership, version tracking, and documentation fidelity, not just the security state of known assets.",
+    "category": "Infrastructure"
+  },
+  {
+    "id": "NHI1:2025",
+    "name": "Improper Offboarding",
+    "description": "Non-human identities such as service accounts, access keys, tokens, certificates, and automation principals frequently outlive the applications, teams, or workflows that created them. When those identities are left active after decommissioning, migration, or staff turnover, they become stealthy footholds with little scrutiny. Because machine identities are rarely reviewed with the same discipline as human users, attackers can use abandoned NHIs for durable persistence and lateral movement. Defensive planning should tie every NHI to an owner, a business purpose, and an explicit retirement path.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI2:2025",
+    "name": "Secret Leakage",
+    "description": "API keys, tokens, certificates, and signing secrets leak through source control, CI logs, build artifacts, chat systems, tickets, documentation, container images, and backup exports. Once exposed, these credentials often provide direct access without interactive login controls, making them more useful than many stolen user passwords. The problem is not only accidental disclosure but also slow detection and rotation after exposure. Defensive reviews should map where machine secrets are stored, propagated, logged, and monitored for leakage.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI3:2025",
+    "name": "Vulnerable Third-Party NHI",
+    "description": "External integrations, IDE extensions, SaaS connectors, agents, and deployment services commonly hold non-human credentials into internal environments. If one of those third parties is compromised or over-permissioned, the attacker inherits trusted machine access into code, cloud, or production systems. This collapses the boundary between vendor risk and identity risk. Defensive planning should examine third-party machine identities with the same rigor as internal service accounts, including scope, rotation, monitoring, and revocation paths.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI4:2025",
+    "name": "Insecure Authentication",
+    "description": "Machine-to-machine authentication often relies on weak or outdated patterns such as static shared secrets, insecure token validation, deprecated protocols, weak certificate handling, or incomplete claim checking. These shortcuts make impersonation and token abuse easier than defenders expect, especially across internal services where trust is assumed. The result is that compromise of one low-visibility integration can unlock broad downstream access. Defensive assessments should review how NHIs authenticate, how trust is validated, and where strong mutual identity is missing.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI5:2025",
+    "name": "Overprivileged NHI",
+    "description": "Service principals and automation identities routinely accumulate permissions far beyond their actual job, often because broad scopes are convenient during deployment and are never reduced later. Once compromised, those permissions let attackers modify pipelines, access data stores, mint more credentials, or alter production systems at machine speed. Overprivilege is especially dangerous because it is quiet and often normalized. Defensive planning should treat scope minimization, privilege review, and blast-radius reduction as core NHI controls.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI6:2025",
+    "name": "Insecure Cloud Deployment Configurations",
+    "description": "Cloud deployment pipelines and automation often authenticate with static credentials, broadly trusted workload identities, or weakly constrained federation settings. Misconfigured OIDC trust, permissive token claims, and reusable deploy credentials can turn a build-system compromise into full cloud-environment access. The issue is not only secret storage but also how deployment identity is granted and validated. Defensive reviews should model CI/CD-to-cloud trust as a primary attack path rather than an implementation detail.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI7:2025",
+    "name": "Long-Lived Secrets",
+    "description": "Secrets that barely rotate, rotate manually, or never expire create durable access for attackers and slow defenders during containment. Even if the original disclosure path is closed, long-lived credentials remain useful until someone notices and replaces them everywhere they are embedded. In complex estates that can take days or weeks. Defensive planning should prefer short-lived credentials, automated renewal, and designs that assume revocation will be necessary under pressure.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI8:2025",
+    "name": "Environment Isolation",
+    "description": "Reusing non-human identities across development, test, staging, and production destroys the intended separation between those environments. A compromise in a lower-trust zone can then transit into higher-trust systems without needing a new credential theft step. This is common in pipelines, shared integrations, and legacy automation. Defensive reviews should verify that environment boundaries are enforced at the identity layer, not only at the network or application layer.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI9:2025",
+    "name": "NHI Reuse",
+    "description": "Reusing one machine identity across multiple applications, services, or components creates hidden coupling and unnecessary blast radius. A single compromise can suddenly expose unrelated workloads, data paths, or environments that operators did not realize were linked by the same credential. This pattern also makes incident response harder because revoking the identity breaks too many systems at once. Defensive planning should bias toward one purpose, one owner, and one scope per NHI.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "NHI10:2025",
+    "name": "Human Use of NHI",
+    "description": "When administrators or developers perform manual work through service accounts, shared API keys, or deployment bots, accountability and least privilege both break down. Actions become hard to attribute, privileged access becomes easier to hide, and emergency shortcuts become normalized. This is especially risky in cloud, CI/CD, and operations tooling where machine identities may already hold broad rights. Defensive reviews should identify where humans are borrowing machine identities and replace that pattern with auditable human auth plus controlled elevation.",
+    "category": "Non-Human Identities"
+  },
+  {
+    "id": "MCP01:2025",
+    "name": "Token Mismanagement and Secret Exposure",
+    "description": "MCP-enabled systems frequently pass API tokens, model credentials, tool secrets, and integration keys through prompts, logs, memory, configuration, or debugging output. If those secrets are overscoped, long-lived, or insufficiently isolated from context flows, a prompt or tool compromise can expose them. This can turn an AI feature into a pivot point into source control, cloud systems, ticketing tools, or internal data stores. Defensive reviews should treat secret boundaries in MCP stacks as a primary architecture concern.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP02:2025",
+    "name": "Privilege Escalation via Scope Creep",
+    "description": "Agent tools and MCP servers often start with narrow privileges and gradually accumulate broader scopes as new use cases are added. Without disciplined scoping and review, the AI layer ends up able to read, write, approve, or execute far beyond its original purpose. The danger is not just a single bug but the slow normalization of excessive capability. Defensive planning should map which actions the model can trigger today and which ones it could reach indirectly through chained tools.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP03:2025",
+    "name": "Tool Poisoning",
+    "description": "Models rely on tools, plugins, schemas, and returned content as trusted context. If any of those are malicious, compromised, or misleading, the model can be manipulated into unsafe reasoning or unsafe actions while appearing to behave normally. In practice this can look like poisoned plugin output, deceptive tool metadata, or malicious context returned from a connected system. Defensive assessments should evaluate not only the model but every dependency that can shape its decisions.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP04:2025",
+    "name": "Software Supply Chain Attacks and Dependency Tampering",
+    "description": "MCP stacks depend on connectors, SDKs, orchestration libraries, wrappers, and server modules that can be tampered with or replaced. A compromised dependency can silently alter agent behavior, capture context, or introduce execution-level backdoors into otherwise trusted workflows. Because these components sit in the control path between model and tool, their compromise is disproportionately powerful. Defensive planning should include provenance, signing, dependency review, and update governance for MCP-specific packages and integrations.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP05:2025",
+    "name": "Command Injection and Execution",
+    "description": "When an AI system turns untrusted content into shell commands, scripts, code, or high-impact API calls, it recreates classic injection risk in a new control plane. The model may synthesize harmful actions from user prompts, retrieved documents, tool output, or malformed context unless execution boundaries are explicit. This becomes especially dangerous when tool-use is autonomous or broadly privileged. Defensive reviews should examine every place model output crosses into an execution surface.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP06:2025",
+    "name": "Prompt Injection via Contextual Payloads",
+    "description": "In MCP environments, hostile instructions can arrive indirectly through retrieved pages, files, emails, tickets, logs, or tool responses rather than a direct user prompt. Because the model is designed to follow language-like instructions, these contextual payloads can subvert reasoning, override boundaries, or trigger unsafe tool use. The risk is amplified when the system treats external context as trusted memory. Defensive planning should assume context itself can be malicious and should be filtered, scoped, and privilege-separated.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP07:2025",
+    "name": "Insufficient Authentication and Authorization",
+    "description": "Weak identity handling in MCP ecosystems allows tools, servers, users, and agents to interact without strong proof of who is requesting what or whether that action is allowed. Multi-agent flows and shared tool backends make this especially easy to get wrong because requests cross several trust boundaries before any action occurs. Missing checks at one layer can invalidate careful controls elsewhere. Defensive assessments should map identity and authorization end-to-end across the full agent and tool chain.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP08:2025",
+    "name": "Lack of Audit and Telemetry",
+    "description": "If MCP servers, tools, and agents do not emit clear logs for context changes, tool invocations, decision points, and user-to-action linkage, incidents become difficult to investigate and harder to contain. This matters more in agentic systems because the damaging step may be several tool hops away from the initiating prompt. Minimal logging creates ambiguity about whether the model reasoned badly, the tool was poisoned, or an attacker manipulated context. Defensive planning should require immutable auditability across prompt, tool, and action boundaries.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP09:2025",
+    "name": "Shadow MCP Servers",
+    "description": "Teams may stand up unofficial MCP servers for experimentation, convenience, or local integration without going through normal security governance. These shadow deployments often run with weak auth, broad permissions, default settings, or direct access to internal data sources. Like shadow IT, they become invisible but highly trusted control points. Defensive reviews should discover and govern unofficial MCP infrastructure before it turns into an unmonitored bridge into sensitive systems.",
+    "category": "MCP"
+  },
+  {
+    "id": "MCP10:2025",
+    "name": "Context Injection and Over-Sharing",
+    "description": "Persistent or shared context windows can leak data between tasks, users, agents, and tools when scoping is weak. Sensitive notes, retrieved documents, prior prompts, or intermediate outputs may surface in later interactions that were never meant to see them. This is a confidentiality problem and also a control problem because stale context can distort future reasoning. Defensive planning should examine how context is partitioned, retained, redacted, and exposed across sessions and workflows.",
+    "category": "MCP"
   }
 ]

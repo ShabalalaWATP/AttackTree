@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import type { PlanningProfile } from '@/types';
+import type { PlanningProfile, ReferenceLink } from '@/types';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
 import { StandaloneLanding } from '@/components/StandaloneLanding';
+import { ReferencePicker } from '@/components/ReferencePicker';
 import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
+import { mergeReferenceLinks, normalizeReferenceLinks, removeReferenceLink } from '@/utils/referenceLinks';
 import toast from 'react-hot-toast';
 import {
   Route, Plus, Trash2, Brain, Loader2, Sparkles, Clock,
@@ -16,6 +18,7 @@ import {
 
 import { MarkdownContent } from '@/components/MarkdownContent';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { useAdvisorPageContext } from '@/hooks/useAdvisorPageContext';
 
 /* ───── Types ───── */
 
@@ -29,10 +32,12 @@ interface MappedNode {
 }
 
 interface KillChainPhase {
+  id: string;
   phase: string;
   phase_index: number;
   description: string;
   mapped_nodes: MappedNode[];
+  references: ReferenceLink[];
   tools: string[];
   iocs: string[];
   log_sources: string[];
@@ -124,10 +129,12 @@ function normalizePhases(phases: unknown): KillChainPhase[] {
   if (!Array.isArray(phases)) return [];
   return phases.filter(isRecord).map((p, i) => {
     return {
+      id: typeof p.id === 'string' && p.id.trim() ? p.id : `phase-${typeof p.phase_index === 'number' ? p.phase_index : i + 1}`,
       phase: typeof p.phase === 'string' ? p.phase : '',
       phase_index: typeof p.phase_index === 'number' ? p.phase_index : (typeof p.order === 'number' ? p.order : i + 1),
       description: typeof p.description === 'string' ? p.description : '',
       mapped_nodes: normalizeMappedNodes(p.mapped_nodes, p.node_ids),
+      references: normalizeReferenceLinks(p.references),
       tools: stringList(p.tools),
       iocs: stringList(p.iocs),
       log_sources: stringList(p.log_sources),
@@ -235,7 +242,15 @@ const PRIORITY_STYLES: Record<string, string> = {
 /* ───── Component ───── */
 
 export function KillChainView() {
-  const { currentProject, nodes, setNodes, setViewMode, setSelectedNodeId } = useStore();
+  const {
+    currentProject,
+    nodes,
+    setNodes,
+    setViewMode,
+    setSelectedNodeId,
+    pendingViewSelection,
+    clearPendingViewSelection,
+  } = useStore();
   const [killChains, setKillChains] = useState<KillChainData[]>([]);
   const [selected, setSelected] = useState<KillChainData | null>(null);
   const [genLoading, setGenLoading] = useState(false);
@@ -289,7 +304,17 @@ export function KillChainView() {
       .then((data) => {
         if (cancelled) return;
         const normalized = Array.isArray(data) ? data.map((kc: any) => normalizeKillChain(kc)) : [];
+        const requestedKillChainId = pendingViewSelection?.view === 'kill_chain' ? pendingViewSelection.artifactId : null;
         setKillChains(normalized);
+        setSelected((current) => {
+          if (requestedKillChainId) {
+            return normalized.find((item) => item.id === requestedKillChainId) || normalized[0] || null;
+          }
+          return current ? normalized.find((item) => item.id === current.id) || null : current;
+        });
+        if (requestedKillChainId) {
+          clearPendingViewSelection();
+        }
       })
       .catch((e: any) => {
         if (!cancelled) toast.error(e.message);
@@ -323,14 +348,56 @@ export function KillChainView() {
     } catch (e: any) { toast.error(e.message); }
   };
 
+  const syncKillChain = useCallback((updated: KillChainData) => {
+    setSelected(updated);
+    setKillChains((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+  }, []);
+
+  const persistPhases = useCallback(async (nextPhases: KillChainPhase[]) => {
+    if (!selected) return;
+    const optimistic = normalizeKillChain({ ...selected, phases: nextPhases });
+    syncKillChain(optimistic);
+    try {
+      const updated = await api.updateKillChain(selected.id, { phases: nextPhases });
+      syncKillChain(normalizeKillChain(updated));
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  }, [selected, syncKillChain]);
+
+  const addPhaseReference = useCallback((phaseId: string, item: {
+    framework: string;
+    ref_id: string;
+    ref_name: string;
+    score: number;
+    reasons: string[];
+  }) => {
+    if (!selected) return;
+    const nextPhases = normalizePhases(selected.phases || []).map((phase) => (
+      phase.id === phaseId
+        ? { ...phase, references: mergeReferenceLinks(phase.references || [], [item]) }
+        : phase
+    ));
+    void persistPhases(nextPhases);
+  }, [persistPhases, selected]);
+
+  const removePhaseReference = useCallback((phaseId: string, framework: string, refId: string) => {
+    if (!selected) return;
+    const nextPhases = normalizePhases(selected.phases || []).map((phase) => (
+      phase.id === phaseId
+        ? { ...phase, references: removeReferenceLink(phase.references || [], framework, refId) }
+        : phase
+    ));
+    void persistPhases(nextPhases);
+  }, [persistPhases, selected]);
+
   const handleAiMap = async () => {
     if (!selected) return;
     setMapLoading(true);
     try {
       const result = await api.aiMapKillChain(selected.id, { user_guidance: userGuidance, planning_profile: planningProfile });
       const normalized = normalizeKillChain(result);
-      setSelected(normalized);
-      setKillChains((prev) => prev.map((k) => k.id === normalized.id ? normalized : k));
+      syncKillChain(normalized);
       setActiveTab('timeline');
       setShowGuidance(false);
       toast.success('Kill chain analysis complete');
@@ -375,6 +442,19 @@ export function KillChainView() {
   const phases = useMemo(() => normalizePhases(selected?.phases || []), [selected?.phases]);
   const analysisMetadata = selected?.analysis_metadata || { generation_warnings: [], pending_chunk_ids: [] };
   const analysisInProgress = analysisMetadata.generation_status === 'running' || analysisMetadata.generation_status === 'partial';
+  const isProcessing = genLoading || mapLoading;
+  const activeFrameworkLabel = FRAMEWORKS.find((item) => item.id === (selected?.framework || createFramework))?.label || selected?.framework || createFramework;
+  const processingTitle = genLoading ? 'Generating kill chain' : 'Analysing kill chain';
+  const processingDescription = genLoading
+    ? `The AI is building a ${activeFrameworkLabel} kill chain from the workspace objective. This can take a little while. Please be patient.`
+    : 'The AI is mapping attack tree nodes into kill-chain phases, coverage gaps, and defender break points. This can take a little while. Please be patient.';
+  const processingDetail = genLoading
+    ? activeFrameworkLabel
+    : analysisMetadata.current_stage
+      ? `Stage: ${analysisMetadata.current_stage}`
+      : typeof analysisMetadata.pending_chunk_count === 'number' && analysisMetadata.pending_chunk_count > 0
+        ? `${analysisMetadata.pending_chunk_count} pass${analysisMetadata.pending_chunk_count === 1 ? '' : 'es'} pending`
+        : selectedPlanningProfile.label;
 
   const expandAll = useCallback(() => {
     setExpandedPhases(new Set(phases.map((_, i) => i)));
@@ -393,6 +473,23 @@ export function KillChainView() {
   const coveragePercent = selected?.coverage_score != null
     ? Math.round(selected.coverage_score * 100)
     : (phases.length > 0 ? Math.round((coveredPhases / phases.length) * 100) : 0);
+  const advisorContext = useMemo(() => ({
+    view: 'kill_chain' as const,
+    title: selected ? `Kill Chain: ${selected.name}` : 'Kill Chain Analysis',
+    summary: selected
+      ? `Reviewing ${FRAMEWORKS.find((item) => item.id === selected.framework)?.label || selected.framework} phases on the ${activeTab} tab.`
+      : 'Kill chain generation and mapping workspace.',
+    packets: [
+      selected ? `Framework: ${FRAMEWORKS.find((item) => item.id === selected.framework)?.label || selected.framework}` : '',
+      selected ? `Active tab: ${activeTab}` : '',
+      selected ? `Mapped phases: ${phases.length}` : '',
+      selected ? `Coverage: ${coveragePercent}%` : '',
+      selected?.overall_risk_rating ? `Overall risk: ${selected.overall_risk_rating}` : '',
+      selected?.recommendations?.length ? `Recommendations: ${selected.recommendations.length}` : '',
+      analysisInProgress ? 'Kill chain generation is partial or still running' : '',
+    ],
+  }), [activeTab, analysisInProgress, coveragePercent, phases.length, selected]);
+  useAdvisorPageContext(advisorContext);
 
   if (!currentProject) {
     return (
@@ -527,52 +624,83 @@ export function KillChainView() {
         </div>
       )}
 
+      {isProcessing && (
+        <div className="mx-4 mt-3">
+          <InProgressNotice
+            title={processingTitle}
+            description={processingDescription}
+            detail={processingDetail}
+            compact
+          />
+        </div>
+      )}
+
       {/* ──── Content Area ──── */}
       {!selected ? (
-        /* ── Empty state: no kill chain selected ── */
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <div className="text-center max-w-md">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-indigo-500/20 flex items-center justify-center">
-              <Route size={28} className="text-cyan-500" />
-            </div>
-            <p className="text-sm font-semibold mb-1">Kill Chain Analysis</p>
-            <p className="text-xs mb-5 leading-relaxed">
-              Maps your attack tree nodes to kill chain phases (MITRE ATT&CK, Lockheed Martin, or Unified Kill Chain).
-              The AI identifies which phases your tree covers, estimates dwell times and detection windows,
-              and highlights "break the chain" opportunities for defenders.
-            </p>
-            <div className="flex items-center justify-center gap-3">
-              <button onClick={handleAiGenerate} disabled={genLoading}
-                className="flex items-center gap-1.5 px-5 py-2.5 rounded-lg bg-gradient-to-r from-indigo-600 to-cyan-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 shadow-lg shadow-cyan-500/20">
-                {genLoading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-                Generate Kill Chain
-              </button>
-              <button onClick={() => setShowCreate(true)}
-                className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border text-sm hover:bg-accent">
-                <Plus size={15} />
-                Create Empty
-              </button>
+        genLoading ? (
+          <div className="flex-1 flex items-center justify-center px-4">
+            <InProgressNotice
+              title={processingTitle}
+              description={processingDescription}
+              detail={processingDetail}
+            />
+          </div>
+        ) : (
+          /* ── Empty state: no kill chain selected ── */
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
+            <div className="text-center max-w-md">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-indigo-500/20 flex items-center justify-center">
+                <Route size={28} className="text-cyan-500" />
+              </div>
+              <p className="text-sm font-semibold mb-1">Kill Chain Analysis</p>
+              <p className="text-xs mb-5 leading-relaxed">
+                Maps your attack tree nodes to kill chain phases (MITRE ATT&CK, Lockheed Martin, or Unified Kill Chain).
+                The AI identifies which phases your tree covers, estimates dwell times and detection windows,
+                and highlights "break the chain" opportunities for defenders.
+              </p>
+              <div className="flex items-center justify-center gap-3">
+                <button onClick={handleAiGenerate} disabled={genLoading}
+                  className="flex items-center gap-1.5 px-5 py-2.5 rounded-lg bg-gradient-to-r from-indigo-600 to-cyan-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 shadow-lg shadow-cyan-500/20">
+                  {genLoading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
+                  Generate Kill Chain
+                </button>
+                <button onClick={() => setShowCreate(true)}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border text-sm hover:bg-accent">
+                  <Plus size={15} />
+                  Create Empty
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        )
       ) : phases.length === 0 ? (
-        /* ── Empty state: no phases yet ── */
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <div className="text-center">
-            <Brain size={36} className="mx-auto mb-3 text-cyan-500/40" />
-            <p className="text-sm font-medium">{analysisInProgress ? 'Analysis is partially complete' : 'No phases mapped yet'}</p>
-            <p className="text-xs mt-1 mb-4">
-              {analysisInProgress
-                ? 'Resume AI analysis to finish the remaining kill-chain phases.'
-                : <>Click <strong>AI Analyse</strong> to map your attack tree nodes into kill chain phases</>}
-            </p>
-            <button onClick={handleAiMap} disabled={mapLoading}
-              className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-700 disabled:opacity-50 mx-auto">
-              {mapLoading ? <Loader2 size={14} className="animate-spin" /> : <Brain size={14} />}
-              {analysisInProgress ? 'Resume AI Analyse' : 'AI Analyse'}
-            </button>
+        mapLoading ? (
+          <div className="flex-1 flex items-center justify-center px-4">
+            <InProgressNotice
+              title={processingTitle}
+              description={processingDescription}
+              detail={processingDetail}
+            />
           </div>
-        </div>
+        ) : (
+          /* ── Empty state: no phases yet ── */
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
+            <div className="text-center">
+              <Brain size={36} className="mx-auto mb-3 text-cyan-500/40" />
+              <p className="text-sm font-medium">{analysisInProgress ? 'Analysis is partially complete' : 'No phases mapped yet'}</p>
+              <p className="text-xs mt-1 mb-4">
+                {analysisInProgress
+                  ? 'Resume AI analysis to finish the remaining kill-chain phases.'
+                  : <>Click <strong>AI Analyse</strong> to map your attack tree nodes into kill chain phases</>}
+              </p>
+              <button onClick={handleAiMap} disabled={mapLoading}
+                className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-cyan-600 text-white text-sm font-medium hover:bg-cyan-700 disabled:opacity-50 mx-auto">
+                {mapLoading ? <Loader2 size={14} className="animate-spin" /> : <Brain size={14} />}
+                {analysisInProgress ? 'Resume AI Analyse' : 'AI Analyse'}
+              </button>
+            </div>
+          </div>
+        )
       ) : (
         /* ── Main content: phases populated ── */
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -723,43 +851,60 @@ export function KillChainView() {
                           )}>
                             <button
                               onClick={() => togglePhase(idx)}
-                              className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-accent/30"
+                              className="w-full grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-4 py-3 text-left hover:bg-accent/30"
                             >
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-sm font-semibold">{phase.phase}</span>
-                                  {phase.difficulty && (
-                                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                                      <span className={cn('w-2 h-2 rounded-full', diffColor)} />
-                                      {phase.difficulty}
+                              <div className="min-w-0 space-y-2">
+                                <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+                                  <div className="min-w-0">
+                                    <span className="block text-sm font-semibold leading-5 break-words">{phase.phase}</span>
+                                    {phase.description && (
+                                      <p className="mt-1 text-xs leading-5 text-muted-foreground line-clamp-2 break-words">{phase.description}</p>
+                                    )}
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                                    {phase.difficulty && (
+                                      <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                        <span className={cn('w-2 h-2 rounded-full', diffColor)} />
+                                        {phase.difficulty}
+                                      </span>
+                                    )}
+                                    <span className={cn('text-[9px] px-1.5 py-0.5 rounded-full font-medium', covStyle.bg, covStyle.text)}>
+                                      {covStyle.label}
                                     </span>
-                                  )}
-                                  {/* Coverage badge */}
-                                  <span className={cn('text-[9px] px-1.5 py-0.5 rounded-full font-medium', covStyle.bg, covStyle.text)}>
-                                    {covStyle.label}
-                                  </span>
-                                  {(phase as any).technique_id && (
-                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 font-mono">
-                                      {(phase as any).technique_id}
-                                    </span>
-                                  )}
+                                    {(phase as any).technique_id && (
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 font-mono">
+                                        {(phase as any).technique_id}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                                {phase.description && (
-                                  <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{phase.description}</p>
+
+                                {(phase.dwell_time || phase.detection_window || hasNodes) && (
+                                  <div className="flex flex-wrap items-start gap-2 text-[10px] text-muted-foreground">
+                                    {phase.dwell_time && (
+                                      <div className="flex min-w-0 max-w-full items-start gap-1 rounded-full border border-border/50 bg-background/30 px-2 py-1 leading-4">
+                                        <Clock size={10} className="mt-0.5 shrink-0" />
+                                        <span className="min-w-0 line-clamp-2 break-words">{phase.dwell_time}</span>
+                                      </div>
+                                    )}
+                                    {phase.detection_window && (
+                                      <div className="flex min-w-0 max-w-full items-start gap-1 rounded-full border border-border/50 bg-background/30 px-2 py-1 leading-4">
+                                        <Eye size={10} className="mt-0.5 shrink-0" />
+                                        <span className="min-w-0 line-clamp-2 break-words">{phase.detection_window}</span>
+                                      </div>
+                                    )}
+                                    {hasNodes && (
+                                      <span className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 font-medium text-cyan-500">
+                                        {phase.mapped_nodes.length} node(s)
+                                      </span>
+                                    )}
+                                  </div>
                                 )}
                               </div>
-                              <div className="flex items-center gap-3 shrink-0 text-[10px] text-muted-foreground">
-                                {phase.dwell_time && (
-                                  <span className="flex items-center gap-1"><Clock size={10} /> {phase.dwell_time}</span>
-                                )}
-                                {phase.detection_window && (
-                                  <span className="flex items-center gap-1"><Eye size={10} /> {phase.detection_window}</span>
-                                )}
-                                {hasNodes && (
-                                  <span className="text-cyan-500 font-medium">{phase.mapped_nodes.length} node(s)</span>
-                                )}
+                              <div className="self-start pt-0.5 text-muted-foreground">
+                                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                               </div>
-                              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                             </button>
 
                             {/* ── Expanded Phase Details ── */}
@@ -859,6 +1004,60 @@ export function KillChainView() {
                                     </div>
                                   </div>
                                 )}
+
+                                <div>
+                                  <div className="text-[10px] text-muted-foreground font-semibold mb-1.5 flex items-center gap-1">
+                                    <BookOpen size={10} /> Supporting References
+                                  </div>
+                                  <ReferencePicker
+                                    artifactType="kill_chain"
+                                    contextPreset={currentProject?.context_preset || ''}
+                                    objective={currentProject?.root_objective || selected?.name || ''}
+                                    scope={selected?.description || currentProject?.description || ''}
+                                    targetKind="kill_chain_phase"
+                                    targetSummary={[
+                                      phase.phase,
+                                      phase.description,
+                                      phase.mapped_nodes.map((item) => item.node_title || item.node_id).join(' '),
+                                      phase.tools.join(' '),
+                                      phase.iocs.join(' '),
+                                    ].filter(Boolean).join(' ')}
+                                    placeholder="Search supporting references for this phase"
+                                    onAdd={(item) => addPhaseReference(phase.id, item)}
+                                  />
+                                  {(phase.references || []).length > 0 ? (
+                                    <div className="mt-2 space-y-1">
+                                      {(phase.references || []).map((reference) => (
+                                        <div key={`${reference.framework}:${reference.ref_id}`} className="flex items-start gap-2 rounded border bg-background/40 px-2 py-1.5">
+                                          <div className="min-w-0 flex-1">
+                                            <div className="flex items-center gap-2 text-[10px]">
+                                              <span className="font-semibold uppercase tracking-wide text-muted-foreground">{reference.framework}</span>
+                                              <span className="font-mono text-cyan-400">{reference.ref_id}</span>
+                                            </div>
+                                            <div className="mt-0.5 text-[11px] font-medium">{reference.ref_name}</div>
+                                            {(reference.source || reference.confidence != null || reference.rationale) && (
+                                              <div className="mt-0.5 text-[10px] text-muted-foreground leading-4">
+                                                {reference.source ? `Source: ${reference.source}` : ''}
+                                                {reference.confidence != null ? `${reference.source ? ' · ' : ''}${Math.round(reference.confidence * 100)}%` : ''}
+                                                {reference.rationale ? ` · ${reference.rationale}` : ''}
+                                              </div>
+                                            )}
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => removePhaseReference(phase.id, reference.framework, reference.ref_id)}
+                                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                            title="Remove reference"
+                                          >
+                                            <X size={10} />
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="mt-2 text-[11px] text-muted-foreground">No supporting references linked to this phase yet.</p>
+                                  )}
+                                </div>
 
                                 {/* IOCs */}
                                 {phase.iocs?.length > 0 && (
@@ -1114,6 +1313,50 @@ export function KillChainView() {
         confirmLabel="Delete"
         destructive
       />
+    </div>
+  );
+}
+
+function InProgressNotice({
+  title,
+  description,
+  detail,
+  compact = false,
+}: {
+  title: string;
+  description: string;
+  detail?: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className={cn(
+      'rounded-2xl border border-cyan-500/25 bg-gradient-to-r from-cyan-500/10 via-sky-500/5 to-transparent',
+      compact ? 'p-4' : 'w-full max-w-2xl p-6'
+    )}>
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-cyan-500/15 text-cyan-400">
+          <Loader2 size={18} className="animate-spin" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-foreground">{title}</p>
+              <p className="mt-1 text-xs leading-6 text-muted-foreground">{description}</p>
+            </div>
+            {detail ? (
+              <span className="shrink-0 rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-cyan-300">
+                {detail}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-background/70 ring-1 ring-cyan-500/15">
+            <div className="h-full w-2/5 rounded-full bg-gradient-to-r from-cyan-500 via-sky-400 to-indigo-500 animate-pulse" />
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            You can stay on this screen while the result is prepared.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

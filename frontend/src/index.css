@@ -306,11 +306,25 @@ input[type="range"] {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
+@keyframes auth-logo-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+@keyframes landing-logo-bob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-6px) scale(1.01); }
+}
 .animate-fade-in {
   animation: fade-in 150ms ease-out;
 }
 .animate-scale-in {
   animation: scale-in 150ms ease-out;
+}
+.animate-auth-logo-float {
+  animation: auth-logo-float 3.8s ease-in-out infinite;
+}
+.animate-landing-logo-bob {
+  animation: landing-logo-bob 4.2s ease-in-out infinite;
 }
 
 /* Loading skeleton */

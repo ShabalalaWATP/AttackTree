@@ -8,7 +8,8 @@ from .snapshot import Snapshot
 from .comment import Comment
 from .attachment import Attachment
 from .audit_event import AuditEvent
-from .llm_config import LLMProviderConfig, LLMJobHistory
+from .analysis_run import AnalysisRun
+from .llm_config import LLMProviderConfig, LLMJobHistory, LLMAgentRun
 from .scenario import Scenario
 from .kill_chain import KillChain
 from .threat_model import ThreatModel
@@ -18,6 +19,7 @@ __all__ = [
     "Project", "Node", "NodeTag", "Tag", "Edge",
     "Mitigation", "Detection", "ReferenceMapping",
     "Snapshot", "Comment", "Attachment", "AuditEvent",
-    "LLMProviderConfig", "LLMJobHistory",
+    "AnalysisRun",
+    "LLMProviderConfig", "LLMJobHistory", "LLMAgentRun",
     "Scenario", "KillChain", "ThreatModel", "InfraMap",
 ]

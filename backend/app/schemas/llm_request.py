@@ -4,7 +4,7 @@ from typing import Optional, Any
 
 MAX_AGENT_DEPTH = 6
 MAX_AGENT_BREADTH = 6
-MAX_AGENT_NODE_BUDGET = 240
+MAX_AGENT_NODE_BUDGET = 300
 
 
 def _estimate_tree_node_budget(depth: int, breadth: int) -> int:
@@ -25,18 +25,28 @@ class LLMSuggestRequest(BaseModel):
     prompt_profile: str = ""
 
 
-class SuggestedNode(BaseModel):
-    title: str
+class SuggestedItem(BaseModel):
+    kind: str = "branch"
+    title: str = ""
     description: str = ""
     node_type: str = "attack_step"
     logic_type: str = "OR"
     threat_category: str = ""
     likelihood: Optional[float] = None
     impact: Optional[float] = None
+    effectiveness: Optional[float] = None
+    coverage: Optional[float] = None
+    data_source: str = ""
+    framework: str = ""
+    ref_id: str = ""
+    ref_name: str = ""
+    confidence: Optional[float] = None
+    rationale: str = ""
+    source: str = "manual"
 
 
 class LLMSuggestResponse(BaseModel):
-    suggestions: list[SuggestedNode]
+    suggestions: list[SuggestedItem]
     prompt_used: str = ""
     model_used: str = ""
     raw_response: str = ""
@@ -93,4 +103,26 @@ class LLMAgentResponse(BaseModel):
     model_used: str = ""
     elapsed_ms: int = 0
     passes_completed: int = 1
+    total_passes: int = 4
     warnings: list[str] = Field(default_factory=list)
+    agent_run_id: Optional[str] = None
+    background_processing: bool = False
+    current_stage: str = ""
+    post_processing_status: str = ""
+
+
+class LLMAgentRunStatusResponse(BaseModel):
+    id: str
+    project_id: str = ""
+    status: str
+    current_stage: str = ""
+    nodes_created: int = 0
+    passes_completed: int = 0
+    total_passes: int = 4
+    warnings: list[str] = Field(default_factory=list)
+    error_message: str = ""
+    model_used: str = ""
+    tokens_used: int = 0
+    elapsed_ms: int = 0
+    checkpoints: dict[str, Any] = Field(default_factory=dict)
+    background_processing: bool = False

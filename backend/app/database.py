@@ -43,6 +43,8 @@ async def init_db():
             await _migrate_infra_maps_table(conn)
             await _migrate_threat_models_table(conn)
             await _migrate_kill_chains_table(conn)
+            await _migrate_reference_mappings_table(conn)
+            await _mark_stale_llm_agent_runs(conn)
 
     admin_user_id = await _ensure_seed_users()
     if "sqlite" in settings.DATABASE_URL:
@@ -84,6 +86,7 @@ async def _migrate_scenarios_table(conn) -> None:
         "focus_tags",
         "degraded_detections",
         "planning_notes",
+        "reference_mappings",
     }
     needs_migration = (
         columns.get("project_id", {}).get("notnull") == 1
@@ -128,6 +131,7 @@ async def _migrate_scenarios_table(conn) -> None:
                 modified_scores JSON,
                 assumptions TEXT,
                 planning_notes TEXT,
+                reference_mappings JSON,
                 ai_narrative TEXT,
                 ai_recommendations JSON,
                 impact_summary JSON,
@@ -157,7 +161,7 @@ async def _migrate_scenarios_table(conn) -> None:
                 entry_vectors, campaign_phases, constraints, dependencies,
                 intelligence_gaps, success_criteria, focus_node_ids, focus_tags,
                 disabled_controls, degraded_detections, modified_scores,
-                assumptions, planning_notes, ai_narrative, ai_recommendations,
+                assumptions, planning_notes, reference_mappings, ai_narrative, ai_recommendations,
                 impact_summary, created_at, updated_at
             )
             SELECT
@@ -191,6 +195,7 @@ async def _migrate_scenarios_table(conn) -> None:
                 {col('modified_scores', "'{{}}'")},
                 {col('assumptions', "''")},
                 {col('planning_notes', "''")},
+                {col('reference_mappings', "'[]'")},
                 {col('ai_narrative', "''")},
                 {col('ai_recommendations', "'[]'")},
                 {col('impact_summary', "'{{}}'")},
@@ -207,10 +212,12 @@ async def _migrate_scenarios_table(conn) -> None:
 
 async def _migrate_multi_user_tables(conn) -> None:
     await _ensure_column(conn, "users", "username", "VARCHAR(100)")
+    await _ensure_column(conn, "users", "approval_status", "VARCHAR(20)")
     await _ensure_column(conn, "projects", "user_id", "VARCHAR(36)")
     await _ensure_column(conn, "llm_provider_configs", "user_id", "VARCHAR(36)")
     await _ensure_column(conn, "llm_job_history", "user_id", "VARCHAR(36)")
     await _ensure_column(conn, "scenarios", "user_id", "VARCHAR(36)")
+    await _ensure_column(conn, "scenarios", "reference_mappings", "JSON")
     await _ensure_column(conn, "infra_maps", "user_id", "VARCHAR(36)")
     await _migrate_tags_table(conn)
 
@@ -221,6 +228,9 @@ async def _migrate_multi_user_tables(conn) -> None:
     await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_scenarios_user_id ON scenarios (user_id)")
     await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_infra_maps_user_id ON infra_maps (user_id)")
     await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_tags_user_id ON tags (user_id)")
+    await conn.exec_driver_sql(
+        "UPDATE users SET approval_status = 'approved' WHERE COALESCE(approval_status, '') = ''"
+    )
 
 
 async def _migrate_threat_models_table(conn) -> None:
@@ -241,6 +251,58 @@ async def _migrate_kill_chains_table(conn) -> None:
     await _ensure_column(conn, "kill_chains", "coverage_score", "FLOAT")
     await _ensure_column(conn, "kill_chains", "critical_path", "TEXT")
     await _ensure_column(conn, "kill_chains", "analysis_metadata", "JSON")
+
+
+async def _migrate_reference_mappings_table(conn) -> None:
+    await _ensure_column(conn, "reference_mappings", "confidence", "FLOAT")
+    await _ensure_column(conn, "reference_mappings", "rationale", "TEXT")
+    await _ensure_column(conn, "reference_mappings", "source", "VARCHAR(30)")
+    await conn.exec_driver_sql(
+        "UPDATE reference_mappings SET source = 'manual' WHERE COALESCE(source, '') = ''"
+    )
+
+
+async def _mark_stale_llm_agent_runs(conn) -> None:
+    table_exists = await conn.exec_driver_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_agent_runs'"
+    )
+    if table_exists.first() is None:
+        return
+
+    analysis_runs_exists = await conn.exec_driver_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='analysis_runs'"
+    )
+    if analysis_runs_exists.first() is not None:
+        await conn.exec_driver_sql(
+            """
+            UPDATE analysis_runs
+            SET status = 'failed',
+                summary = CASE
+                    WHEN COALESCE(summary, '') = '' THEN 'Attack-tree agent processing was interrupted by a server restart.'
+                    ELSE summary
+                END
+            WHERE id IN (
+                SELECT json_extract(checkpoints, '$.analysis_run_id')
+                FROM llm_agent_runs
+                WHERE status IN ('queued', 'processing')
+            )
+            """
+        )
+
+    await conn.exec_driver_sql(
+        """
+        UPDATE llm_agent_runs
+        SET status = 'failed',
+            current_stage = 'interrupted',
+            error_message = CASE
+                WHEN COALESCE(error_message, '') = '' THEN 'Background processing was interrupted by a server restart.'
+                ELSE error_message
+            END,
+            completed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status IN ('queued', 'processing')
+        """
+    )
 
 
 async def _ensure_column(conn, table_name: str, column_name: str, column_type: str) -> None:
@@ -310,60 +372,14 @@ async def _ensure_seed_users() -> str:
             "email": "adminaccount@attacktree.local",
             "password": "admin12345",
             "role": "admin",
+            "approval_status": "approved",
             "password_reset_required": False,
-        },
-        {
-            "name": "Administrator",
-            "username": "administrator",
-            "email": "admin@attacktree.local",
-            "password": "AdminPass!234",
-            "role": "admin",
-            "password_reset_required": False,
-        },
-        {
-            "name": "Alice Research",
-            "username": "alice",
-            "email": "alice@attacktree.local",
-            "password": "ChangeMe!101",
-            "role": "user",
-            "password_reset_required": True,
-        },
-        {
-            "name": "Bob Reverse",
-            "username": "bob",
-            "email": "bob@attacktree.local",
-            "password": "ChangeMe!102",
-            "role": "user",
-            "password_reset_required": True,
-        },
-        {
-            "name": "Carol Operator",
-            "username": "carol",
-            "email": "carol@attacktree.local",
-            "password": "ChangeMe!103",
-            "role": "user",
-            "password_reset_required": True,
-        },
-        {
-            "name": "Dan Analyst",
-            "username": "dan",
-            "email": "dan@attacktree.local",
-            "password": "ChangeMe!104",
-            "role": "user",
-            "password_reset_required": True,
-        },
-        {
-            "name": "Erin Planner",
-            "username": "erin",
-            "email": "erin@attacktree.local",
-            "password": "ChangeMe!105",
-            "role": "user",
-            "password_reset_required": True,
         },
     ]
 
     async with async_session_factory() as session:
         await _backfill_usernames(session)
+        await _remove_legacy_seed_users(session)
         existing = {
             email.lower(): user_id
             for email, user_id in (await session.execute(select(User.email, User.id))).all()
@@ -373,7 +389,7 @@ async def _ensure_seed_users() -> str:
             for username, user_id in (await session.execute(select(User.username, User.id))).all()
             if username
         }
-        admin_id = existing.get("adminaccount@attacktree.local") or existing.get("admin@attacktree.local")
+        admin_id = existing.get("adminaccount@attacktree.local")
 
         for seed in default_users:
             if seed["email"].lower() in existing or seed["username"].lower() in existing_usernames:
@@ -385,13 +401,14 @@ async def _ensure_seed_users() -> str:
                 password_hash=hash_password(seed["password"]),
                 role=seed["role"],
                 is_active=True,
+                approval_status=seed["approval_status"],
                 password_reset_required=seed["password_reset_required"],
             )
             session.add(user)
             await session.flush()
             existing[user.email] = user.id
             existing_usernames[user.username] = user.id
-            if user.email in {"adminaccount@attacktree.local", "admin@attacktree.local"}:
+            if user.email == "adminaccount@attacktree.local":
                 admin_id = user.id
 
         await session.commit()
@@ -399,10 +416,38 @@ async def _ensure_seed_users() -> str:
     if not admin_id:
         async with async_session_factory() as session:
             result = await session.execute(
-                select(User.id).where(User.username.in_(["admin12345", "administrator"]))
+                select(User.id).where(User.username == "admin12345")
             )
             admin_id = result.scalar_one()
     return admin_id
+
+
+async def _remove_legacy_seed_users(session: AsyncSession) -> None:
+    from .models.user import User
+
+    legacy_seed_accounts = {
+        "admin@attacktree.local": {"administrator", "admin"},
+        "administrator@attacktree.local": {"administrator"},
+        "alice@attacktree.local": {"alice"},
+        "bob@attacktree.local": {"bob"},
+        "carol@attacktree.local": {"carol"},
+        "dan@attacktree.local": {"dan"},
+        "erin@attacktree.local": {"erin"},
+    }
+
+    result = await session.execute(
+        select(User).where(User.email.in_(tuple(legacy_seed_accounts)))
+    )
+    for user in result.scalars().all():
+        normalized_email = (user.email or "").strip().lower()
+        normalized_username = (user.username or "").strip().lower()
+        expected_usernames = legacy_seed_accounts.get(normalized_email)
+        if not expected_usernames:
+            continue
+        if normalized_username and normalized_username not in expected_usernames:
+            continue
+        await session.delete(user)
+    await session.flush()
 
 
 async def _backfill_multi_user_ownership(admin_user_id: str) -> None:

@@ -49,6 +49,7 @@ class Scenario(Base):
     modified_scores = Column(JSON, default=dict)
     assumptions = Column(Text, default="")
     planning_notes = Column(Text, default="")
+    reference_mappings = Column(JSON, default=list)
 
     # AI analysis results
     ai_narrative = Column(Text, default="")

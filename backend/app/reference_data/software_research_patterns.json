@@ -1,0 +1,538 @@
+[
+  {
+    "id": "SRP-001",
+    "name": "Attack Surface Inventory and Exposure Mapping",
+    "category": "Surface Discovery",
+    "description": "Map all externally reachable or attacker-influenced entry points, including network listeners, file inputs, URI handlers, update channels, plugin loaders, IPC endpoints, and import pipelines. Use this as the starting point for defensive triage and hardening prioritisation.",
+    "focus_areas": ["Reachable inputs", "Feature flags", "Optional components", "Hidden interfaces"],
+    "defensive_value": "Prevents blind spots by making the real review perimeter explicit before deeper analysis begins."
+  },
+  {
+    "id": "SRP-002",
+    "name": "Parser and Format Boundary Census",
+    "category": "Surface Discovery",
+    "description": "Identify every parser, decoder, importer, serializer, and file-format path in the application, especially those handling untrusted or semi-trusted content. Prioritise complex formats, legacy compatibility layers, and rarely tested conversion paths for review.",
+    "focus_areas": ["File importers", "Media codecs", "Compression", "Conversion routines"],
+    "defensive_value": "Highlights areas where malformed content can trigger reliability or memory-safety failures."
+  },
+  {
+    "id": "SRP-003",
+    "name": "Protocol and State-Machine Surface Review",
+    "category": "Surface Discovery",
+    "description": "Catalogue custom and standard protocol handlers, connection setup logic, session transitions, handshake assumptions, and message sequencing rules. Focus on places where malformed or out-of-order state can bypass intended validation or trigger inconsistent behaviour.",
+    "focus_areas": ["Custom wire protocols", "Session negotiation", "State transitions", "Timeout handling"],
+    "defensive_value": "Reduces protocol confusion and unhandled-state defects that are hard to catch with simple feature tests."
+  },
+  {
+    "id": "SRP-004",
+    "name": "Input Mutation and Fuzzing Candidate Prioritisation",
+    "category": "Surface Discovery",
+    "description": "Rank software components by how suitable they are for defensive robustness testing, focusing on parsers, message handlers, file import paths, RPC endpoints, and privileged local interfaces. Use this to drive safe fuzzing and negative-test coverage rather than exploit work.",
+    "focus_areas": ["High-complexity inputs", "Untrusted data", "Crash history", "Coverage gaps"],
+    "defensive_value": "Directs testing effort toward the most failure-prone components without requiring exploit-specific analysis."
+  },
+  {
+    "id": "SRP-005",
+    "name": "IPC, RPC, and Local Service Trust Boundary Review",
+    "category": "Trust Boundary Review",
+    "description": "Map how the UI, local daemons, privileged helpers, background services, and extension hosts talk to each other. Verify authentication, caller validation, message integrity, and capability scoping across each boundary.",
+    "focus_areas": ["Named pipes", "Unix sockets", "COM", "gRPC", "Local REST APIs"],
+    "defensive_value": "Exposes design flaws where local or adjacent code can gain privileges or misuse hidden service interfaces."
+  },
+  {
+    "id": "SRP-006",
+    "name": "Privilege Separation and Capability Mapping",
+    "category": "Trust Boundary Review",
+    "description": "Document which components run with elevated privileges, which components mediate risky operations, and which code paths cross from low-trust to high-trust contexts. Verify that high-risk actions require narrow, auditable, and deliberately granted capabilities.",
+    "focus_areas": ["Helper processes", "Admin services", "Broker models", "Privilege prompts"],
+    "defensive_value": "Clarifies where small design mistakes can become privilege-boundary failures."
+  },
+  {
+    "id": "SRP-007",
+    "name": "Unsafe Deserialization and Object Rehydration Review",
+    "category": "Trust Boundary Review",
+    "description": "Review any path that reconstructs objects or executable behavior from serialized input, cached state, plugin metadata, or inter-process messages. Focus on unsafe defaults, type confusion risks, and assumptions about trusted data origins.",
+    "focus_areas": ["Custom serializers", "State files", "Session restores", "IPC payloads"],
+    "defensive_value": "Helps identify high-impact data-handling issues without relying on exploit-chain specifics."
+  },
+  {
+    "id": "SRP-008",
+    "name": "Native Bridge and Foreign Function Interface Review",
+    "category": "Trust Boundary Review",
+    "description": "Examine bridges between managed and native code, browser or script runtimes and native helpers, or application code and third-party SDKs. Validate argument checking, ownership rules, lifetime assumptions, and failure handling on both sides of the boundary.",
+    "focus_areas": ["JNI", "P/Invoke", "ctypes", "Native plugins", "Embedded runtimes"],
+    "defensive_value": "Targets crash-prone seams where type, length, and ownership assumptions frequently diverge."
+  },
+  {
+    "id": "SRP-009",
+    "name": "Updater and Package Trust Path Review",
+    "category": "Supply Chain and Delivery",
+    "description": "Map how updates are discovered, downloaded, verified, staged, and applied. Review trust decisions around manifests, package metadata, rollback handling, mirror sources, and repair or reinstall flows.",
+    "focus_areas": ["Update manifests", "Signature checks", "Rollback logic", "Repair installers"],
+    "defensive_value": "Protects one of the highest-trust code paths in desktop, mobile, appliance, and embedded software."
+  },
+  {
+    "id": "SRP-010",
+    "name": "Code Signing and Trust Store Validation",
+    "category": "Supply Chain and Delivery",
+    "description": "Review how the application validates signed content, certificates, roots of trust, plugin signatures, and trusted publishers. Verify that failures are fatal where appropriate and that fallback logic does not silently downgrade trust.",
+    "focus_areas": ["Signature enforcement", "Root stores", "Publisher pinning", "Fallback behavior"],
+    "defensive_value": "Finds integrity failures that can undermine every other defensive assumption in the software."
+  },
+  {
+    "id": "SRP-011",
+    "name": "Third-Party Component and SDK Dependency Mapping",
+    "category": "Supply Chain and Delivery",
+    "description": "Inventory embedded frameworks, parsers, media libraries, telemetry SDKs, browser engines, and networking stacks. Tie each dependency to its feature path and update process so risky third-party code is visible in context.",
+    "focus_areas": ["Bundled DLLs", "Embedded runtimes", "Closed-source SDKs", "Static libraries"],
+    "defensive_value": "Improves patch readiness and clarifies where inherited risk comes from in complex software."
+  },
+  {
+    "id": "SRP-012",
+    "name": "Installer, Repair, and Uninstall Workflow Review",
+    "category": "Supply Chain and Delivery",
+    "description": "Analyse installer actions, privilege prompts, service registration, file permissions, repair routines, and uninstall cleanup. These workflows often run with elevated trust and can introduce long-lived local security weaknesses if not tightly scoped.",
+    "focus_areas": ["Service registration", "File ACLs", "Repair mode", "Rollback cleanup"],
+    "defensive_value": "Surfaces hidden security debt in setup flows that normal feature testing rarely exercises."
+  },
+  {
+    "id": "SRP-013",
+    "name": "Plugin, Extension, and Scripting Engine Review",
+    "category": "Runtime and Isolation",
+    "description": "Map all supported and unofficial extension points, scripting runtimes, macro systems, and dynamic loading paths. Verify isolation boundaries, permission models, and what host capabilities extensions can reach by default.",
+    "focus_areas": ["Plugins", "Macros", "Embedded interpreters", "Dynamic module loading"],
+    "defensive_value": "Contains extensibility risk before it becomes an unbounded code-execution or trust-propagation problem."
+  },
+  {
+    "id": "SRP-014",
+    "name": "Sandbox, Broker, and Containment Boundary Review",
+    "category": "Runtime and Isolation",
+    "description": "Document how the application constrains risky components such as renderers, parsers, previewers, plugins, or untrusted content handlers. Review the assumptions that separate low-trust execution from high-trust brokers and system resources.",
+    "focus_areas": ["Process isolation", "Broker policies", "Restricted tokens", "Capability checks"],
+    "defensive_value": "Makes containment drift visible and helps prioritise hardening where untrusted content meets privileged helpers."
+  },
+  {
+    "id": "SRP-015",
+    "name": "Memory-Safety Hotspot Inventory",
+    "category": "Runtime and Isolation",
+    "description": "Identify code regions with complex buffer handling, custom allocators, ownership transfer, concurrency-sensitive state, and manual lifetime management. Use this to focus code review, safer-language migration, and targeted robustness testing.",
+    "focus_areas": ["Custom allocators", "Unsafe copies", "Lifetime management", "Concurrency edges"],
+    "defensive_value": "Improves the quality of defensive review around code most likely to fail under malformed or high-stress inputs."
+  },
+  {
+    "id": "SRP-016",
+    "name": "Resource Exhaustion and Algorithmic Complexity Review",
+    "category": "Runtime and Isolation",
+    "description": "Review paths that may be vulnerable to CPU spikes, memory blowups, disk churn, or queue exhaustion under crafted but non-malicious-looking inputs. Include decompression, regex, graph traversal, parser nesting, and unbounded caching behavior.",
+    "focus_areas": ["Regex", "Decompression", "Deep nesting", "Cache growth", "Queue backlog"],
+    "defensive_value": "Catches denial-of-service style reliability failures that can affect clients, services, and embedded devices alike."
+  },
+  {
+    "id": "SRP-017",
+    "name": "Patch Diff and Security Regression Review",
+    "category": "Assurance Workflow",
+    "description": "Track which files, functions, and workflows changed between vulnerable and fixed versions or across security-sensitive releases. Use the diff to confirm root-cause understanding, spot incomplete fixes, and improve test coverage without treating the diff as an exploit recipe.",
+    "focus_areas": ["Fix scope", "Regression paths", "Test coverage", "Incomplete remediation"],
+    "defensive_value": "Improves confidence that security fixes actually address the right trust boundary and do not leave near-identical regressions."
+  },
+  {
+    "id": "SRP-018",
+    "name": "Crash Triage and Reproducibility Workflow",
+    "category": "Assurance Workflow",
+    "description": "Standardise how failures are bucketed, reproduced, minimised, and tied back to code ownership or feature area. Focus on reproducibility, environmental assumptions, and whether a crash reflects a simple bug, a trust-boundary issue, or a broader reliability concern.",
+    "focus_areas": ["Crash bucketing", "Reproduction quality", "Root-cause linkage", "Ownership"],
+    "defensive_value": "Turns raw crash volume into actionable defensive engineering work rather than ad hoc debugging."
+  },
+  {
+    "id": "SRP-019",
+    "name": "Local Data, Secrets, and State Storage Review",
+    "category": "Data and State Handling",
+    "description": "Map where the application stores tokens, session state, caches, keys, credentials, drafts, and forensic residue. Review access control, encryption expectations, cleanup behavior, and what happens when state is copied between users or devices.",
+    "focus_areas": ["Caches", "SQLite", "Key stores", "Temp files", "Crash dumps"],
+    "defensive_value": "Reduces the chance that local state becomes an unintended high-value target or a silent cross-user leak."
+  },
+  {
+    "id": "SRP-020",
+    "name": "Session, Authentication, and License Gate Review",
+    "category": "Data and State Handling",
+    "description": "Review session handling, local auth helpers, token refresh logic, cached entitlements, and license or feature gates. Ensure that security-relevant checks are not merely UI decisions and that offline or degraded modes do not silently broaden trust.",
+    "focus_areas": ["Session tokens", "Offline mode", "Feature gates", "Cached auth state"],
+    "defensive_value": "Clarifies whether product-state logic can unintentionally weaken security or authorization assumptions."
+  },
+  {
+    "id": "SRP-021",
+    "name": "Config, Preferences, and Policy File Review",
+    "category": "Data and State Handling",
+    "description": "Examine how configuration files, local policies, preference stores, and importable profile bundles affect trust decisions, logging, network destinations, and risky feature toggles. Verify validation, ownership, and safe defaults.",
+    "focus_areas": ["Policy bundles", "Profile imports", "Feature flags", "Config migration"],
+    "defensive_value": "Finds low-friction ways security posture can be weakened through seemingly ordinary configuration channels."
+  },
+  {
+    "id": "SRP-022",
+    "name": "Crash Reporting, Telemetry, and Privacy Boundary Review",
+    "category": "Data and State Handling",
+    "description": "Map what error data, stack traces, attachments, and runtime context leave the device or environment during failure reporting. Validate minimization, consent, redaction, and isolation so diagnostics do not leak sensitive state or trust tokens.",
+    "focus_areas": ["Crash uploads", "Diagnostic attachments", "Telemetry payloads", "Redaction paths"],
+    "defensive_value": "Prevents diagnostic mechanisms from becoming data-exposure channels."
+  },
+  {
+    "id": "SRP-023",
+    "name": "Logging, Alerting, and Research Evidence Preservation",
+    "category": "Assurance Workflow",
+    "description": "Review how the software records noteworthy security and stability events, how logs are rotated or protected, and how analysts preserve evidence during internal research. Ensure that local and remote evidence remains useful for triage, remediation, and disclosure.",
+    "focus_areas": ["Event logs", "Audit trails", "Rotation", "Evidence capture"],
+    "defensive_value": "Supports trustworthy internal research and shortens time-to-remediation when issues are found."
+  },
+  {
+    "id": "SRP-024",
+    "name": "Responsible Disclosure and Remediation Tracking",
+    "category": "Assurance Workflow",
+    "description": "Tie research findings to reproducible notes, impact statements, fix tracking, retest checkpoints, and disclosure decisions. Use a consistent workflow so defensive software research leads to verified remediation instead of isolated technical notes.",
+    "focus_areas": ["Impact tracking", "Fix verification", "Retest plans", "Disclosure readiness"],
+    "defensive_value": "Improves the organisational quality of software security research and reduces repeat findings."
+  },
+  {
+    "id": "SRP-025",
+    "name": "Binary Triage and Component Fingerprinting",
+    "category": "Binary and Reverse Engineering",
+    "description": "Identify the major binaries, libraries, packers, runtimes, and third-party engines that make up the application. Use this to separate first-party logic from inherited risk and to understand which components deserve deeper review first.",
+    "focus_areas": ["PE or ELF structure", "Packers", "Third-party runtimes", "Compiler fingerprints"],
+    "defensive_value": "Speeds up defensive triage by making the software supply stack and likely risk concentration visible."
+  },
+  {
+    "id": "SRP-026",
+    "name": "Symbol, String, and Feature-Flag Recovery",
+    "category": "Binary and Reverse Engineering",
+    "description": "Recover meaningful names, debug remnants, feature toggles, hidden mode strings, and error identifiers that reveal the application's real operational model. These artifacts often point to unreachable code, unsupported modes, or security checks that deserve review.",
+    "focus_areas": ["Debug strings", "Feature flags", "Resource names", "Verbose logging paths"],
+    "defensive_value": "Turns opaque binaries into reviewable components and highlights hidden behavior that product teams may have forgotten."
+  },
+  {
+    "id": "SRP-027",
+    "name": "Control-Flow and Security-Decision Mapping",
+    "category": "Binary and Reverse Engineering",
+    "description": "Map where the software makes trust decisions about identity, updates, permissions, unsafe inputs, or privileged actions. Focus on the code paths that actually enforce policy rather than the UI or documentation layer that merely describes it.",
+    "focus_areas": ["Decision branches", "Error handling", "Fallback logic", "Trust checks"],
+    "defensive_value": "Helps validate whether the documented security design matches the real implementation path."
+  },
+  {
+    "id": "SRP-028",
+    "name": "Hidden Admin, Debug, and Test Hook Discovery",
+    "category": "Binary and Reverse Engineering",
+    "description": "Review the application for dormant debug menus, test endpoints, alternate launch switches, support-only features, or developer bypass hooks that may survive into production. These paths can dramatically alter trust assumptions if they remain reachable.",
+    "focus_areas": ["CLI switches", "Environment variables", "Debug menus", "Support commands"],
+    "defensive_value": "Finds high-impact shortcuts that can undermine normal authentication, authorization, or safety controls."
+  },
+  {
+    "id": "SRP-029",
+    "name": "Anti-Tamper and Self-Protection Review",
+    "category": "Binary and Reverse Engineering",
+    "description": "Document anti-tamper, anti-debug, integrity, and self-protection logic in the product so defenders understand what it protects, what it breaks, and where it silently fails open. The review goal is not bypass for its own sake, but trust validation and resilience planning.",
+    "focus_areas": ["Integrity checks", "Debugger detection", "Self-repair", "Protection toggles"],
+    "defensive_value": "Clarifies whether self-protection features meaningfully enforce trust or just add operational fragility."
+  },
+  {
+    "id": "SRP-030",
+    "name": "Authentication State Desynchronization Review",
+    "category": "Auth, Session, and Trust Abuse",
+    "description": "Examine whether the UI, local cache, backend service, and privileged helpers maintain consistent understanding of authenticated state. Pay attention to resume flows, offline mode, token refresh, and component restarts that may leave parts of the stack out of sync.",
+    "focus_areas": ["Resume flows", "Refresh tokens", "Offline state", "Restart handling"],
+    "defensive_value": "Targets real-world auth failures that appear only under lifecycle edge cases rather than happy-path testing."
+  },
+  {
+    "id": "SRP-031",
+    "name": "Client-Side Trust and Authorization Drift Review",
+    "category": "Auth, Session, and Trust Abuse",
+    "description": "Identify decisions that are enforced primarily in the client or presentation layer and verify that authoritative services and privileged helpers independently re-check them. Look for UI-only gates, hidden controls, and assumptions that the client will behave honestly.",
+    "focus_areas": ["UI-only checks", "Feature gating", "Role display logic", "Companion APIs"],
+    "defensive_value": "Finds trust gaps where business logic and security policy diverge across layers."
+  },
+  {
+    "id": "SRP-032",
+    "name": "Randomness, Nonce, and Identifier Quality Review",
+    "category": "Auth, Session, and Trust Abuse",
+    "description": "Review the generation and lifecycle of tokens, IDs, nonces, reset values, temporary filenames, and cache keys that carry security significance. Weak or overly predictable values can create subtle but repeatable trust failures even when the surrounding protocol appears sound.",
+    "focus_areas": ["Session identifiers", "CSRF values", "Temporary names", "Reset flows"],
+    "defensive_value": "Improves confidence in the application's foundational trust assumptions and replay resistance."
+  },
+  {
+    "id": "SRP-033",
+    "name": "Crypto Material Lifecycle and Secret Handling Review",
+    "category": "Auth, Session, and Trust Abuse",
+    "description": "Map where keys, derived secrets, certificates, and protected blobs are created, cached, rotated, and destroyed. Review boundary conditions such as migration, backup, crash recovery, and export features where secure handling often degrades.",
+    "focus_areas": ["Key derivation", "Rotation", "Crash recovery", "Secure deletion"],
+    "defensive_value": "Makes secret-handling debt visible before it becomes a systemic design weakness."
+  },
+  {
+    "id": "SRP-034",
+    "name": "Archive Extraction and Path Boundary Review",
+    "category": "File and Content Handling",
+    "description": "Review how the software unpacks archives, restores project bundles, imports templates, or expands compressed content into local file systems. Verify that path normalization, overwrite handling, and boundary checks behave safely across edge cases and nested containers.",
+    "focus_areas": ["Archive paths", "Overwrite policy", "Nested containers", "Temp directories"],
+    "defensive_value": "Catches high-impact file-handling flaws in import and restore features that often look routine."
+  },
+  {
+    "id": "SRP-035",
+    "name": "File Association, URI Scheme, and External Handler Review",
+    "category": "File and Content Handling",
+    "description": "Map every place the application accepts a file path, custom URI, deep link, or external handler invocation and validate the trust assumptions around it. These paths often bridge untrusted content into privileged workflows or helper processes.",
+    "focus_areas": ["Custom URI schemes", "Shell handlers", "Deep links", "Open-with flows"],
+    "defensive_value": "Highlights integration points where local or remote content can unexpectedly drive sensitive behavior."
+  },
+  {
+    "id": "SRP-036",
+    "name": "Template, Expression, and Embedded Script Review",
+    "category": "File and Content Handling",
+    "description": "Identify any feature that evaluates user-controlled expressions, templates, formulas, embedded scripts, or macro-like content. Review sandboxing, object exposure, and privilege assumptions around the evaluation environment.",
+    "focus_areas": ["Template engines", "Expression evaluators", "Macros", "Formula parsers"],
+    "defensive_value": "Finds dangerous evaluation surfaces while keeping the review centered on safe design and validation."
+  },
+  {
+    "id": "SRP-037",
+    "name": "Document Preview, Rendering, and Conversion Review",
+    "category": "File and Content Handling",
+    "description": "Review previewers, thumbnailers, renderers, and format-conversion paths that process untrusted content in the background or before a user explicitly opens it. These paths frequently have different trust assumptions and weaker isolation than the main feature flow.",
+    "focus_areas": ["Preview handlers", "Thumbnailers", "Export converters", "Background rendering"],
+    "defensive_value": "Surfaces content-driven risk in code that product teams may not even consider part of the main application."
+  },
+  {
+    "id": "SRP-038",
+    "name": "Message Grammar and Parser Tolerance Review",
+    "category": "File and Content Handling",
+    "description": "Document what malformed, ambiguous, truncated, or overlong messages the application's parsers and protocol handlers accept or reject. Focus on grammar ambiguity, inconsistent recovery, and compatibility shortcuts that create unintended behavior.",
+    "focus_areas": ["Length fields", "Ambiguous grammar", "Truncation handling", "Recovery paths"],
+    "defensive_value": "Improves parser robustness and helps turn vague protocol concerns into concrete engineering tasks."
+  },
+  {
+    "id": "SRP-039",
+    "name": "Search Path, Load Order, and Side-Loading Review",
+    "category": "Platform and Client Boundary Review",
+    "description": "Review how the application resolves libraries, plugins, helper tools, configuration overlays, and external resources at runtime. Priority order, fallback directories, and implicit trust of local paths can create systemic risk across many software classes.",
+    "focus_areas": ["DLL or shared library search", "Plugin discovery", "Fallback directories", "Relative paths"],
+    "defensive_value": "Makes startup and dependency trust assumptions explicit before they become deployment-time surprises."
+  },
+  {
+    "id": "SRP-040",
+    "name": "Localhost, Loopback, and Internal API Exposure Review",
+    "category": "Platform and Client Boundary Review",
+    "description": "Map services and APIs bound to loopback or local-only assumptions, then verify which callers can actually reach them and with what data. Local APIs are frequently treated as safe by design even when browser, helper, or companion-app paths can influence them.",
+    "focus_areas": ["Loopback listeners", "Internal REST APIs", "Companion services", "Local web servers"],
+    "defensive_value": "Finds overlooked trust boundaries between local software components that share a host but not a trust level."
+  },
+  {
+    "id": "SRP-041",
+    "name": "WebView, Browser Engine, and Native Bridge Review",
+    "category": "Platform and Client Boundary Review",
+    "description": "Review embedded browser surfaces, DOM-to-native bridges, content permissions, origin assumptions, and scheme handling. Treat these as multi-layer trust boundaries rather than simple UI widgets.",
+    "focus_areas": ["WebViews", "JavaScript bridges", "Origin checks", "Scheme handlers"],
+    "defensive_value": "Exposes where rendering convenience features create hidden privilege or data-exposure paths."
+  },
+  {
+    "id": "SRP-042",
+    "name": "Browser Extension, Helper App, and Companion Process Review",
+    "category": "Platform and Client Boundary Review",
+    "description": "Map trust relationships between the main product and any browser extension, tray app, helper executable, or sync companion. Review how identity, authorization, and data integrity are handed off between them.",
+    "focus_areas": ["Companion processes", "Native messaging", "Sync helpers", "Tray apps"],
+    "defensive_value": "Reduces the risk that peripheral components quietly weaken the security model of the primary application."
+  },
+  {
+    "id": "SRP-043",
+    "name": "Cross-Version Upgrade and Migration State Review",
+    "category": "Platform and Client Boundary Review",
+    "description": "Analyse version migrations, schema upgrades, cache conversions, and state-import paths that run during updates or product transitions. These are high-risk moments where old assumptions and new code frequently misalign.",
+    "focus_areas": ["Schema migration", "Legacy state import", "Cache conversion", "Rollback"],
+    "defensive_value": "Finds security regressions created by lifecycle transitions rather than by steady-state behavior."
+  },
+  {
+    "id": "SRP-044",
+    "name": "Firmware Image Unpacking and Component Inventory",
+    "category": "Embedded and Firmware Research",
+    "description": "For embedded targets, map image structure, file systems, boot components, bundled services, and update payloads without turning the exercise into exploit work. The goal is to expose hidden components, outdated libraries, and trust anchors that affect defensive testing.",
+    "focus_areas": ["Image layout", "Boot files", "Bundled services", "Update payloads"],
+    "defensive_value": "Brings opaque appliance and firmware targets into the same structured review workflow as desktop or server software."
+  },
+  {
+    "id": "SRP-045",
+    "name": "Embedded Debug, Recovery, and Maintenance Interface Review",
+    "category": "Embedded and Firmware Research",
+    "description": "Document exposed and latent maintenance paths such as serial consoles, recovery modes, vendor diagnostic interfaces, and manufacturing hooks. Focus on whether they are disabled, authenticated, or silently reachable in production deployments.",
+    "focus_areas": ["UART", "Recovery mode", "Vendor diagnostics", "Manufacturing hooks"],
+    "defensive_value": "Highlights appliance and device trust gaps that normal application-focused testing often misses."
+  },
+  {
+    "id": "SRP-046",
+    "name": "OTA, Boot Chain, and Recovery Partition Trust Review",
+    "category": "Embedded and Firmware Research",
+    "description": "Map how embedded or appliance software validates OTA updates, boot metadata, rollback policy, recovery partitions, and fallback images. These trust decisions determine whether a device stays recoverable and authentic under adverse conditions.",
+    "focus_areas": ["Boot metadata", "Recovery partitions", "Rollback policy", "OTA validation"],
+    "defensive_value": "Connects device update trust to concrete recovery and integrity engineering work."
+  },
+  {
+    "id": "SRP-047",
+    "name": "Crash Handler, Exception Path, and Fail-Safe Review",
+    "category": "Runtime and Isolation",
+    "description": "Review how the application behaves when exceptions, assertion failures, timeouts, and partial initialization states occur. Error paths often receive less scrutiny than mainline logic but may still hold elevated trust or sensitive data.",
+    "focus_areas": ["Assertion handling", "Partial init", "Timeout paths", "Fail-safe defaults"],
+    "defensive_value": "Improves resilience by testing what the product does when its normal assumptions break."
+  },
+  {
+    "id": "SRP-048",
+    "name": "Race Condition, TOCTOU, and Reentrancy Review",
+    "category": "Runtime and Isolation",
+    "description": "Identify state transitions where security checks and subsequent actions are separated in time or handled across multiple threads or callbacks. Review locking, event reentry, and lifecycle assumptions around temporary files, permissions, and session state.",
+    "focus_areas": ["Threading", "Callback reentry", "Temporary files", "State transitions"],
+    "defensive_value": "Targets subtle correctness flaws that often hide behind otherwise strong point-in-time validation."
+  },
+  {
+    "id": "SRP-049",
+    "name": "Shared Memory, Cache Coherency, and Multi-Process State Review",
+    "category": "Runtime and Isolation",
+    "description": "Map how multiple processes or components share caches, memory segments, sockets, or local data stores. Focus on stale trust decisions, ownership confusion, and weak invalidation boundaries between cooperating processes.",
+    "focus_areas": ["Shared caches", "Memory mapping", "Multi-process state", "Invalidation logic"],
+    "defensive_value": "Helps explain bugs that appear only when multiple trusted components disagree about current state."
+  },
+  {
+    "id": "SRP-050",
+    "name": "Adversarial Test Theme and Scenario Mapping",
+    "category": "Assurance Workflow",
+    "description": "Translate real-world offensive technique families into safe internal test themes for authorized assessment, such as client-side trust abuse, parser confusion, insecure updater trust, sandbox boundary review, or hidden admin-path discovery. Keep the focus on what should be tested and observed, not on weaponization detail.",
+    "focus_areas": ["Technique families", "Authorized red-team scenarios", "Coverage gaps", "Detection expectations"],
+    "defensive_value": "Lets defenders plan realistic adversarial assessments against their own software without needing exploit playbooks."
+  },
+  {
+    "id": "SRP-051",
+    "name": "Import, Export, and Syscall Boundary Mapping",
+    "category": "Binary and Reverse Engineering",
+    "description": "Map imported libraries, exported interfaces, privileged OS interactions, and sensitive system-call or API families used by the application. This helps defenders understand which external trust boundaries the binary actually depends on at runtime.",
+    "focus_areas": ["Import tables", "Exported interfaces", "Sensitive APIs", "Privilege-relevant syscalls"],
+    "defensive_value": "Highlights the real operating-system and library trust boundaries that deserve deeper review and monitoring."
+  },
+  {
+    "id": "SRP-052",
+    "name": "Resource, Manifest, and Embedded Policy Extraction",
+    "category": "Binary and Reverse Engineering",
+    "description": "Extract and review manifests, bundled resources, entitlement declarations, embedded policies, localization tables, and installer metadata that shape runtime behavior. These artifacts often reveal hidden capabilities, permissions, and fallback logic not obvious from the main code path.",
+    "focus_areas": ["Application manifests", "Entitlements", "Embedded policy blobs", "Resource sections"],
+    "defensive_value": "Surfaces security-relevant behavior encoded outside the primary source logic."
+  },
+  {
+    "id": "SRP-053",
+    "name": "Decompiler Confidence and Unknown-Code Triage",
+    "category": "Binary and Reverse Engineering",
+    "description": "Track which functions decompile cleanly, which remain ambiguous, and which regions require manual review due to indirect control flow, custom allocators, obfuscation, or unusual calling conventions. Use this to prioritize analyst time instead of treating the whole binary as equally opaque.",
+    "focus_areas": ["Indirect calls", "Ambiguous control flow", "Custom allocators", "Manually triaged functions"],
+    "defensive_value": "Improves reverse-engineering efficiency and reduces the chance that risky code is ignored because it is harder to read."
+  },
+  {
+    "id": "SRP-054",
+    "name": "Release-to-Release Binary Diff Prioritisation",
+    "category": "Binary and Reverse Engineering",
+    "description": "Compare adjacent builds or versions to locate security-relevant deltas in binaries, resources, runtime guards, and embedded policy. Focus on changes that affect trust enforcement, parser behavior, update flow, permissions, or exposure to untrusted content.",
+    "focus_areas": ["Changed functions", "Guard logic", "Resource deltas", "Policy changes"],
+    "defensive_value": "Turns release analysis into a structured review method for uncovering incomplete fixes or silent risk shifts."
+  },
+  {
+    "id": "SRP-055",
+    "name": "Type, Structure, and Object-Lifecycle Reconstruction",
+    "category": "Binary and Reverse Engineering",
+    "description": "Recover likely data structures, ownership rules, and object lifecycles from binaries or mixed-language components so reviewers can reason about state transitions and safety assumptions. Focus on where memory ownership, reference counts, and cleanup order influence trust or reliability.",
+    "focus_areas": ["Recovered structs", "Ownership rules", "Reference counting", "Cleanup paths"],
+    "defensive_value": "Makes opaque native code more reviewable and reveals where lifecycle confusion can create high-risk defects."
+  },
+  {
+    "id": "SRP-056",
+    "name": "Message Schema and Serialization Map Recovery",
+    "category": "Binary and Reverse Engineering",
+    "description": "Recover message layouts, field semantics, serialization schemas, and version markers used in local IPC, caches, sync traffic, or companion protocols. Understanding the schema boundary is often more valuable for defense than only understanding the transport.",
+    "focus_areas": ["Field layouts", "Version markers", "Schema evolution", "Companion protocols"],
+    "defensive_value": "Helps defenders reason about malformed-state handling, compatibility drift, and input validation boundaries."
+  },
+  {
+    "id": "SRP-057",
+    "name": "State-Machine and Error-Code Reconstruction",
+    "category": "Binary and Reverse Engineering",
+    "description": "Reconstruct major application states, mode transitions, and error outcomes by correlating code, strings, resources, and runtime traces. This is useful where security behavior depends on specific internal modes rather than simple on or off conditions.",
+    "focus_areas": ["Internal modes", "Error codes", "Transition guards", "Recovery states"],
+    "defensive_value": "Makes hidden operational states explicit so test plans can target the riskiest lifecycle edges."
+  },
+  {
+    "id": "SRP-058",
+    "name": "Runtime Trace and Behavioral Timeline Capture",
+    "category": "Dynamic Observation and Instrumentation",
+    "description": "Capture high-level runtime behavior across process startup, login, update, import, sync, and shutdown phases to understand which code paths and trust decisions actually execute under real workflows. Use traces to validate or correct assumptions made during static analysis.",
+    "focus_areas": ["Startup flow", "Feature workflows", "Trust checks", "Shutdown behavior"],
+    "defensive_value": "Bridges the gap between static review and real execution so analysts target the paths that matter most."
+  },
+  {
+    "id": "SRP-059",
+    "name": "API Hooking and Sensitive Operation Observation",
+    "category": "Dynamic Observation and Instrumentation",
+    "description": "Instrument sensitive runtime operations such as file writes, crypto use, update validation, privilege changes, IPC calls, and network requests to understand the application's real security behavior. The goal is observation and coverage, not bypass.",
+    "focus_areas": ["File operations", "Crypto usage", "IPC calls", "Privilege changes"],
+    "defensive_value": "Makes hidden runtime trust decisions observable so defensive controls and tests can be aligned to them."
+  },
+  {
+    "id": "SRP-060",
+    "name": "Filesystem, Registry, and Config Mutation Observation",
+    "category": "Dynamic Observation and Instrumentation",
+    "description": "Observe what state the application creates, modifies, or trusts during normal and edge-case workflows, including configuration stores, registry keys, caches, temp files, and policy overlays. Focus on mutations that affect trust, recovery, or persistence.",
+    "focus_areas": ["Registry writes", "Temp files", "Policy overlays", "Cache mutations"],
+    "defensive_value": "Helps identify hidden persistence or trust-changing behavior that static inspection may miss."
+  },
+  {
+    "id": "SRP-061",
+    "name": "Harness and Coverage Readiness Mapping",
+    "category": "Dynamic Observation and Instrumentation",
+    "description": "Identify which components are structurally suitable for isolated harnessing, deterministic replay, or coverage-guided robustness testing. Focus on decoupling inputs from side effects and on determining what environment is needed to exercise risky code safely.",
+    "focus_areas": ["Replayability", "Harness isolation", "Side-effect boundaries", "Coverage visibility"],
+    "defensive_value": "Improves the practical quality of internal testing by identifying where deeper robustness work is actually feasible."
+  },
+  {
+    "id": "SRP-062",
+    "name": "Fault Injection and Negative-State Observation",
+    "category": "Dynamic Observation and Instrumentation",
+    "description": "Trigger controlled error conditions such as missing files, denied permissions, malformed metadata, expired tokens, and partial network failure to observe how the application fails. Defensive review should focus on whether failure modes preserve trust and evidence quality.",
+    "focus_areas": ["Denied permissions", "Malformed metadata", "Partial failure", "Fallback behavior"],
+    "defensive_value": "Finds failure-handling weaknesses that only appear when the software is stressed or partially degraded."
+  },
+  {
+    "id": "SRP-063",
+    "name": "License, Entitlement, and Feature Toggle Flow Tracing",
+    "category": "Dynamic Observation and Instrumentation",
+    "description": "Trace how feature availability, licensing, entitlements, and experimental flags are evaluated across the stack. These product controls often double as trust decisions, especially when they gate admin-only or high-risk functionality.",
+    "focus_areas": ["Feature toggles", "Entitlement checks", "Cached permissions", "Fallback paths"],
+    "defensive_value": "Separates true authorization from cosmetic gating and helps target review at the most security-relevant decision points."
+  },
+  {
+    "id": "SRP-064",
+    "name": "Emulator and Virtualised Testbed Readiness Review",
+    "category": "Embedded and Firmware Research",
+    "description": "Assess whether a software or firmware target can be observed safely in emulation, virtual machines, or synthetic device environments, and which trust assumptions break there. This is useful for defensive repeatability, regression testing, and non-destructive analysis.",
+    "focus_areas": ["Emulation support", "Synthetic devices", "Repeatability", "Environment assumptions"],
+    "defensive_value": "Improves repeatable testing for opaque targets without requiring direct production-device analysis every time."
+  },
+  {
+    "id": "SRP-065",
+    "name": "Cross-Platform Wrapper and Shared-Core Divergence Review",
+    "category": "Binary and Reverse Engineering",
+    "description": "Compare Windows, macOS, Linux, mobile, or appliance wrappers around a shared core to identify where platform-specific glue weakens otherwise consistent security behavior. Divergence in helpers, packaging, sandboxing, or update logic often creates platform-only risk.",
+    "focus_areas": ["Shared core", "Platform glue", "Wrapper logic", "Packaging differences"],
+    "defensive_value": "Prevents review programs from missing vulnerabilities that only exist in one platform wrapper around a common product."
+  },
+  {
+    "id": "SRP-066",
+    "name": "Crash Artifact, Symbol, and Build Provenance Correlation",
+    "category": "Assurance Workflow",
+    "description": "Correlate crash outputs, symbol availability, build metadata, compiler flags, and release provenance so analysts can trace reliability or trust issues back to concrete build conditions. This is especially useful in large products with many branches or partial symbol coverage.",
+    "focus_areas": ["Symbol coverage", "Build metadata", "Compiler flags", "Crash provenance"],
+    "defensive_value": "Improves root-cause quality and helps security teams separate product bugs from build-process or deployment mistakes."
+  },
+  {
+    "id": "SRP-067",
+    "name": "Broker Contract and IPC Grammar Reconstruction",
+    "category": "Binary and Reverse Engineering",
+    "description": "Recover the contract between low-trust clients and privileged brokers by mapping message grammar, command families, required fields, and rejection conditions. This makes it possible to review broker trust assumptions as a formal interface rather than as scattered code snippets.",
+    "focus_areas": ["Broker grammar", "Command families", "Validation rules", "Rejection paths"],
+    "defensive_value": "Turns privileged IPC into a structured review artifact and highlights missing validation or overbroad broker capabilities."
+  }
+]

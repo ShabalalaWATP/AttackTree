@@ -1,0 +1,302 @@
+[
+  {
+    "id": "IAP-001",
+    "name": "Management Interface Exposure and Enumeration",
+    "category": "Management / Operations Plane",
+    "targets": ["DCIM", "BMS head-end", "OSS/BSS", "EMS/OAM", "vCenter", "Kubernetes dashboards", "NVR/VMS", "PACS consoles"],
+    "description": "An operator or adversary discovers and profiles exposed management interfaces used to administer infrastructure, facility, telecoms, OT, or security platforms. Enumeration often includes login portals, API endpoints, version banners, default paths, and weak authentication controls that can turn a planning surface into an initial-access surface.",
+    "common_surfaces": ["Web admin portals", "Northbound APIs", "Support portals", "Load balancer VIPs", "Forgotten management DNS names"],
+    "typical_effects": ["Initial access", "Admin credential capture", "Target prioritisation", "Exposure of device inventory"],
+    "detection_notes": "Look for unusual authentication failures, scanning against admin paths, and management-origin traffic from unexpected sources."
+  },
+  {
+    "id": "IAP-002",
+    "name": "Shared Operator Credential Reuse",
+    "category": "Management / Operations Plane",
+    "targets": ["Shared admin consoles", "Jump hosts", "Remote support portals", "KVM/BMC", "Network devices", "OT HMIs"],
+    "description": "Attackers exploit shared, default, or weakly rotated operator accounts that span multiple systems or sites. Once a reused admin credential is obtained, the same trust path can often unlock routers, controllers, facility systems, or orchestration tooling across otherwise separate categories.",
+    "common_surfaces": ["Shared local admin accounts", "Break-glass credentials", "Service vendor accounts", "Password vault exports"],
+    "typical_effects": ["Privilege escalation", "Cross-environment pivoting", "Unauthorized configuration changes"],
+    "detection_notes": "Flag logins where the same account suddenly touches multiple device families or disparate environments in a short window."
+  },
+  {
+    "id": "IAP-003",
+    "name": "Provisioning, Policy, or Template Tampering",
+    "category": "Management / Operations Plane",
+    "targets": ["OSS provisioning", "CMDB", "Policy engines", "DCIM templates", "BMS schedules", "RAN parameter stores"],
+    "description": "An attacker alters approved templates, neighbour lists, schedules, rule sets, or provisioning records so that future changes carry malicious state by default. This is effective because the poisoned template is later pushed by trusted operators or automation rather than by obviously hostile actions.",
+    "common_surfaces": ["Template repositories", "Parameter stores", "Provisioning APIs", "Operator work queues"],
+    "typical_effects": ["Persistent misconfiguration", "Stealthy service degradation", "Hidden backdoor rules", "Asset misdirection"],
+    "detection_notes": "Watch for template changes outside maintenance windows and drift between approved baselines and deployed state."
+  },
+  {
+    "id": "IAP-004",
+    "name": "Remote Support Tunnel Hijack",
+    "category": "Remote Access / Vendor Access",
+    "targets": ["Vendor VPNs", "OEM support gateways", "Managed-service tunnels", "Remote diagnostics appliances"],
+    "description": "Attackers hijack or impersonate trusted support paths used by vendors, field engineers, or managed-service providers. Because these channels are often pre-approved and poorly inspected, they can provide quiet access into telecoms sites, OT environments, data-centre facilities, or physical security systems.",
+    "common_surfaces": ["Always-on VPNs", "Remote support jump hosts", "Vendor remote tooling", "Temporary maintenance exceptions"],
+    "typical_effects": ["Trusted ingress", "Privilege inheritance", "Lateral movement into sensitive enclaves"],
+    "detection_notes": "Correlate vendor sessions against change tickets, expected source ranges, and maintenance authorisations."
+  },
+  {
+    "id": "IAP-005",
+    "name": "Jump Host or Bastion Pivot",
+    "category": "Remote Access / Vendor Access",
+    "targets": ["Bastions", "Privileged jump boxes", "RDP gateways", "SSH brokers", "PAM session managers"],
+    "description": "A compromise of a bastion or jump host turns a control point into a pivot hub across many hardware and software types. The attacker can inherit operator reach into routers, hypervisors, BMS servers, engineering workstations, timing appliances, or subscriber systems without exposing themselves at each downstream asset.",
+    "common_surfaces": ["RDP gateways", "SSH bastions", "PAM proxies", "Session recording brokers"],
+    "typical_effects": ["Cross-domain movement", "Session hijack", "Broad credential replay"],
+    "detection_notes": "Monitor for unusual downstream fan-out from bastions and session origin mismatches between user context and target type."
+  },
+  {
+    "id": "IAP-006",
+    "name": "Third-Party Maintenance Workflow Impersonation",
+    "category": "Remote Access / Vendor Access",
+    "targets": ["Ticketing systems", "Maintenance approval flows", "Escort workflows", "Field-service dispatch processes"],
+    "description": "Rather than directly exploit a device, the attacker abuses the business process that grants trusted maintenance access. Fake work orders, social-engineered approvals, or modified dispatch notes can unlock physical entry, vendor remote access, or temporary admin rights across multiple technology categories.",
+    "common_surfaces": ["Email approvals", "ITSM tickets", "Work-order systems", "Helpdesk callbacks"],
+    "typical_effects": ["Trusted access without exploit chains", "Physical plus logical access", "Reduced operator suspicion"],
+    "detection_notes": "Validate maintenance requests against asset ownership, approved vendors, and known contact paths rather than ticket text alone."
+  },
+  {
+    "id": "IAP-007",
+    "name": "Service Account or API Token Replay",
+    "category": "Identity / Secrets / PKI",
+    "targets": ["Automation accounts", "Northbound APIs", "Provisioning platforms", "Hypervisor control APIs", "BMS service users"],
+    "description": "Stolen machine credentials or API tokens are replayed against trusted control paths that span hardware and software. This commonly affects orchestration layers, telemetry collectors, DCIM, OSS, provisioning systems, and any environment where background services are allowed broad non-interactive access.",
+    "common_surfaces": ["Bearer tokens", "API keys", "Embedded credentials", "Exported config bundles"],
+    "typical_effects": ["Stealthy administrative access", "Automated changes at scale", "Low-friction persistence"],
+    "detection_notes": "Track token use by expected source, scope, and time pattern; service identities should behave far more consistently than humans."
+  },
+  {
+    "id": "IAP-008",
+    "name": "Secrets Vault or PAM Abuse",
+    "category": "Identity / Secrets / PKI",
+    "targets": ["Password vaults", "PAM brokers", "Secrets managers", "Certificate stores", "Key escrow systems"],
+    "description": "Once a secrets broker is abused, attackers can harvest the privileged credentials and certificates that glue together different infrastructure layers. That can collapse the separation between IT, OT, facility, and telecom control planes because the broker itself already understands the full trust map.",
+    "common_surfaces": ["Vault APIs", "Check-out workflows", "Session brokers", "Emergency account release"],
+    "typical_effects": ["Mass credential exposure", "Privilege chaining", "Trust collapse across categories"],
+    "detection_notes": "Alert on bulk secret access, unusual vault search behavior, and check-outs that do not align with planned work."
+  },
+  {
+    "id": "IAP-009",
+    "name": "Certificate or Trust Anchor Substitution",
+    "category": "Identity / Secrets / PKI",
+    "targets": ["PTP security domains", "Service mesh PKI", "Subscriber systems", "Mutual TLS gateways", "Device-management trust stores"],
+    "description": "Attackers replace or add certificates, roots, or device trust anchors so that malicious systems are accepted as legitimate peers. This can enable MITM positions, rogue network functions, false management endpoints, or malicious timing sources depending on the environment.",
+    "common_surfaces": ["Trust stores", "CA consoles", "Certificate import functions", "mTLS enrollment paths"],
+    "typical_effects": ["Authentication bypass", "Rogue service impersonation", "Long-lived persistence"],
+    "detection_notes": "Track unauthorized CA changes, unexpected certificate chains, and sudden trust of previously unknown peers."
+  },
+  {
+    "id": "IAP-010",
+    "name": "CI/CD Pipeline Poisoning",
+    "category": "Automation / Orchestration",
+    "targets": ["Firmware pipelines", "CNF build systems", "Infrastructure-as-code", "Configuration runners", "Image registries"],
+    "description": "An adversary compromises the path that builds, signs, packages, or publishes updates to operational systems. The poisoned release then lands through normal maintenance workflows and can affect routers, controllers, VMS appliances, hypervisors, telecom functions, or OT software alike.",
+    "common_surfaces": ["Build agents", "Registry credentials", "Package signing", "Pipeline variables", "Artifact repositories"],
+    "typical_effects": ["Trusted malware delivery", "Fleet-wide persistence", "Delayed operational impact"],
+    "detection_notes": "Correlate pipeline changes, signing events, and release content against approved source commits and maintainer identities."
+  },
+  {
+    "id": "IAP-011",
+    "name": "GitOps or Configuration Drift Injection",
+    "category": "Automation / Orchestration",
+    "targets": ["GitOps controllers", "Infrastructure repos", "Desired-state stores", "Automation playbooks"],
+    "description": "Instead of logging into devices directly, the attacker changes the source of truth so automation deploys malicious or destabilizing state on their behalf. This is effective wherever configuration-as-code governs cloud platforms, BMS schedules, network policy, telecom CNFs, or privileged operational settings.",
+    "common_surfaces": ["Git repositories", "Helm charts", "Terraform state", "Ansible inventories", "Desired-state APIs"],
+    "typical_effects": ["Wide blast radius", "Repeatable re-compromise", "Configuration drift that looks authorized"],
+    "detection_notes": "Diff deployed state against approved branches and alert when automation pushes large multi-system changes without corresponding change records."
+  },
+  {
+    "id": "IAP-012",
+    "name": "Malicious Firmware, Image, or Package Update",
+    "category": "Automation / Orchestration",
+    "targets": ["Switches", "Radios", "Cameras", "BMS controllers", "Storage arrays", "UPS management cards", "OT controllers"],
+    "description": "The attacker pushes a modified firmware image or software package through a trusted update channel or maintenance action. The target may continue to function normally while gaining backdoor logic, weakened validation, or a latent kill switch that can be exercised later.",
+    "common_surfaces": ["Update portals", "TFTP or SCP uploads", "Package feeds", "Field-service laptops", "Vendor bundles"],
+    "typical_effects": ["Persistent code execution", "Hidden logic changes", "Delayed sabotage"],
+    "detection_notes": "Verify package provenance, monitor unexpected downgrade or rollback events, and hash-check staged update bundles."
+  },
+  {
+    "id": "IAP-013",
+    "name": "Segmentation or ACL Manipulation",
+    "category": "Networking / Transport",
+    "targets": ["Firewalls", "VRFs", "Switch ACLs", "Microsegmentation policy", "Carrier edge routers"],
+    "description": "An attacker alters the boundaries that are supposed to separate management, production, safety, subscriber, or facility networks. This does not always cause immediate outage, but it quietly creates future paths for reconnaissance, pivoting, or direct control traffic where none should exist.",
+    "common_surfaces": ["Firewall policy", "Router config", "SDN controllers", "Network access control", "Cloud security groups"],
+    "typical_effects": ["Trust-boundary collapse", "New lateral movement routes", "Hidden operator blind spots"],
+    "detection_notes": "Alert on policy changes that broaden source scope, management reachability, or east-west access between previously isolated zones."
+  },
+  {
+    "id": "IAP-014",
+    "name": "Routing or Path Steering Manipulation",
+    "category": "Networking / Transport",
+    "targets": ["IP/MPLS", "Microwave transport", "Carrier aggregation", "Backhaul routers", "Site gateways"],
+    "description": "By changing routing state, path preference, or failover behavior, attackers can divert sensitive traffic through controllable points, create asymmetric outage conditions, or selectively isolate monitoring and control systems. The same idea applies across enterprise, telecom, OT, and facility transport layers.",
+    "common_surfaces": ["BGP", "OSPF or IS-IS", "Static route tables", "MPLS policy", "Transport failover settings"],
+    "typical_effects": ["Traffic interception", "Selective service disruption", "Degraded resiliency"],
+    "detection_notes": "Compare route changes and failover events against expected maintenance windows and passive path baselines."
+  },
+  {
+    "id": "IAP-015",
+    "name": "Out-of-Band Console or Serial Access Abuse",
+    "category": "Networking / Transport",
+    "targets": ["Console servers", "BMC/IPMI", "KVM", "Serial concentrators", "Maintenance ports"],
+    "description": "Attackers target supposedly isolated recovery paths that are often less monitored than the primary management plane. OOB or serial access can bypass network controls and provide direct administrative reach into routers, servers, cameras, facility controllers, and industrial endpoints.",
+    "common_surfaces": ["Serial consoles", "IPMI", "iDRAC or iLO", "KVM appliances", "Maintenance laptops"],
+    "typical_effects": ["Direct admin control", "Network-control bypass", "Recovery path compromise"],
+    "detection_notes": "Monitor OOB use as a high-signal event and correlate it with declared incidents or hands-on maintenance activity."
+  },
+  {
+    "id": "IAP-016",
+    "name": "Alarm Flooding and Operator Desensitization",
+    "category": "Monitoring / Assurance",
+    "targets": ["NOC consoles", "BMS alarms", "SIEM", "Fault managers", "Physical security monitors", "OT alarm journals"],
+    "description": "Rather than disable detection outright, the attacker drowns operators in noisy but plausible events so that the truly important signal is missed or delayed. This is effective in any environment where humans must triage alarms under time pressure and where suppressing the alert volume would itself be suspicious.",
+    "common_surfaces": ["Thresholds", "Synthetic event generation", "Repeated flap conditions", "Alert routing rules"],
+    "typical_effects": ["Delayed response", "Change fatigue", "Masking of high-impact actions"],
+    "detection_notes": "Look for sudden correlation breakdown, bursty repeated alerts from many assets, and operators forced into broad alarm suppressions."
+  },
+  {
+    "id": "IAP-017",
+    "name": "Log, Historian, or Evidence Suppression",
+    "category": "Monitoring / Assurance",
+    "targets": ["Syslog collectors", "Historians", "SOE recorders", "NVR retention", "Event pipelines", "Trace systems"],
+    "description": "The attacker deletes, overwrites, blocks, or diverts the evidence trail needed to reconstruct what happened. Different environments implement this differently, but the objective is consistent: destroy ordered records so defenders cannot distinguish fault, misuse, and intentional manipulation.",
+    "common_surfaces": ["Log forwarding", "Retention settings", "Time-series databases", "Recorder storage", "Pipeline credentials"],
+    "typical_effects": ["Incident blindness", "Attribution failure", "Delayed containment"],
+    "detection_notes": "Alert on silent collectors, abnormal drops in ingest volume, missing recorder retention, and unexplained gaps in event sequences."
+  },
+  {
+    "id": "IAP-018",
+    "name": "KPI, Sensor, or Telemetry Falsification",
+    "category": "Monitoring / Assurance",
+    "targets": ["PM counters", "SCADA telemetry", "BMS sensors", "DCIM telemetry", "Power quality logs", "Carrier assurance stacks"],
+    "description": "Instead of attacking the control path directly, the adversary manipulates the observed state so operators believe conditions are normal, degraded for the wrong reason, or improving when they are not. False visibility can protect a longer sabotage sequence against both humans and automated remediation.",
+    "common_surfaces": ["Telemetry collectors", "Polling gateways", "Sensor calibration", "Northbound APIs", "Analytics transformations"],
+    "typical_effects": ["False operator confidence", "Misdiagnosis", "Incorrect recovery actions"],
+    "detection_notes": "Cross-check telemetry against independent sources and flag impossible or inconsistent state combinations."
+  },
+  {
+    "id": "IAP-019",
+    "name": "GNSS Jamming and Timing Denial",
+    "category": "Timing / PNT",
+    "targets": ["GNSS receivers", "PRTC sources", "Timing antennas", "Telecom base stations", "Substations", "Event recorders"],
+    "description": "An attacker degrades or denies satellite timing so dependent systems fall back to holdover or lose synchronisation entirely. This impacts any environment where lawful timing, event ordering, radio synchronisation, or protection coordination rely on an external time source.",
+    "common_surfaces": ["Roof antennas", "Coax runs", "Outdoor timing equipment", "Shared mast infrastructure"],
+    "typical_effects": ["Service instability", "Degraded protection or coordination", "Broken event ordering"],
+    "detection_notes": "Monitor GNSS signal quality, holdover transitions, antenna faults, and correlated timing alarms across dependent systems."
+  },
+  {
+    "id": "IAP-020",
+    "name": "GNSS Spoofing or False Time Injection",
+    "category": "Timing / PNT",
+    "targets": ["Timing receivers", "Cameras", "Recorders", "RAN timing chains", "Substation event systems", "Distributed security systems"],
+    "description": "Rather than deny timing outright, the attacker feeds a believable but false time source so dependent platforms accept bad time as good time. This can quietly corrupt record integrity, lawful audit trails, synchronisation, or multi-system correlation without causing immediate obvious failure.",
+    "common_surfaces": ["Timing antennas", "Receiver firmware", "NTP/PTP fallback paths", "Local GPS repeaters"],
+    "typical_effects": ["False timestamps", "Corrupted audit evidence", "Operational miscoordination"],
+    "detection_notes": "Use multi-source time validation and alert on drift, clock-class changes, or impossible offsets between peer systems."
+  },
+  {
+    "id": "IAP-021",
+    "name": "PTP Grandmaster or Boundary Clock Manipulation",
+    "category": "Timing / PNT",
+    "targets": ["PTP grandmasters", "Boundary clocks", "SyncE distribution", "ePRTC chains", "Time-sensitive transport"],
+    "description": "The attacker tampers with the devices that distribute trusted time inside the network, allowing incorrect time to propagate through otherwise healthy systems. This is especially dangerous where many downstream devices assume the timing fabric is authoritative and do not validate it independently.",
+    "common_surfaces": ["PTP profiles", "Clock source preference", "Management interfaces", "Timing VLANs", "Boundary clock firmware"],
+    "typical_effects": ["Widespread timestamp corruption", "Service quality degradation", "Unreliable fault analysis"],
+    "detection_notes": "Track clock source changes, profile changes, and abrupt offset propagation from a small number of timing distribution nodes."
+  },
+  {
+    "id": "IAP-022",
+    "name": "Badge Cloning and Access Workflow Abuse",
+    "category": "Physical Access / CCTV",
+    "targets": ["PACS", "Badge readers", "Turnstiles", "Cabinet locks", "Escort workflows", "Visitor systems"],
+    "description": "An attacker clones, borrows, or fraudulently obtains access credentials to reach equipment or control rooms that are assumed to be physically trustworthy. Once inside, they can target almost any technology stack regardless of whether the logical control plane is well segmented.",
+    "common_surfaces": ["RFID badges", "Temporary passes", "Escort exceptions", "Lost-card reissue flows"],
+    "typical_effects": ["Direct physical access", "Hardware tampering", "Console access", "Media insertion"],
+    "detection_notes": "Correlate badge use against expected person-location patterns, escort requirements, and simultaneous-use anomalies."
+  },
+  {
+    "id": "IAP-023",
+    "name": "CCTV Blindness and Recorder Tampering",
+    "category": "Physical Access / CCTV",
+    "targets": ["Cameras", "NVRs", "VMS", "Guard monitoring stations", "Video analytics"],
+    "description": "The adversary disables, mis-aims, saturates, or desynchronizes the surveillance system that should verify movement and incident reconstruction. That creates the freedom to perform physical tampering, asset swaps, or unauthorised maintenance while reducing confidence in later investigations.",
+    "common_surfaces": ["Camera admin pages", "PoE switches", "Recorder retention settings", "Analytics policy", "Lens or cover access"],
+    "typical_effects": ["Physical concealment", "Loss of evidence", "Delayed perimeter or room intrusion detection"],
+    "detection_notes": "Alert on camera tamper events, sudden loss of streams, recorder retention changes, and time skew across camera fleets."
+  },
+  {
+    "id": "IAP-024",
+    "name": "BMS or HVAC Setpoint Manipulation",
+    "category": "Power / Environmental / Facility",
+    "targets": ["BMS head-end", "HVAC controllers", "CRAC/CRAH", "Cooling towers", "Chillers", "Environmental sensors"],
+    "description": "Attackers change environmental control logic, schedules, or setpoints so the facility behaves incorrectly while operators initially interpret the problem as mechanical drift or sensor failure. This can impact compute environments, telecom shelters, industrial spaces, and security rooms that depend on stable environmental conditions.",
+    "common_surfaces": ["BMS supervisor consoles", "BACnet gateways", "Remote vendor support", "Schedule and trend interfaces"],
+    "typical_effects": ["Thermal stress", "Forced shutdown", "Sensor-driven misdiagnosis", "Occupant or equipment safety issues"],
+    "detection_notes": "Monitor for unexpected setpoint changes, mode flips, and command sequences that do not align with ambient conditions or approved schedules."
+  },
+  {
+    "id": "IAP-025",
+    "name": "UPS, PDU, or Power Controller State Manipulation",
+    "category": "Power / Environmental / Facility",
+    "targets": ["UPS controllers", "Battery monitors", "PDU management cards", "Rectifiers", "Generator controls", "ATS/STS"],
+    "description": "The attacker manipulates the digital control layer of the power chain rather than physically cutting power. By changing thresholds, transfer logic, outlet state, runtime assumptions, or alarm handling, they can trigger disruptive electrical behavior while keeping the issue rooted in a trusted control system.",
+    "common_surfaces": ["SNMP or web admin", "Serial maintenance", "Power telemetry platforms", "Service laptops"],
+    "typical_effects": ["Targeted outage", "Runtime collapse", "Masked power degradation", "Recovery complications"],
+    "detection_notes": "Correlate controller commands with electrical telemetry and investigate unplanned transfer or outlet-state changes immediately."
+  },
+  {
+    "id": "IAP-026",
+    "name": "PLC, Controller, or Logic Parameter Change",
+    "category": "Supervisory Control / OT",
+    "targets": ["PLCs", "RTUs", "Field controllers", "BMS controllers", "Protection relays", "Embedded control logic"],
+    "description": "A trusted engineering or configuration path is used to change parameters or executable logic inside controllers. The specific hardware varies widely, but the underlying attack type is consistent: modify the logic that governs physical or supervisory behavior while keeping the device online.",
+    "common_surfaces": ["Engineering software", "Logic download functions", "Parameter editors", "Serial or fieldbus access"],
+    "typical_effects": ["Process manipulation", "Intermittent fault conditions", "Persistent unsafe behaviour"],
+    "detection_notes": "Baseline controller projects and alert on unauthorized uploads, downloads, or parameter deltas."
+  },
+  {
+    "id": "IAP-027",
+    "name": "Engineering Workstation Tool Abuse",
+    "category": "Supervisory Control / OT",
+    "targets": ["Engineering laptops", "OT admin workstations", "Vendor commissioning tools", "Radio tuning tools", "Protection setting suites"],
+    "description": "The attacker abuses the legitimate software that operators and engineers use to program or commission the environment. These tools often bypass normal production guardrails because they are designed specifically to make deep changes to devices, controllers, radios, and supervisory platforms.",
+    "common_surfaces": ["Engineering laptops", "Project files", "Offline configuration bundles", "Direct-connect maintenance ports"],
+    "typical_effects": ["Rapid configuration changes", "Low-visibility sabotage", "Abuse that appears operationally valid"],
+    "detection_notes": "Treat engineering-tool launches and project transfers as high-signal events, especially outside maintenance windows."
+  },
+  {
+    "id": "IAP-028",
+    "name": "Fieldbus or Legacy Protocol Impersonation",
+    "category": "Supervisory Control / OT",
+    "targets": ["BACnet", "Modbus", "DNP3", "IEC 61850 gateways", "Serial links", "Device polling networks"],
+    "description": "Attackers inject or impersonate protocol traffic in environments where authentication is weak, optional, or absent. Even when the exact device type differs, the same attack logic applies: speak a trusted control or telemetry protocol well enough to issue commands or falsify state.",
+    "common_surfaces": ["Flat control segments", "Serial-to-IP gateways", "Legacy protocol bridges", "Insecure poll-response flows"],
+    "typical_effects": ["Unauthorized commands", "False state injection", "Disrupted automation"],
+    "detection_notes": "Use protocol-aware monitoring to identify new talkers, unexpected function codes, and command sequences from non-standard hosts."
+  },
+  {
+    "id": "IAP-029",
+    "name": "Backup, Failover, or Restoration Sabotage",
+    "category": "Recovery / Safety / Resilience",
+    "targets": ["Backups", "Standby clusters", "Cold spares", "Manual runbooks", "Disaster-recovery workflows", "Generator black-start dependencies"],
+    "description": "The adversary prepares the target for a worse future incident by degrading the mechanisms that are meant to restore service. That may mean corrupting backups, breaking failover preconditions, invalidating spare configurations, or modifying recovery documentation so the outage lasts longer and defenders make worse choices.",
+    "common_surfaces": ["Backup servers", "Failover policy", "Replication settings", "Recovery runbooks", "Spare image stores"],
+    "typical_effects": ["Longer outages", "Failed recovery", "Operator confusion", "Higher business or physical impact"],
+    "detection_notes": "Audit backup integrity, failover readiness, and recovery configuration drift as continuously as primary production controls."
+  },
+  {
+    "id": "IAP-030",
+    "name": "Safety Interlock or Protection Bypass",
+    "category": "Recovery / Safety / Resilience",
+    "targets": ["Safety relays", "Protection logic", "ESD systems", "Fire-safety dependencies", "Shutdown paths", "Alarm inhibits"],
+    "description": "The attacker alters the conditions that should halt unsafe behavior or reveal abnormal operation, either by suppressing a trip path or by abusing inhibit and maintenance modes. The exact equipment differs between environments, but the cross-domain pattern is the same: remove the last line of defense before other manipulation occurs.",
+    "common_surfaces": ["Maintenance overrides", "Trip settings", "Inhibit flags", "Safety engineering tools", "Protection coordination settings"],
+    "typical_effects": ["Loss of final safeguards", "Higher physical impact", "Silent unsafe operation"],
+    "detection_notes": "Track every bypass, inhibit, and protection-setting change as an emergency-level event with explicit approval and timed revalidation."
+  }
+]

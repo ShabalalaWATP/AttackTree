@@ -22,10 +22,12 @@ import httpx
 
 from ..services.crypto import decrypt_value
 from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
+from ..services.reference_search_service import format_reference_candidates_for_prompt
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates_data"
+_AGENT_TEMPLATE_EXAMPLE_MAX_NODES = 6
 
 
 def _model_prefers_max_completion_tokens(model: str) -> bool:
@@ -320,6 +322,8 @@ def build_branch_suggestion_prompt(
     extended_metadata = extended_metadata if isinstance(extended_metadata, dict) else {}
     project_context = node_data.get("project_context")
     project_context = project_context if isinstance(project_context, dict) else {}
+    reference_candidates = node_data.get("reference_candidates")
+    reference_candidates = reference_candidates if isinstance(reference_candidates, list) else []
 
     deep_technical, effective_profile = _derive_suggestion_profile(
         node_data,
@@ -372,6 +376,8 @@ def build_branch_suggestion_prompt(
         context_lines.append("Vulnerability Cards:\n" + card_summary)
     if additional_context.strip():
         context_lines.append("Additional Analyst Context:\n" + additional_context.strip())
+    if reference_candidates:
+        context_lines.append(format_reference_candidates_for_prompt(reference_candidates))
     context_lines.append("Tree context:")
     context_lines.append(tree_context)
     context_block = "\n".join(context_lines)
@@ -444,12 +450,15 @@ Return ONLY valid JSON array.""",
 
 {deep_guidance}
 
+Prefer the retrieved candidate references when provided. You may also use Infrastructure Attack Patterns, Software Security Research Patterns, or Environment Catalog anchors if they are materially useful and present in the candidate list.
 Prefer concrete weakness IDs that match the exploit primitive or bug class described in the node and vulnerability cards.
 
 Return a JSON array of objects:
-- framework: one of "attack", "capec", "cwe", "owasp"
+- framework: one of "attack", "capec", "cwe", "owasp", "infra_attack_patterns", "software_research_patterns", "environment_catalog"
 - ref_id: the reference ID (e.g., T1566, CAPEC-98, CWE-89, A01:2021)
 - ref_name: the reference name
+- confidence: 0.0 to 1.0
+- rationale: brief reason this mapping fits
 
 Return ONLY valid JSON array.""",
     }
@@ -655,8 +664,13 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
 
     # --- Few-shot template example ---
     if template_example:
-        example_nodes = template_example.get("nodes", [])[:6]  # First 6 nodes for context
-        example_text = json.dumps(_template_to_tree_example(template_example), indent=2)
+        example_text = json.dumps(
+            _template_to_tree_example(
+                template_example,
+                max_nodes=_AGENT_TEMPLATE_EXAMPLE_MAX_NODES,
+            ),
+            indent=2,
+        )
         metadata_lines = _template_metadata_lines(template_example)
         if metadata_lines:
             user_parts.append("\n**Template metadata:**\n" + "\n".join(metadata_lines))
@@ -664,7 +678,7 @@ def build_agent_tree_prompt(objective: str, scope: str, depth: int, breadth: int
             user_parts.append(_build_technical_generation_guidance())
             deep_guidance_added = True
         user_parts.append(f"""
-**Example structure** (use this as a reference for quality, depth, and field population — do NOT copy it verbatim, generate original content for the given objective):
+**Example structure** (compact few-shot example; use this as a reference for quality, depth, and field population — do NOT copy it verbatim, generate original content for the given objective):
 ```json
 {example_text}
 ```""")
@@ -852,6 +866,128 @@ Return ONLY the JSON array. No markdown, no commentary."""
     ]
 
 
+def build_agent_branch_expansion_prompt(
+    objective: str,
+    scope: str,
+    ancestor_chain: list[dict],
+    branch_node: dict,
+    sibling_titles: list[str],
+    remaining_depth: int,
+    breadth: int,
+    generation_profile: str = "balanced",
+    context_preset: str = "",
+) -> list[dict]:
+    """Build a prompt to expand one branch using only local branch context."""
+    generation_profile = _normalize_generation_profile(generation_profile)
+    domain = _detect_domain(objective, scope, context_preset)
+    system = _get_domain_system_prompt(domain)
+    profile_label = _GENERATION_PROFILE_LABELS.get(generation_profile, "Balanced")
+    context_label = _context_preset_label(context_preset)
+    environment_catalog_context = build_environment_catalog_outline_for_context(
+        objective,
+        scope,
+        context_preset,
+    )
+    reference_arch = _get_reference_architecture(domain)
+    deep_guidance = _build_technical_generation_guidance() if domain == "software_research" else ""
+
+    ancestor_lines = []
+    for index, node in enumerate(ancestor_chain, start=1):
+        ancestor_lines.append(
+            f"{index}. [{node.get('node_type', 'attack_step')}] {node.get('title', 'Untitled')} | "
+            f"surface={node.get('attack_surface', 'n/a') or 'n/a'} | "
+            f"platform={node.get('platform', 'n/a') or 'n/a'} | "
+            f"category={node.get('threat_category', 'n/a') or 'n/a'}"
+        )
+    ancestor_block = "\n".join(ancestor_lines) if ancestor_lines else "1. [goal] Root objective"
+
+    sibling_block = "\n".join(f"- {title}" for title in sibling_titles if title.strip()) or "- None"
+    branch_summary = json.dumps(
+        {
+            "title": branch_node.get("title", "Untitled"),
+            "description": branch_node.get("description", ""),
+            "node_type": branch_node.get("node_type", "sub_goal"),
+            "logic_type": branch_node.get("logic_type", "OR"),
+            "status": branch_node.get("status", "draft"),
+            "platform": branch_node.get("platform", ""),
+            "attack_surface": branch_node.get("attack_surface", ""),
+            "threat_category": branch_node.get("threat_category", ""),
+            "required_access": branch_node.get("required_access", ""),
+            "required_privileges": branch_node.get("required_privileges", ""),
+            "required_skill": branch_node.get("required_skill", ""),
+            "likelihood": branch_node.get("likelihood"),
+            "impact": branch_node.get("impact"),
+            "effort": branch_node.get("effort"),
+            "exploitability": branch_node.get("exploitability"),
+            "detectability": branch_node.get("detectability"),
+        },
+        indent=2,
+    )
+
+    user_parts = [f"""Expand one branch of an attack tree using only the local branch context below.
+
+**Attacker Objective:** {objective}
+**Scope / Target Description:** {scope}
+**Generation Profile:** {profile_label}
+{f"**Workspace Context Preset:** {context_label}\n" if context_label else ""}**Additional Levels To Generate Below This Branch:** {remaining_depth}
+**Breadth:** up to {breadth} child nodes per parent
+
+{_get_generation_profile_guidance(generation_profile, domain)}
+{environment_catalog_context}
+{f"\n**Reference Architecture:**\n{reference_arch}" if reference_arch else ""}
+{f"\n{deep_guidance}" if deep_guidance else ""}
+
+**Ancestor Path Already Established**
+{ancestor_block}
+
+**Current Branch Node To Expand**
+```json
+{branch_summary}
+```
+
+**Sibling Branches Already Covered Elsewhere**
+{sibling_block}
+"""]
+
+    user_parts.append("""
+Generate ONLY the new children for the current branch node as a JSON array. Do not regenerate the current branch node itself.
+
+Every generated node MUST populate all of these fields:
+- "title"
+- "description"
+- "node_type"
+- "logic_type"
+- "status"
+- "platform"
+- "attack_surface"
+- "threat_category"
+- "required_access"
+- "required_privileges"
+- "required_skill"
+- "likelihood"
+- "impact"
+- "effort"
+- "exploitability"
+- "detectability"
+- "children"
+
+Rules:
+1. Keep this expansion scoped to the current branch and ancestor path. Do not restate the full tree.
+2. Do not duplicate sibling coverage unless it is a necessary dependency unique to this branch.
+3. Move from planning-useful child branches into concrete attack steps as the depth increases.
+4. Return up to the requested remaining depth below this branch. If only one level remains, return leaf nodes.
+5. Use AND logic when multiple prerequisites are all required; use OR logic for alternatives.
+6. Write descriptions as technical red-team guidance with concrete tools, exploit classes, and expected attacker outcomes.
+7. Keep child titles distinct from the sibling branches listed above.
+
+Return ONLY the JSON array. No markdown, no commentary.""")
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "\n".join(user_parts)},
+    ]
+
+
 def build_mitigations_detections_pass_prompt(nodes_summary: list[dict]) -> list[dict]:
     """Build a prompt for Pass 4: generate mitigations and detections for leaf nodes."""
     system = (
@@ -882,20 +1018,23 @@ Return ONLY the JSON array."""
 
 
 def build_reference_mapping_pass_prompt(nodes_summary: list[dict]) -> list[dict]:
-    """Build a prompt for Pass 3: MITRE ATT&CK / CAPEC / CWE mapping for nodes."""
+    """Build a prompt for Pass 3: validated reference mappings for nodes."""
     system = (
         "You are an expert cyber security analyst who maps attack steps to reference frameworks. "
         "Respond ONLY with valid JSON — no markdown, no commentary."
     )
 
     nodes_text = json.dumps(nodes_summary, indent=2)
-    user_prompt = f"""For each of the following attack tree nodes, suggest the most relevant MITRE ATT&CK techniques, CAPEC patterns, and CWE weaknesses.
+    user_prompt = f"""For each of the following attack tree nodes, suggest the most relevant reference mappings.
+
+Use the supplied candidate references as the primary source of truth. Prefer those candidates over unsupported free-form IDs.
+Only return mappings that are strongly justified by the node text and the retrieved candidates.
 
 {nodes_text}
 
 Return a JSON array with one object per node:
 - "index": the original index number
-- "mappings": array of {{"framework": "attack"|"capec"|"cwe", "ref_id": "T1566"|"CAPEC-98"|"CWE-89", "ref_name": "human-readable name"}}
+- "mappings": array of {{"framework": "attack"|"capec"|"cwe"|"owasp"|"infra_attack_patterns"|"software_research_patterns"|"environment_catalog", "ref_id": "validated local reference id", "ref_name": "human-readable name", "confidence": 0.0-1.0, "rationale": "brief reason"}}
 
 Return ONLY the JSON array."""
 
@@ -1307,19 +1446,19 @@ def _context_preset_to_domain(context_preset: str) -> str:
 _DOMAIN_DECOMPOSITION_GUIDANCE = {
     "data_centre": [
         "People and Trusted Roles (operators, remote hands, vendors, security guards, cleaners, facilities staff)",
-        "Physical Infrastructure and Facility Access (perimeter, loading bays, cages, racks, console access, removable media handling)",
-        "Information Technology and Management Plane (AD, vCenter, storage, backup, BMC/IPMI, DCIM, jump hosts, orchestration)",
-        "Operational Technology / BMS / Power / Cooling (HVAC, chillers, CRAC/CRAH, UPS, PDUs, generators, EPMS, fire suppression)",
+        "Physical Infrastructure and Facility Access (perimeter, loading bays, CCTV, mantraps, badge/PACS, cages, racks, console access, removable media handling)",
+        "Information Technology and Management Plane (AD, vCenter, Kubernetes, storage, backup, PAM, secrets, BMC/IPMI, KVM, DCIM, asset telemetry, jump hosts, orchestration)",
+        "Operational Technology / BMS / Power / Cooling (BMS head-end, BACnet gateways, HVAC, chillers, CRAC/CRAH, UPS, PDUs, generators, EPMS, fire suppression)",
         "Remote Access, Vendors, and Supply Chain (VPN, MSP tooling, vendor tunnels, field-service laptops, firmware and hardware dependencies)",
-        "Detection, Response, and Process Weaknesses (monitoring gaps, maintenance windows, change control, failover, incident response)",
+        "Detection, Response, and Process Weaknesses (SIEM, EDR/XDR, monitoring gaps, maintenance windows, change control, failover, incident response)",
     ],
     "telecommunications": [
         "Carrier Operations, Trusted Vendors, and Inter-Operator Relationships",
-        "RAN, Transport, and Core-Network Boundaries",
-        "Subscriber Identity, Policy, and Sensitive Mediation Services",
-        "Cloud-Native Management, OAM, and Orchestration Planes",
-        "Roaming, Signalling, and External Interconnect Exposure",
-        "Monitoring, Service Assurance, and Emergency Change or Outage Process",
+        "RAN, Radio, GNSS/PTP Timing, Transport, and Core-Network Boundaries",
+        "Subscriber Identity, Policy, Charging, Voice, and Sensitive Mediation Services",
+        "Cloud-Native Management, OSS/BSS, OAM, and Orchestration Planes",
+        "Roaming, Signalling, Exposure, and External Interconnect Edge",
+        "Monitoring, Service Assurance, Timing Assurance, Fraud Detection, and Emergency Change or Outage Process",
     ],
     "software_research": [
         "Externally Reachable Entry Points and Attacker-Controlled Inputs",
@@ -1522,21 +1661,24 @@ def _get_domain_system_prompt(domain: str) -> str:
 _REFERENCE_ARCHITECTURES = {
     "data_centre": """Data centre / colocation architecture:
 - People and roles: operators, facilities engineers, remote hands, MSPs, security, cleaning and maintenance contractors
-- Physical layer: perimeter, loading bays, mantraps, cages, racks, crash carts, console access, removable media workflows
-- IT management layer: AD, vCenter/ESXi, BMC/IPMI/iDRAC/iLO, storage and backup platforms, orchestration, DCIM
-- OT / facilities layer: HVAC, chillers, CRAC/CRAH, UPS, PDUs, generators, EPMS, fire suppression, BMS head-end
+- Physical layer: perimeter, loading bays, PACS, badge readers, mantraps, CCTV/VMS, cages, racks, crash carts, console access, removable media workflows
+- IT management layer: AD/LDAP/SSO, vCenter/ESXi, Kubernetes/OpenShift, PAM and secrets vaults, BMC/IPMI/iDRAC/iLO, KVM/serial consoles, storage and backup platforms, automation/CMDB/ITSM, DCIM, rack telemetry
+- OT / facilities layer: BMS head-end, BACnet gateways, HVAC, chillers, CRAC/CRAH, in-row cooling, UPS, STS/ATS, PDUs, generators, EPMS, fire suppression
 - Remote access layer: VPNs, bastions, vendor remote support tunnels, field-service laptops, out-of-band management
+- Monitoring layer: SIEM, EDR/XDR, NMS, alert triage, case management, recovery runbooks
 - Key boundaries: internet-to-remote-access edge, corporate IT-to-management plane, IT-to-BMS/OT, physical perimeter-to-rack row
 - Common weaknesses: over-trusted contractors, exposed BMCs, flat management networks, weak vendor remote access, poor BMS segregation, weak failover procedures""",
 
     "telecommunications": """Telecommunications carrier architecture:
 - Operations and trust: NOC, SOC, roaming partners, lawful-intercept staff, OEMs, managed-service providers
-- RAN and transport: base stations, DU/CU, microwave or fibre backhaul, timing and synchronisation
-- Core layer: AMF, SMF, UPF, NRF, PCF, AUSF, UDM/UDR, IMS and messaging services
-- Management layer: OSS/BSS, EMS/OAM, API gateways, subscriber administration, CI/CD and orchestration
-- Interconnect layer: SS7, Diameter, SIP, roaming exchanges, peering, network exposure functions
+- RAN and transport: base stations, RU/DU/CU, Open RAN control loops, microwave or fibre fronthaul/backhaul, GNSS/PNT receivers, PRTC or ePRTC sources, PTP grandmasters, boundary clocks, SyncE, holdover
+- Core layer: AMF, SMF, UPF, NRF, PCF, AUSF, NSSF, CHF/OCS, UDM/UDR, IMS and messaging services
+- Management layer: OSS/BSS, EMS/OAM, SON, subscriber provisioning, CI/CD, GitOps, CNF orchestration, service-mesh PKI, carrier time-distribution appliances
+- Interconnect layer: SS7, Diameter, SIP, SEPP, IPX, NEF/SCP exposure, roaming exchanges, peering, API gateways
+- Sensitive services: lawful intercept, subscriber identity stores, HSM-backed key material, charging and CDR mediation
+- Monitoring layer: KPI assurance, trace analytics, timing assurance, GNSS spoofing or jamming alerts, signalling firewalls, fraud detection, outage bridges, release control
 - Key boundaries: roaming-partner-to-core, RAN-to-core, OAM-to-production, subscriber-data-to-operations
-- Common weaknesses: over-trusted interconnects, exposed OAM, weak API auth, flat management access, sensitive LI or subscriber stores""",
+- Common weaknesses: over-trusted interconnects, exposed OAM, weak API auth, flat management access, weak timing-source resilience, sensitive LI or subscriber stores""",
 
     "ot_ics": """Purdue Model / IEC 62443 architecture:
 - Level 5: Enterprise Network (ERP, email, internet)
@@ -1584,11 +1726,40 @@ def _get_reference_architecture(domain: str) -> str:
     return _REFERENCE_ARCHITECTURES.get(domain, "")
 
 
-def _template_to_tree_example(template: dict) -> dict:
+def _template_to_tree_example(template: dict, max_nodes: int | None = None) -> dict:
     """Convert a template to a simplified tree structure for few-shot example."""
     nodes = template.get("nodes", [])
     if not nodes:
         return {}
+
+    if max_nodes and max_nodes > 0 and len(nodes) > max_nodes:
+        raw_by_id = {node.get("id"): node for node in nodes if node.get("id")}
+        child_ids_by_parent: dict[str, list[str]] = {}
+        root_ids: list[str] = []
+
+        for raw_node in nodes:
+            node_id = raw_node.get("id")
+            if not node_id:
+                continue
+            parent_id = raw_node.get("parent_id")
+            if parent_id and parent_id in raw_by_id:
+                child_ids_by_parent.setdefault(parent_id, []).append(node_id)
+            else:
+                root_ids.append(node_id)
+
+        queue = list(root_ids)
+        selected_ids: list[str] = []
+        seen_ids: set[str] = set()
+        while queue and len(selected_ids) < max_nodes:
+            node_id = queue.pop(0)
+            if node_id in seen_ids:
+                continue
+            seen_ids.add(node_id)
+            selected_ids.append(node_id)
+            queue.extend(child_ids_by_parent.get(node_id, []))
+
+        selected_id_set = set(selected_ids)
+        nodes = [node for node in nodes if node.get("id") in selected_id_set]
 
     # Build lookup
     by_id = {}

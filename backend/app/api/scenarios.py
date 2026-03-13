@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from time import perf_counter
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,8 +22,14 @@ from ..services.access_control import (
     require_scenario_access,
 )
 from ..services.auth import get_current_user_id
+from ..services.analysis_runs import record_analysis_run
 from ..services import llm_service
 from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
+from ..services.reference_search_service import (
+    dedupe_reference_links,
+    format_reference_candidates_for_prompt,
+    search_references,
+)
 from ..services.risk_engine import compute_inherent_risk, compute_residual_risk
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
@@ -95,6 +102,7 @@ class ScenarioBase(BaseModel):
     modified_scores: dict[str, dict[str, float]] = Field(default_factory=dict)
     assumptions: str = ""
     planning_notes: str = ""
+    reference_mappings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ScenarioCreate(ScenarioBase):
@@ -131,6 +139,7 @@ class ScenarioUpdate(BaseModel):
     modified_scores: Optional[dict[str, dict[str, float]]] = None
     assumptions: Optional[str] = None
     planning_notes: Optional[str] = None
+    reference_mappings: Optional[list[dict[str, Any]]] = None
 
 
 class SimulateRequest(BaseModel):
@@ -179,6 +188,42 @@ def _scenario_planning_context(planning_profile: str, objective: str, scope: str
     return normalized_profile, profile_label, domain, guidance
 
 
+def _normalize_reference_links(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return dedupe_reference_links([item for item in value if isinstance(item, dict)])
+
+
+def _scenario_candidate_references(
+    *,
+    focus: str,
+    objective: str,
+    scope: str,
+    context_preset: str,
+    target_summary: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    return search_references(
+        query=focus,
+        artifact_type="scenario",
+        context_preset=context_preset,
+        objective=objective,
+        scope=scope,
+        target_kind="scenario",
+        target_summary=target_summary,
+        allowed_frameworks=[
+            "attack",
+            "capec",
+            "cwe",
+            "owasp",
+            "infra_attack_patterns",
+            "software_research_patterns",
+            "environment_catalog",
+        ],
+        limit=limit,
+    )
+
+
 @router.get("")
 async def list_scenarios(
     project_id: Optional[str] = None,
@@ -220,6 +265,7 @@ async def list_project_scenarios(project_id: str, db: AsyncSession = Depends(get
 async def create_scenario(data: ScenarioCreate, db: AsyncSession = Depends(get_db)):
     payload = await _normalise_scope_payload(data.model_dump(), db)
     payload["user_id"] = get_current_user_id()
+    payload["reference_mappings"] = _normalize_reference_links(payload.get("reference_mappings"))
     scenario = Scenario(**payload)
     db.add(scenario)
     await db.commit()
@@ -235,6 +281,8 @@ async def get_scenario(scenario_id: str, db: AsyncSession = Depends(get_db)):
 async def update_scenario(scenario_id: str, data: ScenarioUpdate, db: AsyncSession = Depends(get_db)):
     scenario = await _get_or_404(scenario_id, db)
     update_data = await _normalise_scope_payload(data.model_dump(exclude_unset=True), db, scenario)
+    if "reference_mappings" in update_data:
+        update_data["reference_mappings"] = _normalize_reference_links(update_data.get("reference_mappings"))
     for key, value in update_data.items():
         setattr(scenario, key, value)
     await db.commit()
@@ -250,6 +298,7 @@ async def delete_scenario(scenario_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{scenario_id}/simulate")
 async def simulate(scenario_id: str, data: SimulateRequest, db: AsyncSession = Depends(get_db)):
+    started_at = perf_counter()
     scenario = await _get_or_404(scenario_id, db)
 
     scenario.disabled_controls = data.disabled_controls
@@ -409,11 +458,35 @@ async def simulate(scenario_id: str, data: SimulateRequest, db: AsyncSession = D
     }
     scenario.status = "completed"
     await db.commit()
+    await record_analysis_run(
+        db,
+        project_id=scenario.project_id,
+        tool="scenario",
+        run_type="planning_pass",
+        status="completed",
+        artifact_kind="scenario",
+        artifact_id=scenario.id,
+        artifact_name=scenario.name,
+        summary=(
+            f"Planning pass completed with {len(affected_nodes)} affected node"
+            f"{'' if len(affected_nodes) == 1 else 's'} and a risk delta of "
+            f"{round(simulated_total - original_total, 2):+.2f}."
+        ),
+        metadata={
+            "affected_nodes": len(affected_nodes),
+            "focus_nodes_affected": focus_affected,
+            "risk_delta": round(simulated_total - original_total, 2),
+            "disabled_controls": len(disabled_controls_list),
+            "degraded_detections": len(degraded_detections_list),
+        },
+        duration_ms=round((perf_counter() - started_at) * 1000),
+    )
     return _to_dict(await _get_or_404(scenario_id, db))
 
 
 @router.post("/{scenario_id}/ai-analyze")
 async def ai_analyze_scenario(scenario_id: str, data: AIAnalyzeRequest, db: AsyncSession = Depends(get_db)):
+    started_at = perf_counter()
     scenario = await _get_or_404(scenario_id, db)
     provider = await get_active_provider_for_user(db)
     if not provider:
@@ -553,11 +626,32 @@ Return ONLY valid JSON with this shape:
         "answer": parsed.get("answer", ""),
     }
     await db.commit()
+    await record_analysis_run(
+        db,
+        project_id=scenario.project_id,
+        tool="scenario",
+        run_type="ai_brief",
+        status="completed",
+        artifact_kind="scenario",
+        artifact_id=scenario.id,
+        artifact_name=scenario.name,
+        summary=(
+            f"AI planning brief generated with {len(scenario.ai_recommendations or [])} recommendation"
+            f"{'' if len(scenario.ai_recommendations or []) == 1 else 's'}."
+        ),
+        metadata={
+            "recommendation_count": len(scenario.ai_recommendations or []),
+            "phase_count": len(parsed.get("phase_plan", []) or []),
+            "question_supplied": bool(data.question),
+        },
+        duration_ms=response.get("elapsed_ms", round((perf_counter() - started_at) * 1000)),
+    )
     return _to_dict(await _get_or_404(scenario_id, db))
 
 
 @router.post("/ai-generate")
 async def ai_generate_scenarios(data: AIGenerateRequest, db: AsyncSession = Depends(get_db)):
+    started_at = perf_counter()
     provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
@@ -589,6 +683,20 @@ async def ai_generate_scenarios(data: AIGenerateRequest, db: AsyncSession = Depe
         ),
         getattr(project, "context_preset", "") if project else "",
     )
+    candidate_references = _scenario_candidate_references(
+        focus=focus_text,
+        objective=project.root_objective if project else focus_text,
+        scope=" ".join(
+            part for part in [
+                project.description if project else "",
+                nodes_text,
+            ] if part
+        ),
+        context_preset=getattr(project, "context_preset", "") if project else "",
+        target_summary=focus_text,
+        limit=12,
+    )
+    candidate_reference_block = format_reference_candidates_for_prompt(candidate_references)
 
     prompt = f"""Generate {data.count} diverse cyber operation planning scenarios.
 
@@ -605,8 +713,10 @@ cloud control-plane abuse, identity attacks, ransomware, coercive impact, and ta
 **Focus:** {focus_text}
 **Tree Context:**
 {nodes_text}
+{f"\n{candidate_reference_block}\n" if candidate_reference_block else ""}
 
 First diversify the scenario set across meaningful attack-surface domains, actor paths, and operation families before varying lower-level TTP details.
+Use the retrieved candidate references to ground the scenarios in realistic attacker tradecraft and environment-relevant attack patterns. Include only references that are actually useful for that scenario.
 
 Return ONLY a valid JSON array. Each item must contain:
 {{
@@ -629,6 +739,9 @@ Return ONLY a valid JSON array. Each item must contain:
   "dependencies": ["dependency"],
   "intelligence_gaps": ["unknown that matters"],
   "success_criteria": ["what defines success"],
+  "reference_mappings": [
+    {{"framework": "validated local framework", "ref_id": "validated local id", "ref_name": "name", "confidence": 0.0-1.0, "rationale": "brief reason", "source": "ai"}}
+  ],
   "assumptions": "key assumptions",
   "planning_notes": "why this scenario is worth planning"
 }}"""
@@ -648,6 +761,25 @@ Return ONLY a valid JSON array. Each item must contain:
         _clean_ai_suggestion(item, project.id if project else None)
         for item in llm_service.parse_json_response(response["content"])
     ]
+    if project:
+        await record_analysis_run(
+            db,
+            project_id=project.id,
+            tool="scenario",
+            run_type="suggestion_batch",
+            status="completed",
+            artifact_kind="scenario",
+            artifact_name=project.name,
+            summary=(
+                f"Generated {len(suggestions)} project-linked scenario suggestion"
+                f"{'' if len(suggestions) == 1 else 's'}."
+            ),
+            metadata={
+                "suggestion_count": len(suggestions),
+                "focus": focus_text,
+            },
+            duration_ms=response.get("elapsed_ms", round((perf_counter() - started_at) * 1000)),
+        )
     return {"suggestions": suggestions}
 
 
@@ -881,6 +1013,7 @@ def _clean_ai_suggestion(item: dict[str, Any], project_id: str | None) -> dict[s
         "success_criteria": item.get("success_criteria") or [],
         "assumptions": item.get("assumptions", ""),
         "planning_notes": item.get("planning_notes", ""),
+        "reference_mappings": _normalize_reference_links(item.get("reference_mappings")),
     }
 
 
@@ -918,6 +1051,7 @@ def _to_dict(s: Scenario) -> dict[str, Any]:
         "modified_controls": s.modified_scores or {},
         "assumptions": s.assumptions or "",
         "planning_notes": s.planning_notes or "",
+        "reference_mappings": _normalize_reference_links(s.reference_mappings or []),
         "ai_narrative": s.ai_narrative or "",
         "ai_recommendations": s.ai_recommendations or [],
         "impact_summary": s.impact_summary or {},

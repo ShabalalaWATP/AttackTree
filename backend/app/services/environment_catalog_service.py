@@ -7,6 +7,274 @@ from copy import deepcopy
 from .environment_catalog_data import ENVIRONMENT_CATALOGS
 
 
+_SHARED_CONCEPT_RULES = [
+    {
+        "id": "management_plane",
+        "label": "Management / Operations Plane",
+        "weight": 1,
+        "keywords": [
+            "management plane",
+            "operations plane",
+            "oam",
+            "ems",
+            "element manager",
+            "oss",
+            "bss",
+            "head-end",
+            "supervisory platform",
+            "provisioning",
+            "admin console",
+            "operations software",
+            "dcim",
+        ],
+    },
+    {
+        "id": "identity_secrets_pki",
+        "label": "Identity / Secrets / PKI",
+        "weight": 2,
+        "keywords": [
+            "identity",
+            "ldap",
+            "sso",
+            "federation",
+            "kerberos",
+            "directory",
+            "pam",
+            "secret",
+            "vault",
+            "certificate",
+            "certificate authority",
+            "pki",
+            "hsm",
+            "key material",
+            "authentication",
+        ],
+    },
+    {
+        "id": "automation_orchestration",
+        "label": "Automation / Orchestration",
+        "weight": 2,
+        "keywords": [
+            "automation",
+            "orchestration",
+            "kubernetes",
+            "openshift",
+            "openstack",
+            "ci/cd",
+            "gitops",
+            "helm",
+            "ansible",
+            "terraform",
+            "package management",
+            "runner",
+            "deployment",
+        ],
+    },
+    {
+        "id": "networking_transport",
+        "label": "Networking / Transport",
+        "weight": 1,
+        "keywords": [
+            "networking",
+            "network",
+            "router",
+            "switch",
+            "firewall",
+            "gateway",
+            "transport",
+            "wan",
+            "ip/mpls",
+            "backhaul",
+            "fronthaul",
+            "midhaul",
+            "microwave",
+            "fibre",
+            "interconnect",
+            "peering",
+            "segment routing",
+        ],
+    },
+    {
+        "id": "remote_access_vendor",
+        "label": "Remote Access / Vendor Access",
+        "weight": 1,
+        "keywords": [
+            "remote access",
+            "vendor",
+            "vpn",
+            "jump host",
+            "support path",
+            "support portal",
+            "remote support",
+            "third-party",
+            "managed service",
+            "remote hands",
+            "field service",
+            "maintenance window",
+        ],
+    },
+    {
+        "id": "monitoring_assurance",
+        "label": "Monitoring / Assurance",
+        "weight": 1,
+        "keywords": [
+            "monitoring",
+            "telemetry",
+            "observability",
+            "siem",
+            "nms",
+            "alarm",
+            "trace",
+            "kpi",
+            "analytics",
+            "historian",
+            "fault",
+            "assurance",
+            "log",
+        ],
+    },
+    {
+        "id": "timing_pnt",
+        "label": "Timing / PNT",
+        "weight": 2,
+        "keywords": [
+            "timing",
+            "pnt",
+            "gnss",
+            "gps",
+            "ptp",
+            "synce",
+            "prtc",
+            "eprtc",
+            "holdover",
+            "boundary clock",
+            "grandmaster",
+            "time synchronisation",
+            "time synchronization",
+            "clock drift",
+        ],
+    },
+    {
+        "id": "inventory_capacity",
+        "label": "Inventory / Asset / Capacity",
+        "weight": 2,
+        "keywords": [
+            "inventory",
+            "asset",
+            "capacity",
+            "cmdb",
+            "rack capacity",
+            "discovery",
+            "subscriber admin",
+            "provisioning system",
+            "telemetry platform",
+        ],
+    },
+    {
+        "id": "power_backup",
+        "label": "Power / Backup Power",
+        "weight": 2,
+        "keywords": [
+            "power",
+            "ups",
+            "battery",
+            "generator",
+            "pdu",
+            "rectifier",
+            "switchgear",
+            "transformer",
+            "sts",
+            "ats",
+            "dc power",
+            "busway",
+            "rpp",
+            "epms",
+        ],
+    },
+    {
+        "id": "cooling_environmental",
+        "label": "Cooling / Environmental",
+        "weight": 2,
+        "keywords": [
+            "cooling",
+            "hvac",
+            "chiller",
+            "crac",
+            "crah",
+            "condenser",
+            "pump",
+            "cooling tower",
+            "temperature",
+            "humidity",
+            "environmental",
+            "water ingress",
+        ],
+    },
+    {
+        "id": "facility_ot_supervision",
+        "label": "Supervisory Control / OT",
+        "weight": 2,
+        "keywords": [
+            "bms",
+            "scada",
+            "plc",
+            "hmi",
+            "dcs",
+            "engineering workstation",
+            "rtu",
+            "process control",
+            "field controller",
+            "relay panel",
+            "supervisory",
+        ],
+    },
+    {
+        "id": "physical_access_cctv",
+        "label": "Physical Access / CCTV",
+        "weight": 2,
+        "keywords": [
+            "access control",
+            "badge",
+            "door",
+            "pacs",
+            "mantrap",
+            "turnstile",
+            "cctv",
+            "camera",
+            "guard",
+            "visitor",
+            "perimeter",
+            "nvr",
+            "vms",
+            "cabinet lock",
+        ],
+    },
+    {
+        "id": "safety_recovery",
+        "label": "Safety / Recovery",
+        "weight": 2,
+        "keywords": [
+            "safety",
+            "protection",
+            "fire suppression",
+            "trip",
+            "interlock",
+            "shutdown",
+            "recovery",
+            "restoration",
+            "continuity",
+            "incident response",
+            "failover",
+            "black-start",
+            "black start",
+        ],
+    },
+]
+
+_SHARED_CONCEPT_LABELS = {rule["id"]: rule["label"] for rule in _SHARED_CONCEPT_RULES}
+_SHARED_CONCEPT_WEIGHTS = {rule["id"]: int(rule["weight"]) for rule in _SHARED_CONCEPT_RULES}
+
+
 _CATALOG_KEYWORDS = {
     "data_centre": [
         "data centre",
@@ -14,11 +282,42 @@ _CATALOG_KEYWORDS = {
         "colocation",
         "colo",
         "dcim",
+        "epms",
         "remote hands",
         "rack",
         "bmc",
         "ipmi",
+        "vcenter",
+        "hyper-v",
+        "kubernetes",
+        "pam",
+        "cyberark",
+        "veeam",
+        "commvault",
+        "servicenow",
+        "ansible",
+        "terraform",
+        "vault",
+        "splunk",
+        "sentinel",
+        "edr",
+        "pacs",
+        "access control",
+        "badge reader",
+        "badge access",
+        "mantrap",
+        "turnstile",
+        "cctv",
+        "nvr",
+        "vms",
+        "camera",
+        "bms",
         "hvac",
+        "cooling",
+        "crac",
+        "crah",
+        "chiller",
+        "pdu",
         "ups",
         "generator",
     ],
@@ -33,9 +332,30 @@ _CATALOG_KEYWORDS = {
         "bts",
         "ran",
         "rru",
+        "oru",
         "backhaul",
         "fronthaul",
         "microwave link",
+        "midhaul",
+        "o-ran",
+        "open ran",
+        "ric",
+        "son",
+        "enm",
+        "netact",
+        "massive mimo",
+        "ret control",
+        "cell site gateway",
+        "synce",
+        "gnss timing",
+        "gps timing",
+        "pnt",
+        "prtc",
+        "timing receiver",
+        "gnss antenna",
+        "ptp grandmaster",
+        "boundary clock",
+        "holdover",
     ],
     "telecoms_5g_core": [
         "5g core",
@@ -53,6 +373,29 @@ _CATALOG_KEYWORDS = {
         "udr",
         "ims",
         "roaming",
+        "nssf",
+        "chf",
+        "ocs",
+        "sepp",
+        "nef",
+        "scp",
+        "ipx",
+        "sbc",
+        "dra",
+        "eir",
+        "hss",
+        "hlr",
+        "smsc",
+        "rcs",
+        "cdr mediation",
+        "lawful intercept mediation",
+        "eprtc",
+        "ptp grandmaster",
+        "boundary clock",
+        "timing assurance",
+        "clock drift",
+        "grandmaster failover",
+        "ordered event records",
     ],
     "satellite_ground_station": [
         "satellite ground station",
@@ -264,7 +607,84 @@ _CATALOG_KEYWORDS = {
 
 
 def load_environment_catalogs() -> list[dict]:
-    return deepcopy(ENVIRONMENT_CATALOGS)
+    return _annotate_environment_catalogs(deepcopy(ENVIRONMENT_CATALOGS))
+
+
+def _stringify_node(node: dict) -> str:
+    parts = [
+        str(node.get("label", "")),
+        str(node.get("description", "")),
+        str(node.get("category", "")),
+    ]
+    for field in (
+        "attack_surfaces",
+        "telemetry",
+        "management_interfaces",
+        "dependencies",
+        "common_protocols",
+        "example_technologies",
+    ):
+        parts.extend(str(value) for value in node.get(field, []) or [])
+    return " ".join(parts).lower()
+
+
+def _build_shared_concept_tags(concept_ids: list[str]) -> list[dict]:
+    return [{"id": concept_id, "label": _SHARED_CONCEPT_LABELS[concept_id]} for concept_id in concept_ids]
+
+
+def _derive_shared_concept_ids(node: dict) -> list[str]:
+    haystack = _stringify_node(node)
+    matches: list[str] = []
+    for rule in _SHARED_CONCEPT_RULES:
+        if any(keyword in haystack for keyword in rule["keywords"]):
+            matches.append(rule["id"])
+    return matches
+
+
+def _annotate_environment_catalogs(catalogs: list[dict]) -> list[dict]:
+    concept_to_catalogs: dict[str, set[str]] = {}
+    catalog_lookup = {catalog["id"]: catalog for catalog in catalogs}
+
+    for catalog in catalogs:
+        concept_counts: dict[str, int] = {}
+        for node in catalog.get("nodes", []):
+            concept_ids = _derive_shared_concept_ids(node)
+            node["_shared_concept_ids"] = concept_ids
+            node["shared_concepts"] = _build_shared_concept_tags(concept_ids)
+            for concept_id in concept_ids:
+                concept_counts[concept_id] = concept_counts.get(concept_id, 0) + 1
+                concept_to_catalogs.setdefault(concept_id, set()).add(catalog["id"])
+
+        sorted_catalog_concepts = sorted(
+            concept_counts,
+            key=lambda concept_id: (-concept_counts[concept_id], _SHARED_CONCEPT_LABELS[concept_id]),
+        )
+        catalog["shared_concepts"] = _build_shared_concept_tags(sorted_catalog_concepts[:8])
+
+    for catalog in catalogs:
+        for node in catalog.get("nodes", []):
+            overlap_scores: dict[str, int] = {}
+            for concept_id in node.get("_shared_concept_ids", []):
+                for related_catalog_id in concept_to_catalogs.get(concept_id, set()):
+                    if related_catalog_id == catalog["id"]:
+                        continue
+                    overlap_scores[related_catalog_id] = overlap_scores.get(related_catalog_id, 0) + _SHARED_CONCEPT_WEIGHTS[concept_id]
+
+            related_catalogs = sorted(
+                (
+                    {"id": related_catalog_id, "name": catalog_lookup[related_catalog_id]["name"], "score": score}
+                    for related_catalog_id, score in overlap_scores.items()
+                    if score >= 2
+                ),
+                key=lambda item: (-item["score"], item["name"]),
+            )
+            node["related_catalogs"] = [
+                {"id": item["id"], "name": item["name"]}
+                for item in related_catalogs[:4]
+            ]
+            node.pop("_shared_concept_ids", None)
+
+    return catalogs
 
 
 def list_environment_catalog_summaries() -> list[dict]:
@@ -283,6 +703,7 @@ def list_environment_catalog_summaries() -> list[dict]:
                 "node_count": len(nodes),
                 "top_level_count": len(top_level),
                 "categories": categories,
+                "shared_concepts": list(catalog.get("shared_concepts", [])),
             }
         )
     return summaries
@@ -317,7 +738,7 @@ def find_environment_catalog_id(objective: str, scope: str = "", context_preset:
     return max(scores, key=scores.get)
 
 
-def build_environment_catalog_outline(catalog_id: str, *, max_top_level: int = 6, max_children: int = 4) -> str:
+def build_environment_catalog_outline(catalog_id: str, *, max_top_level: int = 6, max_children: int = 6) -> str:
     catalog = get_environment_catalog(catalog_id)
     if not catalog:
         return ""

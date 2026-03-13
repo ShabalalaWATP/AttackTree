@@ -11,6 +11,7 @@ from ..schemas.user import (
     ChangePasswordRequest,
     LoginRequest,
     LoginResponse,
+    SignupResponse,
     SignupRequest,
     UserResponse,
 )
@@ -25,7 +26,7 @@ from ..services.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/signup", response_model=LoginResponse, status_code=201)
+@router.post("/signup", response_model=SignupResponse, status_code=201)
 async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
     user = await _create_user(
         db,
@@ -34,10 +35,16 @@ async def signup(data: SignupRequest, db: AsyncSession = Depends(get_db)):
         username=data.username,
         password=data.password,
         role="user",
+        is_active=False,
+        approval_status="pending",
     )
     await db.commit()
     await db.refresh(user)
-    return _login_response(user)
+    return SignupResponse(
+        message="Account request submitted. An admin must approve your access before you can sign in.",
+        approval_required=True,
+        user=UserResponse.model_validate(user),
+    )
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -55,6 +62,8 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username/email or password")
     if not user.is_active:
+        if (user.approval_status or "").strip().lower() == "pending":
+            raise HTTPException(status_code=403, detail="User account is pending admin approval")
         raise HTTPException(status_code=403, detail="User account is disabled")
     return _login_response(user)
 
@@ -112,6 +121,8 @@ async def admin_update_user(user_id: str, data: AdminUserUpdate, db: AsyncSessio
         await _ensure_unique_username(db, update_data["username"], exclude_user_id=user.id)
     for key, value in update_data.items():
         setattr(user, key, value)
+    if update_data.get("is_active") and (user.approval_status or "").strip().lower() == "pending":
+        user.approval_status = "approved"
     await db.commit()
     await db.refresh(user)
     return UserResponse.model_validate(user)
@@ -156,6 +167,9 @@ async def _create_user(
     username: str | None,
     password: str,
     role: str,
+    is_active: bool = True,
+    approval_status: str = "approved",
+    password_reset_required: bool = False,
 ) -> User:
     normalized_email = email.lower()
     if "@" not in normalized_email or normalized_email.startswith("@") or normalized_email.endswith("@"):
@@ -169,8 +183,9 @@ async def _create_user(
         email=normalized_email,
         password_hash=hash_password(password),
         role=role,
-        is_active=True,
-        password_reset_required=False,
+        is_active=is_active,
+        approval_status=approval_status,
+        password_reset_required=password_reset_required,
     )
     db.add(user)
     await db.flush()

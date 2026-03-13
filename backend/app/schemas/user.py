@@ -11,6 +11,7 @@ class UserResponse(BaseModel):
     email: str
     role: str
     is_active: bool
+    approval_status: str
     password_reset_required: bool
     created_at: datetime
     updated_at: datetime
@@ -26,6 +27,12 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    user: UserResponse
+
+
+class SignupResponse(BaseModel):
+    message: str
+    approval_required: bool = True
     user: UserResponse
 
 

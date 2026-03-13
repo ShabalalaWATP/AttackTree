@@ -4,6 +4,7 @@ Kill Chain API — AI-powered campaign timeline analysis.
 import hashlib
 import json
 import re
+from time import perf_counter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Any, Optional
@@ -20,7 +21,13 @@ from ..services.access_control import (
     require_project_access,
 )
 from ..services import llm_service
+from ..services.analysis_runs import record_analysis_run
 from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
+from ..services.reference_search_service import (
+    dedupe_reference_links,
+    format_reference_candidates_for_prompt,
+    search_references,
+)
 
 router = APIRouter(prefix="/kill-chains", tags=["kill_chains"])
 
@@ -161,10 +168,12 @@ def _pick_preferred_text(*values: Any) -> str:
 
 def _phase_shell(name: str, phase_index: int) -> dict:
     return {
+        "id": f"phase-{phase_index}",
         "phase": name,
         "phase_index": phase_index,
         "description": "",
         "mapped_nodes": [],
+        "references": [],
         "tools": [],
         "iocs": [],
         "log_sources": [],
@@ -221,6 +230,7 @@ def _normalize_mapped_nodes(raw_phase: dict, node_lookup: dict[str, Node]) -> li
 
 def _merge_phase_entries(existing: dict, incoming: dict) -> dict:
     merged = dict(existing)
+    merged["id"] = incoming.get("id") or existing.get("id") or f"phase-{existing.get('phase_index', incoming.get('phase_index', 0))}"
     merged["description"] = _pick_preferred_text(existing.get("description", ""), incoming.get("description", ""))
     merged["detection_window"] = _pick_preferred_text(existing.get("detection_window", ""), incoming.get("detection_window", ""))
     merged["dwell_time"] = _pick_preferred_text(existing.get("dwell_time", ""), incoming.get("dwell_time", ""))
@@ -246,13 +256,18 @@ def _merge_phase_entries(existing: dict, incoming: dict) -> dict:
         current["confidence"] = max(current.get("confidence", 0), item.get("confidence", 0))
         current["technique_name"] = _pick_preferred_text(current.get("technique_name", ""), item.get("technique_name", ""))
     merged["mapped_nodes"] = list(mapped_nodes.values())
+    merged["references"] = dedupe_reference_links((existing.get("references") or []) + (incoming.get("references") or []))
     return merged
 
 
 def _normalize_phase_entry(raw_phase: dict, expected_name: str, phase_index: int, node_lookup: dict[str, Node]) -> dict:
     phase = _phase_shell(expected_name, phase_index)
+    phase["id"] = (raw_phase.get("id") if isinstance(raw_phase.get("id"), str) and raw_phase.get("id").strip() else phase["id"])
     phase["description"] = raw_phase.get("description").strip() if isinstance(raw_phase.get("description"), str) else ""
     phase["mapped_nodes"] = _normalize_mapped_nodes(raw_phase, node_lookup)
+    phase["references"] = dedupe_reference_links(
+        [item for item in raw_phase.get("references", []) if isinstance(item, dict)]
+    )
     phase["tools"] = _string_list(raw_phase.get("tools"))
     phase["iocs"] = _string_list(raw_phase.get("iocs"))
     phase["log_sources"] = _string_list(raw_phase.get("log_sources"))
@@ -816,6 +831,7 @@ def _build_phase_chunk_messages(
     overview: dict[str, Any],
     chunk: dict[str, Any],
     nodes_text: str,
+    candidate_reference_block: str,
 ) -> list[dict[str, str]]:
     prompt = f"""You are writing the detailed kill-chain entry for a single campaign phase.
 
@@ -843,6 +859,7 @@ def _build_phase_chunk_messages(
 
 **Attack Tree Nodes**
 {nodes_text}
+{candidate_reference_block}
 
 Return JSON only with:
 {{
@@ -859,6 +876,9 @@ Return JSON only with:
           "technique_name": "technique name when technique_id is present, else empty string",
           "confidence": 0.85
         }}
+      ],
+      "references": [
+        {{"framework": "validated local framework", "ref_id": "validated local id", "ref_name": "name", "confidence": 0.0-1.0, "rationale": "brief reason", "source": "ai"}}
       ],
       "tools": ["Specific real tools used in this phase"],
       "iocs": ["Operationally useful IOC statements"],
@@ -960,6 +980,33 @@ async def _generate_phase_chunk(
     node_lookup: dict[str, Node],
     warnings: list[str],
 ) -> tuple[list[dict], bool]:
+    chunk_summary = " ".join(
+        [
+            str(chunk.get("phase_names", [])),
+            str(chunk.get("phase_objectives", [])),
+            nodes_text,
+        ]
+    )
+    candidate_references = search_references(
+        query=" ".join(str(item) for item in chunk.get("phase_names", []) if item),
+        artifact_type="kill_chain",
+        context_preset="",
+        objective=objective,
+        scope=project_description,
+        target_kind="phase_chunk",
+        target_summary=chunk_summary,
+        allowed_frameworks=[
+            "attack",
+            "capec",
+            "cwe",
+            "owasp",
+            "infra_attack_patterns",
+            "software_research_patterns",
+            "environment_catalog",
+        ],
+        limit=10,
+    )
+    candidate_reference_block = format_reference_candidates_for_prompt(candidate_references)
     messages = _build_phase_chunk_messages(
         project_name=project_name,
         objective=objective,
@@ -972,6 +1019,7 @@ async def _generate_phase_chunk(
         overview=overview,
         chunk=chunk,
         nodes_text=nodes_text,
+        candidate_reference_block=candidate_reference_block,
     )
     parsed, error_message = await _request_json_object_with_retries(
         config,
@@ -1075,9 +1123,12 @@ async def update_kill_chain(kc_id: str, data: KillChainUpdate, db: AsyncSession 
     if "framework" in updates or "phases" in updates:
         manual_phases = updates.get("phases", kc.phases)
         framework = updates.get("framework", kc.framework)
+        node_result = await db.execute(select(Node).where(Node.project_id == kc.project_id))
+        node_lookup = {node.id: node for node in node_result.scalars().all()}
+        expected_phases = _framework_phases(framework)
         _clear_ai_analysis(kc)
         kc.framework = framework
-        kc.phases = manual_phases
+        kc.phases = _normalize_kill_chain_payload({"phases": manual_phases or []}, expected_phases, node_lookup)["phases"]
         updates.pop("framework", None)
         updates.pop("phases", None)
     for key, value in updates.items():
@@ -1097,6 +1148,7 @@ async def delete_kill_chain(kc_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/{kc_id}/ai-map")
 async def ai_map_to_kill_chain(kc_id: str, data: AIMapRequest, db: AsyncSession = Depends(get_db)):
     """AI maps attack tree nodes to kill chain phases with rich operational detail."""
+    started_at = perf_counter()
     kc = await _get_or_404(kc_id, db)
     provider = await get_active_provider_for_user(db)
     if not provider:
@@ -1318,6 +1370,26 @@ async def ai_map_to_kill_chain(kc_id: str, data: AIMapRequest, db: AsyncSession 
     ]
     if pending_chunk_ids:
         await _save_progress("partial", "phase_chunks")
+        await record_analysis_run(
+            db,
+            project_id=kc.project_id,
+            tool="kill_chain",
+            run_type="ai_map",
+            status="partial",
+            artifact_kind="kill_chain",
+            artifact_id=kc.id,
+            artifact_name=kc.name,
+            summary=(
+                f"Kill-chain mapping partially completed with {len(phases_state)} phase"
+                f"{'' if len(phases_state) == 1 else 's'} ready for review."
+            ),
+            metadata={
+                "phase_count": len(phases_state),
+                "pending_chunk_count": len(pending_chunk_ids),
+                "framework": kc.framework,
+            },
+            duration_ms=round((perf_counter() - started_at) * 1000),
+        )
         if not phases_state:
             raise HTTPException(502, "Kill-chain generation did not produce any phase details. Resume is available on the existing kill chain.")
         return _to_dict(kc)
@@ -1363,6 +1435,26 @@ async def ai_map_to_kill_chain(kc_id: str, data: AIMapRequest, db: AsyncSession 
     synthesis_completed = True
 
     await _save_progress("completed", "synthesis")
+    await record_analysis_run(
+        db,
+        project_id=kc.project_id,
+        tool="kill_chain",
+        run_type="ai_map",
+        status="completed",
+        artifact_kind="kill_chain",
+        artifact_id=kc.id,
+        artifact_name=kc.name,
+        summary=(
+            f"Kill-chain mapping completed across {len(phases_state)} phase"
+            f"{'' if len(phases_state) == 1 else 's'}."
+        ),
+        metadata={
+            "phase_count": len(phases_state),
+            "framework": kc.framework,
+            "coverage_score": round(coverage_score_state or 0.0, 2),
+        },
+        duration_ms=round((perf_counter() - started_at) * 1000),
+    )
     return _to_dict(kc)
 
 

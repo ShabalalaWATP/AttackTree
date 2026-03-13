@@ -6,8 +6,8 @@ from ..models.mitigation import Mitigation
 from ..models.node import Node
 from ..schemas.mitigation import MitigationCreate, MitigationUpdate, MitigationResponse
 from ..services.access_control import require_mitigation_access, require_node_access
-from ..services.risk_engine import compute_residual_risk
 from ..services.audit import log_event
+from ..services.tree_service import recalculate_project_tree_scores
 
 router = APIRouter(prefix="/mitigations", tags=["mitigations"])
 
@@ -29,16 +29,10 @@ async def create_mitigation(data: MitigationCreate, db: AsyncSession = Depends(g
     if node_for_audit:
         await log_event(db, node_for_audit.project_id, "mitigation_added", "mitigation", "", {"node_id": data.node_id, "title": data.title})
 
+    await db.flush()
+    await recalculate_project_tree_scores(db, node_for_audit.project_id)
     await db.commit()
     await db.refresh(mit)
-
-    # Update node residual risk
-    node = await require_node_access(data.node_id, db)
-    if node and node.inherent_risk is not None:
-        all_mits = await db.execute(select(Mitigation).where(Mitigation.node_id == data.node_id))
-        max_eff = max((m.effectiveness for m in all_mits.scalars().all()), default=0.0)
-        node.residual_risk = compute_residual_risk(node.inherent_risk, max_eff)
-        await db.commit()
 
     return MitigationResponse.model_validate(mit)
 
@@ -51,17 +45,12 @@ async def update_mitigation(mitigation_id: str, data: MitigationUpdate, db: Asyn
     for key, value in update_data.items():
         setattr(mit, key, value)
 
-    # Recalculate node residual risk if effectiveness changed
     node = await require_node_access(mit.node_id, db)
-    if node and node.inherent_risk is not None:
-        all_mits = await db.execute(select(Mitigation).where(Mitigation.node_id == mit.node_id))
-        max_eff = max((m.effectiveness for m in all_mits.scalars().all()), default=0.0)
-        node.residual_risk = compute_residual_risk(node.inherent_risk, max_eff)
-
-    # Log audit event
     if node:
         await log_event(db, node.project_id, "mitigation_updated", "mitigation", mitigation_id, {"title": mit.title, "fields": list(update_data.keys())})
 
+    await db.flush()
+    await recalculate_project_tree_scores(db, node.project_id)
     await db.commit()
     await db.refresh(mit)
     return MitigationResponse.model_validate(mit)
@@ -77,4 +66,6 @@ async def delete_mitigation(mitigation_id: str, db: AsyncSession = Depends(get_d
         await log_event(db, node.project_id, "mitigation_removed", "mitigation", mitigation_id, {"node_id": mit.node_id})
 
     await db.delete(mit)
+    await db.flush()
+    await recalculate_project_tree_scores(db, node.project_id)
     await db.commit()

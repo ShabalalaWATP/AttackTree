@@ -165,7 +165,13 @@ export function TopBar() {
     <>
       <header className="h-13 border-b border-border/50 bg-card/80 backdrop-blur-md flex items-center px-4 gap-2 shrink-0">
         {/* Logo + Brand */}
-        <div className="flex items-center gap-2.5 mr-3 cursor-pointer select-none" onClick={() => setViewMode('projects')}>
+        <div
+          className={cn(
+            'mr-3 flex cursor-pointer select-none items-center gap-2.5 rounded-xl px-2.5 py-1.5 transition-colors',
+            viewMode === 'landing' ? 'bg-primary/10' : 'hover:bg-white/5'
+          )}
+          onClick={() => setViewMode('landing')}
+        >
           <img src={ocpLogo} alt="OCP" className="w-7 h-7 rounded-md" />
           <div className="flex flex-col leading-none">
             <span className="text-[13px] font-bold tracking-tight bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 bg-clip-text text-transparent">

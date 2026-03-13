@@ -1,15 +1,20 @@
+import asyncio
 from datetime import datetime, timezone
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from .. import database as database_module
 from ..database import get_db
-from ..models.llm_config import LLMProviderConfig, LLMJobHistory
+from ..models.llm_config import LLMProviderConfig, LLMAgentRun, LLMJobHistory
 from ..models.node import Node
 from ..models.project import Project
+from ..models.detection import Detection
+from ..models.mitigation import Mitigation
+from ..models.reference_mapping import ReferenceMapping
 from ..schemas.llm_config import LLMProviderConfigCreate, LLMProviderConfigUpdate, LLMProviderConfigResponse
-from ..schemas.llm_request import LLMSuggestRequest, LLMSuggestResponse, LLMSummaryRequest, LLMSummaryResponse, SuggestedNode, LLMAgentRequest, LLMAgentResponse
+from ..schemas.llm_request import LLMSuggestRequest, LLMSuggestResponse, LLMSummaryRequest, LLMSummaryResponse, SuggestedItem, LLMAgentRequest, LLMAgentResponse, LLMAgentRunStatusResponse
 from ..services.access_control import (
     get_active_provider_for_user,
     require_node_access,
@@ -17,11 +22,49 @@ from ..services.access_control import (
     require_provider_access,
 )
 from ..services.auth import get_current_user_id
+from ..services.analysis_runs import record_analysis_run, update_analysis_run
 from ..services.crypto import encrypt_value
 from ..services import llm_service
+from ..services.reference_search_service import (
+    candidate_to_reference_link,
+    dedupe_reference_links,
+    format_reference_candidates_for_prompt,
+    get_reference_record,
+    search_references,
+    validate_reference_identifier,
+)
+from ..services.node_title_service import dedupe_titled_items
 from ..services.risk_engine import compute_inherent_risk
 
 router = APIRouter(prefix="/llm", tags=["llm"])
+_AGENT_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _dedupe_generated_tree(node_data: dict, warnings: list[str], *, path: list[str] | None = None) -> dict:
+    if not isinstance(node_data, dict):
+        return {}
+
+    node_title = str(node_data.get("title", "Untitled")).strip() or "Untitled"
+    current_path = (path or []) + [node_title]
+    children = node_data.get("children", [])
+    if not isinstance(children, list):
+        node_data["children"] = []
+        return node_data
+
+    typed_children = [child for child in children if isinstance(child, dict)]
+    deduped_children, dropped_titles = dedupe_titled_items(
+        typed_children,
+        title_getter=lambda child: str(child.get("title", "")),
+    )
+    if dropped_titles:
+        warnings.append(
+            f"Skipped {len(dropped_titles)} duplicate AI-generated child titles under {' > '.join(current_path)}."
+        )
+    node_data["children"] = [
+        _dedupe_generated_tree(child, warnings, path=current_path)
+        for child in deduped_children
+    ]
+    return node_data
 
 
 @router.get("/providers", response_model=list[LLMProviderConfigResponse])
@@ -143,6 +186,37 @@ async def suggest_branches(data: LLMSuggestRequest, db: AsyncSession = Depends(g
             "workspace_mode": (project.metadata_json or {}).get("workspace_mode", "project_scan"),
         },
     }
+    if data.suggestion_type == "mappings":
+        allowed_frameworks = [
+            "attack",
+            "capec",
+            "cwe",
+            "owasp",
+            "infra_attack_patterns",
+            "software_research_patterns",
+            "environment_catalog",
+        ]
+        node_data["reference_candidates"] = search_references(
+            query=f"{node.title} {node.attack_surface} {node.threat_category}",
+            artifact_type="node_mapping",
+            context_preset=project.context_preset or "",
+            objective=project.root_objective or "",
+            scope=project.description or "",
+            target_kind=node.node_type,
+            target_summary=" ".join(
+                part
+                for part in [
+                    node.title,
+                    node.description,
+                    node.attack_surface,
+                    node.platform,
+                    node.cve_references,
+                ]
+                if part
+            ),
+            allowed_frameworks=allowed_frameworks,
+            limit=12,
+        )
 
     config = _provider_to_config_dict(provider)
     messages = llm_service.build_branch_suggestion_prompt(
@@ -161,9 +235,63 @@ async def suggest_branches(data: LLMSuggestRequest, db: AsyncSession = Depends(g
         raise HTTPException(502, f"LLM request failed: {response.get('message', 'Unknown error')}")
 
     parsed = llm_service.parse_json_response(response["content"])
+    existing_child_titles = [
+        n.title
+        for n in nodes_list
+        if n.parent_id == node.id
+    ]
+    if data.suggestion_type == "branches":
+        parsed, dropped_titles = dedupe_titled_items(
+            [item for item in parsed if isinstance(item, dict)],
+            title_getter=lambda item: str(item.get("title", "")),
+            existing_titles=existing_child_titles,
+        )
     suggestions = []
     for item in parsed:
-        suggestions.append(SuggestedNode(
+        if not isinstance(item, dict):
+            continue
+        if data.suggestion_type == "mitigations":
+            title = str(item.get("title", "")).strip()
+            if not title:
+                continue
+            suggestions.append(SuggestedItem(
+                kind="mitigation",
+                title=title,
+                description=str(item.get("description", "")).strip(),
+                effectiveness=item.get("effectiveness"),
+            ))
+            continue
+        if data.suggestion_type == "detections":
+            title = str(item.get("title", "")).strip()
+            if not title:
+                continue
+            suggestions.append(SuggestedItem(
+                kind="detection",
+                title=title,
+                description=str(item.get("description", "")).strip(),
+                coverage=item.get("coverage"),
+                data_source=str(item.get("data_source", "")).strip(),
+            ))
+            continue
+        if data.suggestion_type == "mappings":
+            framework = str(item.get("framework", "")).strip()
+            ref_id = str(item.get("ref_id", "")).strip()
+            if not framework or not ref_id or not validate_reference_identifier(framework, ref_id):
+                continue
+            suggestions.append(SuggestedItem(
+                kind="mapping",
+                title=f"{framework.upper()} {ref_id}",
+                framework=framework,
+                ref_id=ref_id,
+                ref_name=str(item.get("ref_name", "")).strip(),
+                confidence=item.get("confidence"),
+                rationale=str(item.get("rationale", "")).strip(),
+                source=str(item.get("source", "ai") or "ai").strip(),
+            ))
+            continue
+
+        suggestions.append(SuggestedItem(
+            kind="branch",
             title=item.get("title", "Suggested step"),
             description=item.get("description", ""),
             node_type=item.get("node_type", "attack_step"),
@@ -233,6 +361,20 @@ async def generate_summary(data: LLMSummaryRequest, db: AsyncSession = Depends(g
     )
 
 
+@router.get("/agent-runs/{run_id}", response_model=LLMAgentRunStatusResponse)
+async def get_agent_run_status(run_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(LLMAgentRun).where(
+            LLMAgentRun.id == run_id,
+            LLMAgentRun.user_id == get_current_user_id(),
+        )
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(404, "Agent run not found")
+    return _agent_run_response(run)
+
+
 @router.post("/agent", response_model=LLMAgentResponse)
 async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(get_db)):
     """AI Agent mode: generate a full attack tree from a high-level objective.
@@ -278,6 +420,43 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     total_elapsed = 0
     passes_completed = 0
     warnings: list[str] = []
+    response: dict = {}
+    job_prompt_summary = ""
+    job_response_summary = ""
+
+    async def _run_structure_request(
+        request_messages: list[dict],
+        *,
+        timeout_seconds: int,
+        hard_fail: bool,
+    ) -> dict:
+        nonlocal total_tokens, total_elapsed, response, job_prompt_summary, job_response_summary
+
+        current_response = await llm_service.chat_completion(
+            config,
+            request_messages,
+            temperature=0.7,
+            max_tokens=16384,
+            timeout_override=timeout_seconds,
+        )
+        total_tokens += current_response.get("tokens", 0)
+        total_elapsed += current_response.get("elapsed_ms", 0)
+
+        if current_response["status"] != "success":
+            msg = current_response.get("message", "Unknown error")
+            if hard_fail:
+                if "timeout" in msg.lower() or "timed out" in msg.lower():
+                    raise HTTPException(
+                        504, "LLM request timed out - try reducing depth/breadth or use a faster model."
+                    )
+                raise HTTPException(502, f"LLM request failed: {msg}")
+            return current_response
+
+        response = current_response
+        if not job_prompt_summary:
+            job_prompt_summary = request_messages[-1]["content"][:500]
+            job_response_summary = current_response["content"][:500]
+        return current_response
 
     template_data = None
     if mode == "from_template":
@@ -323,25 +502,14 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
         messages = llm_service.build_agent_tree_prompt(
             resolved_objective,
             resolved_scope,
-            data.depth,
+            min(data.depth, _AGENT_STRUCTURE_SKELETON_DEPTH),
             data.breadth,
             template_example=template_data,
             generation_profile=data.generation_profile,
             context_preset=project.context_preset,
         )
 
-    response = await llm_service.chat_completion(
-        config, messages, temperature=0.7,
-        max_tokens=16384, timeout_override=300,
-    )
-
-    if response["status"] != "success":
-        msg = response.get("message", "Unknown error")
-        if "timeout" in msg.lower() or "timed out" in msg.lower():
-            raise HTTPException(
-                504, "LLM request timed out — try reducing depth/breadth or use a faster model."
-            )
-        raise HTTPException(502, f"LLM request failed: {msg}")
+    response = await _run_structure_request(messages, timeout_seconds=300, hard_fail=True)
 
     tree_data = llm_service.parse_json_object_response(response["content"])
     if not tree_data or "title" not in tree_data:
@@ -350,26 +518,60 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
             "LLM returned invalid tree structure. This can happen when depth/breadth "
             "are too high for the model's output limit. Try reducing depth or breadth."
         )
+    tree_data = _dedupe_generated_tree(tree_data, warnings)
 
-    total_tokens += response.get("tokens", 0)
-    total_elapsed += response.get("elapsed_ms", 0)
+    if mode == "generate":
+        tree_data = _prune_tree_to_depth(tree_data, _AGENT_STRUCTURE_SKELETON_DEPTH)
+        remaining_branch_depth = max(0, data.depth - _AGENT_STRUCTURE_SKELETON_DEPTH)
+        top_level_branches = tree_data.get("children", [])
+        root_context = [_branch_context_snapshot(tree_data)]
+
+        if remaining_branch_depth > 0 and top_level_branches:
+            for branch_index, branch in enumerate(top_level_branches, start=1):
+                branch_messages = llm_service.build_agent_branch_expansion_prompt(
+                    resolved_objective,
+                    resolved_scope,
+                    root_context,
+                    branch,
+                    [
+                        sibling.get("title", "")
+                        for sibling in top_level_branches
+                        if sibling is not branch
+                    ],
+                    remaining_branch_depth,
+                    data.breadth,
+                    generation_profile=data.generation_profile,
+                    context_preset=project.context_preset,
+                )
+                branch_response = await _run_structure_request(
+                    branch_messages,
+                    timeout_seconds=240,
+                    hard_fail=False,
+                )
+                if branch_response["status"] != "success":
+                    warnings.append(
+                        f"Structure expansion branch {branch_index} failed: {branch_response.get('message', 'Unknown error')}."
+                    )
+                    continue
+
+                branch_children = llm_service.parse_json_response(branch_response["content"])
+                if not branch_children:
+                    warnings.append(
+                        f"Structure expansion branch {branch_index} returned malformed or empty data."
+                    )
+                    continue
+
+                branch["children"] = [
+                    _prune_tree_to_depth(child, remaining_branch_depth)
+                    for child in branch_children
+                    if isinstance(child, dict)
+                ]
+
+        tree_data = _dedupe_generated_tree(tree_data, warnings)
+
     passes_completed = 1
 
     nodes_created = []
-    enrichable_fields = {
-        "description",
-        "status",
-        "platform",
-        "attack_surface",
-        "threat_category",
-        "required_access",
-        "required_privileges",
-        "required_skill",
-        "effort",
-        "exploitability",
-        "detectability",
-    }
-
     def _flatten_tree(node_data: dict, parent_id: str | None, depth: int, x: float, y: float, sibling_index: int, sibling_count: int):
         spread = max(250, 500 / (depth + 1))
         offset_x = (sibling_index - (sibling_count - 1) / 2) * spread
@@ -412,144 +614,6 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
             f"LLM returned {len(nodes_created)} nodes, which exceeds the supported limit for robust generation. Reduce depth or breadth and try again.",
         )
 
-    nodes_needing_enrichment = []
-    for idx, node_info in enumerate(nodes_created):
-        missing = [field for field in enrichable_fields if not node_info.get(field)]
-        if missing:
-            nodes_needing_enrichment.append({
-                "index": idx,
-                "title": node_info["title"],
-                "node_type": node_info["node_type"],
-                "missing": missing,
-            })
-
-    if nodes_needing_enrichment:
-        for batch_index, batch in enumerate(_chunk_items(nodes_needing_enrichment, _AGENT_ENRICH_BATCH_SIZE), start=1):
-            enrich_messages = llm_service.build_enrich_nodes_prompt(batch)
-            enrich_resp = await llm_service.chat_completion(
-                config, enrich_messages, temperature=0.4,
-                max_tokens=16384, timeout_override=240,
-            )
-            total_tokens += enrich_resp.get("tokens", 0)
-            total_elapsed += enrich_resp.get("elapsed_ms", 0)
-
-            if enrich_resp["status"] != "success":
-                warnings.append(
-                    f"Node enrichment batch {batch_index} failed: {enrich_resp.get('message', 'Unknown error')}."
-                )
-                continue
-
-            enriched = llm_service.parse_json_response(enrich_resp["content"])
-            if not isinstance(enriched, list):
-                warnings.append(f"Node enrichment batch {batch_index} returned malformed data.")
-                continue
-
-            merged_any = False
-            for item in enriched:
-                if not isinstance(item, dict):
-                    continue
-                target_idx = item.get("index")
-                if target_idx is None or not (0 <= target_idx < len(nodes_created)):
-                    continue
-                node_info = nodes_created[target_idx]
-                for field in enrichable_fields:
-                    value = item.get(field)
-                    if value and not node_info.get(field):
-                        if field in {"effort", "exploitability", "detectability"}:
-                            node_info[field] = _clamp(value, 1, 10)
-                        else:
-                            node_info[field] = value
-                        merged_any = True
-            if not merged_any:
-                warnings.append(f"Node enrichment batch {batch_index} returned no usable updates.")
-    passes_completed = 2
-
-    leaf_nodes = [
-        {
-            "index": i,
-            "title": n["title"],
-            "description": (n.get("description") or "")[:100],
-            "attack_surface": n.get("attack_surface", ""),
-            "threat_category": n.get("threat_category", ""),
-        }
-        for i, n in enumerate(nodes_created)
-        if not any(child["parent_id"] == i for child in nodes_created)
-    ]
-
-    if leaf_nodes:
-        for batch_index, batch in enumerate(_chunk_items(leaf_nodes, _AGENT_MAPPING_BATCH_SIZE), start=1):
-            mapping_messages = llm_service.build_reference_mapping_pass_prompt(batch)
-            mapping_resp = await llm_service.chat_completion(
-                config, mapping_messages, temperature=0.3,
-                max_tokens=4096, timeout_override=120,
-            )
-            total_tokens += mapping_resp.get("tokens", 0)
-            total_elapsed += mapping_resp.get("elapsed_ms", 0)
-
-            if mapping_resp["status"] != "success":
-                warnings.append(
-                    f"Reference-mapping batch {batch_index} failed: {mapping_resp.get('message', 'Unknown error')}."
-                )
-                continue
-
-            mappings = llm_service.parse_json_response(mapping_resp["content"])
-            if not isinstance(mappings, list):
-                warnings.append(f"Reference-mapping batch {batch_index} returned malformed data.")
-                continue
-
-            merged_any = False
-            for item in mappings:
-                if not isinstance(item, dict):
-                    continue
-                target_idx = item.get("index")
-                if target_idx is None or not (0 <= target_idx < len(nodes_created)):
-                    continue
-                normalized_mappings = _normalize_reference_mappings(item)
-                if not normalized_mappings:
-                    continue
-                node_info = nodes_created[target_idx]
-                node_info.setdefault("_reference_mappings", [])
-                node_info["_reference_mappings"].extend(normalized_mappings)
-                merged_any = True
-            if not merged_any:
-                warnings.append(f"Reference-mapping batch {batch_index} returned no usable mappings.")
-        passes_completed = 3
-
-        for batch_index, batch in enumerate(_chunk_items(leaf_nodes, _AGENT_MITDET_BATCH_SIZE), start=1):
-            mitdet_messages = llm_service.build_mitigations_detections_pass_prompt(batch)
-            mitdet_resp = await llm_service.chat_completion(
-                config, mitdet_messages, temperature=0.4,
-                max_tokens=16384, timeout_override=240,
-            )
-            total_tokens += mitdet_resp.get("tokens", 0)
-            total_elapsed += mitdet_resp.get("elapsed_ms", 0)
-
-            if mitdet_resp["status"] != "success":
-                warnings.append(
-                    f"Mitigation/detection batch {batch_index} failed: {mitdet_resp.get('message', 'Unknown error')}."
-                )
-                continue
-
-            mitdet_data = llm_service.parse_json_response(mitdet_resp["content"])
-            if not isinstance(mitdet_data, list):
-                warnings.append(f"Mitigation/detection batch {batch_index} returned malformed data.")
-                continue
-
-            merged_any = False
-            for item in mitdet_data:
-                if not isinstance(item, dict):
-                    continue
-                target_idx = item.get("index")
-                if target_idx is None or not (0 <= target_idx < len(nodes_created)):
-                    continue
-                node_info = nodes_created[target_idx]
-                node_info["_mitigations"] = item.get("mitigations", [])
-                node_info["_detections"] = item.get("detections", [])
-                merged_any = True
-            if not merged_any:
-                warnings.append(f"Mitigation/detection batch {batch_index} returned no usable results.")
-        passes_completed = 4
-
     id_map = {}
     for idx, node_info in enumerate(nodes_created):
         node_id = str(uuid.uuid4())
@@ -585,52 +649,31 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
         db.add(node)
         id_map[idx] = node_id
 
-    from ..models.mitigation import Mitigation
-    from ..models.detection import Detection
-    from ..models.reference_mapping import ReferenceMapping
-
-    for idx, node_info in enumerate(nodes_created):
-        node_db_id = id_map[idx]
-        seen_refs = set()
-        for ref in node_info.get("_reference_mappings", []):
-            if not isinstance(ref, dict):
-                continue
-            framework = str(ref.get("framework", "")).strip().lower()
-            ref_id = str(ref.get("ref_id", "")).strip()
-            ref_name = str(ref.get("ref_name", "")).strip()
-            if not framework or not ref_id or (framework, ref_id) in seen_refs:
-                continue
-            seen_refs.add((framework, ref_id))
-            db.add(ReferenceMapping(
-                node_id=node_db_id,
-                framework=framework,
-                ref_id=ref_id,
-                ref_name=ref_name,
-            ))
-
-        for mit in node_info.get("_mitigations", []):
-            if isinstance(mit, dict) and mit.get("title"):
-                effectiveness = _clamp(mit.get("effectiveness"), 0, 1)
-                db.add(Mitigation(
-                    node_id=node_db_id,
-                    title=mit["title"],
-                    description=mit.get("description", ""),
-                    effectiveness=effectiveness if effectiveness is not None else 0.5,
-                    status="proposed",
-                ))
-        for det in node_info.get("_detections", []):
-            if isinstance(det, dict) and det.get("title"):
-                coverage = _clamp(det.get("coverage"), 0, 1)
-                db.add(Detection(
-                    node_id=node_db_id,
-                    title=det["title"],
-                    description=det.get("description", ""),
-                    coverage=coverage if coverage is not None else 0.5,
-                    data_source=det.get("data_source", ""),
-                ))
-
     if (data.objective or "").strip() or not (project.root_objective or "").strip():
         project.root_objective = resolved_objective
+    await db.flush()
+
+    agent_run = LLMAgentRun(
+        user_id=get_current_user_id(),
+        provider_id=provider.id,
+        project_id=data.project_id,
+        mode=mode,
+        status="queued",
+        current_stage="enrichment",
+        nodes_created=len(nodes_created),
+        passes_completed=1,
+        total_passes=4,
+        warnings=warnings,
+        checkpoints=_initial_agent_run_checkpoints(
+            nodes_created_count=len(nodes_created),
+            current_stage="enrichment",
+        ),
+        model_used=response.get("model", ""),
+        tokens_used=total_tokens,
+        duration_ms=total_elapsed,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(agent_run)
     await db.flush()
 
     job = LLMJobHistory(
@@ -638,8 +681,8 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
         user_id=get_current_user_id(),
         project_id=data.project_id,
         job_type="agent_generate_tree",
-        prompt_summary=messages[-1]["content"][:500],
-        response_summary=response["content"][:500],
+        prompt_summary=job_prompt_summary or messages[-1]["content"][:500],
+        response_summary=job_response_summary or response["content"][:500],
         status="success",
         tokens_used=total_tokens,
         duration_ms=total_elapsed,
@@ -647,30 +690,742 @@ async def agent_generate_tree(data: LLMAgentRequest, db: AsyncSession = Depends(
     db.add(job)
     await db.commit()
 
+    analysis_run = await record_analysis_run(
+        db,
+        project_id=data.project_id,
+        tool="attack_tree",
+        run_type="agent_generate",
+        status="queued",
+        artifact_kind="attack_tree",
+        artifact_id=agent_run.id,
+        artifact_name=project.name,
+        summary=(
+            f"Attack-tree agent queued after the structure pass with {len(nodes_created)} node"
+            f"{'' if len(nodes_created) == 1 else 's'}."
+        ),
+        metadata={
+            "mode": mode,
+            "nodes_created": len(nodes_created),
+            "passes_completed": 1,
+        },
+        duration_ms=total_elapsed,
+    )
+    if analysis_run:
+        checkpoints = dict(agent_run.checkpoints or {})
+        checkpoints["analysis_run_id"] = analysis_run.id
+        agent_run.checkpoints = checkpoints
+        await db.commit()
+
+    _schedule_agent_post_processing(agent_run.id)
+
     return LLMAgentResponse(
         nodes_created=len(nodes_created),
         model_used=response.get("model", ""),
         elapsed_ms=total_elapsed,
-        passes_completed=passes_completed,
+        passes_completed=1,
+        total_passes=4,
         warnings=warnings,
+        agent_run_id=agent_run.id,
+        background_processing=True,
+        current_stage="enrichment",
+        post_processing_status="queued",
     )
 
 
-_AGENT_MAX_GENERATED_NODES = 240
+_AGENT_MAX_GENERATED_NODES = 300
+_AGENT_STRUCTURE_SKELETON_DEPTH = 2
 _AGENT_ENRICH_BATCH_SIZE = 20
 _AGENT_MAPPING_BATCH_SIZE = 12
 _AGENT_MITDET_BATCH_SIZE = 12
+_AGENT_TOTAL_PASSES = 4
+_AGENT_TERMINAL_RUN_STATUSES = {"completed", "completed_with_warnings", "failed"}
+_AGENT_ENRICHABLE_FIELDS = {
+    "description",
+    "status",
+    "platform",
+    "attack_surface",
+    "threat_category",
+    "required_access",
+    "required_privileges",
+    "required_skill",
+    "effort",
+    "exploitability",
+    "detectability",
+}
 
 
 def _chunk_items(items: list[dict], chunk_size: int) -> list[list[dict]]:
     return [items[index:index + chunk_size] for index in range(0, len(items), chunk_size)]
 
 
+def _branch_context_snapshot(node_data: dict) -> dict:
+    return {
+        "title": node_data.get("title", "Untitled"),
+        "node_type": node_data.get("node_type", "attack_step"),
+        "platform": node_data.get("platform", ""),
+        "attack_surface": node_data.get("attack_surface", ""),
+        "threat_category": node_data.get("threat_category", ""),
+    }
+
+
+def _prune_tree_to_depth(node_data: dict, remaining_depth: int) -> dict:
+    if not isinstance(node_data, dict):
+        return {}
+
+    pruned = dict(node_data)
+    if remaining_depth <= 0:
+        pruned["children"] = []
+        return pruned
+
+    raw_children = pruned.get("children", [])
+    if not isinstance(raw_children, list):
+        pruned["children"] = []
+        return pruned
+
+    pruned["children"] = [
+        _prune_tree_to_depth(child, remaining_depth - 1)
+        for child in raw_children
+        if isinstance(child, dict)
+    ]
+    return pruned
+
+
+def _initial_agent_run_checkpoints(*, nodes_created_count: int, current_stage: str) -> dict:
+    return {
+        "structure": {
+            "status": "completed",
+            "completed_batches": 1,
+            "total_batches": 1,
+            "processed_items": nodes_created_count,
+        },
+        "enrichment": {
+            "status": "pending" if current_stage == "enrichment" else "queued",
+            "completed_batches": 0,
+            "total_batches": 0,
+            "processed_items": 0,
+        },
+        "reference_mapping": {
+            "status": "pending",
+            "completed_batches": 0,
+            "total_batches": 0,
+            "processed_items": 0,
+        },
+        "mitigation_detection": {
+            "status": "pending",
+            "completed_batches": 0,
+            "total_batches": 0,
+            "processed_items": 0,
+        },
+    }
+
+
+def _agent_run_response(run: LLMAgentRun) -> LLMAgentRunStatusResponse:
+    status = (run.status or "").strip().lower()
+    return LLMAgentRunStatusResponse(
+        id=run.id,
+        project_id=run.project_id or "",
+        status=run.status or "",
+        current_stage=run.current_stage or "",
+        nodes_created=run.nodes_created or 0,
+        passes_completed=run.passes_completed or 0,
+        total_passes=run.total_passes or _AGENT_TOTAL_PASSES,
+        warnings=list(run.warnings or []),
+        error_message=run.error_message or "",
+        model_used=run.model_used or "",
+        tokens_used=run.tokens_used or 0,
+        elapsed_ms=run.duration_ms or 0,
+        checkpoints=run.checkpoints or {},
+        background_processing=status not in _AGENT_TERMINAL_RUN_STATUSES,
+    )
+
+
+def _schedule_agent_post_processing(run_id: str) -> None:
+    task = asyncio.create_task(_run_agent_post_processing(run_id), name=f"llm-agent-post-processing:{run_id}")
+    _AGENT_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_AGENT_BACKGROUND_TASKS.discard)
+
+
+def _update_agent_checkpoint(
+    run: LLMAgentRun,
+    stage: str,
+    *,
+    status: str,
+    completed_batches: int,
+    total_batches: int,
+    processed_items: int,
+) -> None:
+    checkpoints = dict(run.checkpoints or {})
+    checkpoints[stage] = {
+        "status": status,
+        "completed_batches": completed_batches,
+        "total_batches": total_batches,
+        "processed_items": processed_items,
+    }
+    run.checkpoints = checkpoints
+
+
+def _append_agent_warning(run: LLMAgentRun, message: str) -> None:
+    warnings = list(run.warnings or [])
+    warnings.append(message)
+    run.warnings = warnings
+
+
+def _record_run_usage(run: LLMAgentRun, response: dict) -> None:
+    run.tokens_used = int(run.tokens_used or 0) + int(response.get("tokens", 0) or 0)
+    run.duration_ms = int(run.duration_ms or 0) + int(response.get("elapsed_ms", 0) or 0)
+
+
+def _agent_analysis_run_id(run: LLMAgentRun) -> str | None:
+    checkpoints = run.checkpoints or {}
+    analysis_run_id = checkpoints.get("analysis_run_id") if isinstance(checkpoints, dict) else None
+    return analysis_run_id if isinstance(analysis_run_id, str) and analysis_run_id else None
+
+
+def _missing_node_fields(node: Node) -> list[str]:
+    missing = []
+    for field in _AGENT_ENRICHABLE_FIELDS:
+        value = getattr(node, field, None)
+        if value in (None, ""):
+            missing.append(field)
+    return missing
+
+
+def _build_enrichment_candidates(nodes: list[Node]) -> list[dict]:
+    candidates: list[dict] = []
+    for index, node in enumerate(nodes):
+        missing = _missing_node_fields(node)
+        if not missing:
+            continue
+        candidates.append({
+            "index": index,
+            "node_id": node.id,
+            "title": node.title,
+            "node_type": node.node_type,
+            "missing": missing,
+        })
+    return candidates
+
+
+def _build_leaf_candidates(nodes: list[Node]) -> list[dict]:
+    parent_ids = {node.parent_id for node in nodes if node.parent_id}
+    candidates: list[dict] = []
+    for index, node in enumerate(nodes):
+        if node.id in parent_ids:
+            continue
+        candidates.append({
+            "index": index,
+            "node_id": node.id,
+            "title": node.title,
+            "node_type": node.node_type,
+            "description": (node.description or "")[:100],
+            "attack_surface": node.attack_surface or "",
+            "threat_category": node.threat_category or "",
+            "platform": node.platform or "",
+        })
+    return candidates
+
+
+async def _load_project_nodes(session: AsyncSession, project_id: str) -> list[Node]:
+    result = await session.execute(
+        select(Node).where(Node.project_id == project_id).order_by(Node.sort_order)
+    )
+    return result.scalars().all()
+
+
+async def _mark_agent_run_failed(run_id: str, message: str, *, stage: str = "failed") -> None:
+    async with database_module.async_session_factory() as session:
+        run = await session.get(LLMAgentRun, run_id)
+        if not run:
+            return
+        run.status = "failed"
+        run.current_stage = stage
+        run.error_message = message
+        run.completed_at = datetime.now(timezone.utc)
+        await update_analysis_run(
+            session,
+            _agent_analysis_run_id(run),
+            status="failed",
+            summary=f"Attack-tree agent failed during {stage.replace('_', ' ')}.",
+            metadata={
+                "stage": stage,
+                "error_message": message,
+                "warnings": list(run.warnings or []),
+            },
+            duration_ms=run.duration_ms or 0,
+        )
+        await session.commit()
+
+
+async def _run_agent_post_processing(run_id: str) -> None:
+    try:
+        async with database_module.async_session_factory() as session:
+            run = await session.get(LLMAgentRun, run_id)
+            if not run:
+                return
+
+            provider = await session.get(LLMProviderConfig, run.provider_id)
+            if not provider:
+                run.status = "failed"
+                run.current_stage = "provider_missing"
+                run.error_message = "Configured LLM provider could not be loaded for background processing."
+                run.completed_at = datetime.now(timezone.utc)
+                await update_analysis_run(
+                    session,
+                    _agent_analysis_run_id(run),
+                    status="failed",
+                    summary="Attack-tree agent could not continue because the provider configuration was missing.",
+                    metadata={
+                        "stage": "provider_missing",
+                        "warnings": list(run.warnings or []),
+                    },
+                    duration_ms=run.duration_ms or 0,
+                )
+                await session.commit()
+                return
+
+            config = _provider_to_config_dict(provider)
+            run.status = "processing"
+            run.current_stage = "enrichment"
+            await update_analysis_run(
+                session,
+                _agent_analysis_run_id(run),
+                status="running",
+                summary=f"Attack-tree agent is enriching and validating {run.nodes_created or 0} generated nodes.",
+                metadata={
+                    "stage": run.current_stage,
+                    "warnings": list(run.warnings or []),
+                },
+                duration_ms=run.duration_ms or 0,
+            )
+            await session.commit()
+
+            await _run_agent_enrichment_stage(session, run, config)
+            await _run_agent_reference_mapping_stage(session, run, config)
+            await _run_agent_mitigation_detection_stage(session, run, config)
+
+            run.passes_completed = run.total_passes or _AGENT_TOTAL_PASSES
+            run.current_stage = "completed"
+            run.status = "completed_with_warnings" if run.warnings else "completed"
+            run.completed_at = datetime.now(timezone.utc)
+            await update_analysis_run(
+                session,
+                _agent_analysis_run_id(run),
+                status="partial" if run.warnings else "completed",
+                summary=(
+                    f"Attack-tree agent completed with {run.nodes_created or 0} generated node"
+                    f"{'' if (run.nodes_created or 0) == 1 else 's'}."
+                ),
+                metadata={
+                    "stage": run.current_stage,
+                    "warnings": list(run.warnings or []),
+                    "passes_completed": run.passes_completed or 0,
+                },
+                duration_ms=run.duration_ms or 0,
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        await _mark_agent_run_failed(run_id, str(exc))
+
+
+async def _run_agent_enrichment_stage(session: AsyncSession, run: LLMAgentRun, config: dict) -> None:
+    nodes = await _load_project_nodes(session, run.project_id or "")
+    candidates = _build_enrichment_candidates(nodes)
+    batches = _chunk_items(candidates, _AGENT_ENRICH_BATCH_SIZE)
+
+    run.current_stage = "enrichment"
+    _update_agent_checkpoint(
+        run,
+        "enrichment",
+        status="processing" if batches else "skipped",
+        completed_batches=0,
+        total_batches=len(batches),
+        processed_items=0,
+    )
+    if not batches:
+        run.passes_completed = max(run.passes_completed or 0, 2)
+        await session.commit()
+        return
+    await session.commit()
+
+    node_by_index = {index: node for index, node in enumerate(nodes)}
+    processed_items = 0
+    for batch_index, batch in enumerate(batches, start=1):
+        enrich_messages = llm_service.build_enrich_nodes_prompt(batch)
+        enrich_resp = await llm_service.chat_completion(
+            config,
+            enrich_messages,
+            temperature=0.4,
+            max_tokens=16384,
+            timeout_override=240,
+        )
+        _record_run_usage(run, enrich_resp)
+
+        if enrich_resp["status"] != "success":
+            _append_agent_warning(
+                run,
+                f"Node enrichment batch {batch_index} failed: {enrich_resp.get('message', 'Unknown error')}.",
+            )
+            _update_agent_checkpoint(
+                run,
+                "enrichment",
+                status="processing",
+                completed_batches=batch_index,
+                total_batches=len(batches),
+                processed_items=processed_items,
+            )
+            await session.commit()
+            continue
+
+        enriched = llm_service.parse_json_response(enrich_resp["content"])
+        merged_any = False
+        for item in enriched:
+            if not isinstance(item, dict):
+                continue
+            target_idx = item.get("index")
+            node = node_by_index.get(target_idx)
+            if not node:
+                continue
+            for field in _AGENT_ENRICHABLE_FIELDS:
+                value = item.get(field)
+                if value and getattr(node, field, None) in (None, ""):
+                    setattr(
+                        node,
+                        field,
+                        _clamp(value, 1, 10) if field in {"effort", "exploitability", "detectability"} else value,
+                    )
+                    merged_any = True
+            node.inherent_risk = compute_inherent_risk(
+                node.likelihood,
+                node.impact,
+                node.effort,
+                node.exploitability,
+                node.detectability,
+            )
+
+        if not merged_any:
+            _append_agent_warning(run, f"Node enrichment batch {batch_index} returned no usable updates.")
+        else:
+            processed_items += len(batch)
+
+        _update_agent_checkpoint(
+            run,
+            "enrichment",
+            status="processing",
+            completed_batches=batch_index,
+            total_batches=len(batches),
+            processed_items=processed_items,
+        )
+        await session.commit()
+
+    run.passes_completed = max(run.passes_completed or 0, 2)
+    _update_agent_checkpoint(
+        run,
+        "enrichment",
+        status="completed_with_warnings" if run.warnings else "completed",
+        completed_batches=len(batches),
+        total_batches=len(batches),
+        processed_items=processed_items,
+    )
+    await session.commit()
+
+
+async def _run_agent_reference_mapping_stage(session: AsyncSession, run: LLMAgentRun, config: dict) -> None:
+    nodes = await _load_project_nodes(session, run.project_id or "")
+    candidates = _build_leaf_candidates(nodes)
+    batches = _chunk_items(candidates, _AGENT_MAPPING_BATCH_SIZE)
+    project = await session.get(Project, run.project_id or "")
+
+    run.current_stage = "reference_mapping"
+    _update_agent_checkpoint(
+        run,
+        "reference_mapping",
+        status="processing" if batches else "skipped",
+        completed_batches=0,
+        total_batches=len(batches),
+        processed_items=0,
+    )
+    if not batches:
+        run.passes_completed = max(run.passes_completed or 0, 3)
+        await session.commit()
+        return
+    await session.commit()
+
+    node_id_by_index = {item["index"]: item["node_id"] for item in candidates}
+    processed_items = 0
+    for batch_index, batch in enumerate(batches, start=1):
+        prompt_batch = []
+        for item in batch:
+            query = " ".join(
+                part
+                for part in [
+                    item.get("title", ""),
+                    item.get("attack_surface", ""),
+                    item.get("threat_category", ""),
+                    item.get("platform", ""),
+                    item.get("description", ""),
+                ]
+                if part
+            )
+            prompt_batch.append(
+                {
+                    **item,
+                    "candidate_references": search_references(
+                        query=query,
+                        artifact_type="attack_tree",
+                        context_preset=getattr(project, "context_preset", "") if project else "",
+                        objective=getattr(project, "root_objective", "") if project else "",
+                        scope=getattr(project, "description", "") if project else "",
+                        target_kind=item.get("node_type", "attack_step"),
+                        target_summary=query,
+                        allowed_frameworks=[
+                            "attack",
+                            "capec",
+                            "cwe",
+                            "owasp",
+                            "infra_attack_patterns",
+                            "software_research_patterns",
+                            "environment_catalog",
+                        ],
+                        limit=12,
+                    ),
+                }
+            )
+        mapping_messages = llm_service.build_reference_mapping_pass_prompt(prompt_batch)
+        mapping_resp = await llm_service.chat_completion(
+            config,
+            mapping_messages,
+            temperature=0.3,
+            max_tokens=4096,
+            timeout_override=120,
+        )
+        _record_run_usage(run, mapping_resp)
+
+        if mapping_resp["status"] != "success":
+            _append_agent_warning(
+                run,
+                f"Reference-mapping batch {batch_index} failed: {mapping_resp.get('message', 'Unknown error')}.",
+            )
+            _update_agent_checkpoint(
+                run,
+                "reference_mapping",
+                status="processing",
+                completed_batches=batch_index,
+                total_batches=len(batches),
+                processed_items=processed_items,
+            )
+            await session.commit()
+            continue
+
+        mappings = llm_service.parse_json_response(mapping_resp["content"])
+        batch_node_ids = [item["node_id"] for item in batch]
+        existing_result = await session.execute(
+            select(ReferenceMapping).where(ReferenceMapping.node_id.in_(batch_node_ids))
+        )
+        existing_pairs_by_node: dict[str, set[tuple[str, str]]] = {}
+        for row in existing_result.scalars().all():
+            existing_pairs_by_node.setdefault(row.node_id, set()).add((row.framework, row.ref_id))
+
+        merged_any = False
+        for item in mappings:
+            if not isinstance(item, dict):
+                continue
+            node_id = node_id_by_index.get(item.get("index"))
+            if not node_id:
+                continue
+            existing_pairs = existing_pairs_by_node.setdefault(node_id, set())
+            for mapping in _normalize_reference_mappings(item):
+                if not get_reference_record(mapping["framework"], mapping["ref_id"]):
+                    continue
+                pair = (mapping["framework"], mapping["ref_id"])
+                if pair in existing_pairs:
+                    continue
+                existing_pairs.add(pair)
+                session.add(ReferenceMapping(
+                    node_id=node_id,
+                    framework=mapping["framework"],
+                    ref_id=mapping["ref_id"],
+                    ref_name=mapping.get("ref_name", ""),
+                    confidence=mapping.get("confidence"),
+                    rationale=mapping.get("rationale", ""),
+                    source=mapping.get("source", "ai"),
+                ))
+                merged_any = True
+
+        if not merged_any:
+            _append_agent_warning(run, f"Reference-mapping batch {batch_index} returned no usable mappings.")
+        else:
+            processed_items += len(batch)
+
+        _update_agent_checkpoint(
+            run,
+            "reference_mapping",
+            status="processing",
+            completed_batches=batch_index,
+            total_batches=len(batches),
+            processed_items=processed_items,
+        )
+        await session.commit()
+
+    run.passes_completed = max(run.passes_completed or 0, 3)
+    _update_agent_checkpoint(
+        run,
+        "reference_mapping",
+        status="completed_with_warnings" if run.warnings else "completed",
+        completed_batches=len(batches),
+        total_batches=len(batches),
+        processed_items=processed_items,
+    )
+    await session.commit()
+
+
+async def _run_agent_mitigation_detection_stage(session: AsyncSession, run: LLMAgentRun, config: dict) -> None:
+    nodes = await _load_project_nodes(session, run.project_id or "")
+    candidates = _build_leaf_candidates(nodes)
+    batches = _chunk_items(candidates, _AGENT_MITDET_BATCH_SIZE)
+
+    run.current_stage = "mitigation_detection"
+    _update_agent_checkpoint(
+        run,
+        "mitigation_detection",
+        status="processing" if batches else "skipped",
+        completed_batches=0,
+        total_batches=len(batches),
+        processed_items=0,
+    )
+    if not batches:
+        run.passes_completed = max(run.passes_completed or 0, 4)
+        await session.commit()
+        return
+    await session.commit()
+
+    node_id_by_index = {item["index"]: item["node_id"] for item in candidates}
+    processed_items = 0
+    for batch_index, batch in enumerate(batches, start=1):
+        mitdet_messages = llm_service.build_mitigations_detections_pass_prompt(batch)
+        mitdet_resp = await llm_service.chat_completion(
+            config,
+            mitdet_messages,
+            temperature=0.4,
+            max_tokens=16384,
+            timeout_override=240,
+        )
+        _record_run_usage(run, mitdet_resp)
+
+        if mitdet_resp["status"] != "success":
+            _append_agent_warning(
+                run,
+                f"Mitigation/detection batch {batch_index} failed: {mitdet_resp.get('message', 'Unknown error')}.",
+            )
+            _update_agent_checkpoint(
+                run,
+                "mitigation_detection",
+                status="processing",
+                completed_batches=batch_index,
+                total_batches=len(batches),
+                processed_items=processed_items,
+            )
+            await session.commit()
+            continue
+
+        mitdet_data = llm_service.parse_json_response(mitdet_resp["content"])
+        batch_node_ids = [item["node_id"] for item in batch]
+        existing_mitigations = await session.execute(
+            select(Mitigation).where(Mitigation.node_id.in_(batch_node_ids))
+        )
+        existing_detections = await session.execute(
+            select(Detection).where(Detection.node_id.in_(batch_node_ids))
+        )
+        mitigation_titles_by_node: dict[str, set[str]] = {}
+        for row in existing_mitigations.scalars().all():
+            mitigation_titles_by_node.setdefault(row.node_id, set()).add(row.title.strip().lower())
+        detection_titles_by_node: dict[str, set[str]] = {}
+        for row in existing_detections.scalars().all():
+            detection_titles_by_node.setdefault(row.node_id, set()).add(row.title.strip().lower())
+
+        merged_any = False
+        for item in mitdet_data:
+            if not isinstance(item, dict):
+                continue
+            node_id = node_id_by_index.get(item.get("index"))
+            if not node_id:
+                continue
+
+            mitigation_titles = mitigation_titles_by_node.setdefault(node_id, set())
+            for mitigation in item.get("mitigations", []):
+                if not isinstance(mitigation, dict) or not mitigation.get("title"):
+                    continue
+                key = str(mitigation["title"]).strip().lower()
+                if not key or key in mitigation_titles:
+                    continue
+                mitigation_titles.add(key)
+                effectiveness = _clamp(mitigation.get("effectiveness"), 0, 1)
+                session.add(Mitigation(
+                    node_id=node_id,
+                    title=mitigation["title"],
+                    description=mitigation.get("description", ""),
+                    effectiveness=effectiveness if effectiveness is not None else 0.5,
+                    status="proposed",
+                ))
+                merged_any = True
+
+            detection_titles = detection_titles_by_node.setdefault(node_id, set())
+            for detection in item.get("detections", []):
+                if not isinstance(detection, dict) or not detection.get("title"):
+                    continue
+                key = str(detection["title"]).strip().lower()
+                if not key or key in detection_titles:
+                    continue
+                detection_titles.add(key)
+                coverage = _clamp(detection.get("coverage"), 0, 1)
+                session.add(Detection(
+                    node_id=node_id,
+                    title=detection["title"],
+                    description=detection.get("description", ""),
+                    coverage=coverage if coverage is not None else 0.5,
+                    data_source=detection.get("data_source", ""),
+                ))
+                merged_any = True
+
+        if not merged_any:
+            _append_agent_warning(run, f"Mitigation/detection batch {batch_index} returned no usable results.")
+        else:
+            processed_items += len(batch)
+
+        _update_agent_checkpoint(
+            run,
+            "mitigation_detection",
+            status="processing",
+            completed_batches=batch_index,
+            total_batches=len(batches),
+            processed_items=processed_items,
+        )
+        await session.commit()
+
+    run.passes_completed = max(run.passes_completed or 0, 4)
+    _update_agent_checkpoint(
+        run,
+        "mitigation_detection",
+        status="completed_with_warnings" if run.warnings else "completed",
+        completed_batches=len(batches),
+        total_batches=len(batches),
+        processed_items=processed_items,
+    )
+    await session.commit()
+
+
 def _normalize_reference_mappings(item: dict) -> list[dict]:
     normalized: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
-    def _append(framework: str, ref_id: str, ref_name: str = "") -> None:
+    def _append(
+        framework: str,
+        ref_id: str,
+        ref_name: str = "",
+        *,
+        confidence: float | None = None,
+        rationale: str = "",
+        source: str = "ai",
+    ) -> None:
         normalized_framework = framework.strip().lower()
         normalized_ref_id = ref_id.strip()
         if not normalized_framework or not normalized_ref_id:
@@ -683,6 +1438,9 @@ def _normalize_reference_mappings(item: dict) -> list[dict]:
             "framework": normalized_framework,
             "ref_id": normalized_ref_id,
             "ref_name": ref_name.strip(),
+            "confidence": max(0.0, min(1.0, float(confidence))) if isinstance(confidence, (int, float)) else None,
+            "rationale": rationale.strip(),
+            "source": source.strip() or "ai",
         })
 
     raw_mappings = item.get("mappings", [])
@@ -694,12 +1452,19 @@ def _normalize_reference_mappings(item: dict) -> list[dict]:
                 str(mapping.get("framework", "")),
                 str(mapping.get("ref_id", "")),
                 str(mapping.get("ref_name", "")),
+                confidence=mapping.get("confidence"),
+                rationale=str(mapping.get("rationale", "")),
+                source=str(mapping.get("source", "ai")),
             )
 
     for framework, legacy_key in (
         ("attack", "att_ck_ids"),
         ("capec", "capec_ids"),
         ("cwe", "cwe_ids"),
+        ("owasp", "owasp_ids"),
+        ("infra_attack_patterns", "infra_attack_pattern_ids"),
+        ("software_research_patterns", "software_research_pattern_ids"),
+        ("environment_catalog", "environment_catalog_ids"),
     ):
         raw_ids = item.get(legacy_key, [])
         if not isinstance(raw_ids, list):

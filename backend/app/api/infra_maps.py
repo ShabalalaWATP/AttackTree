@@ -3,6 +3,7 @@ Infrastructure Map API — AI-powered hardware/software mind-map builder.
 """
 import json
 import uuid
+from time import perf_counter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Any, Optional
@@ -19,8 +20,15 @@ from ..services.access_control import (
     require_project_access,
 )
 from ..services.auth import get_current_user_id
+from ..services.analysis_runs import record_analysis_run
 from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
 from ..services import llm_service
+from ..services.reference_search_service import (
+    candidate_to_reference_link,
+    dedupe_reference_links,
+    format_reference_candidates_for_prompt,
+    search_references,
+)
 
 router = APIRouter(prefix="/infra-maps", tags=["infra_maps"])
 
@@ -187,6 +195,7 @@ def _normalize_node(node: dict, *, parent_id: str | None = None, manually_added:
         "manually_added": bool(node.get("manually_added", False)) if manually_added is None else manually_added,
         "position_x": _normalize_position(node.get("position_x")),
         "position_y": _normalize_position(node.get("position_y")),
+        "references": dedupe_reference_links([item for item in node.get("references", []) if isinstance(item, dict)]),
     }
 
 
@@ -212,6 +221,81 @@ def _normalize_nodes(nodes: list[dict]) -> list[dict]:
             node["children_loaded"] = True
 
     return normalized
+
+
+def _attach_reference_links_to_nodes(
+    nodes: list[dict],
+    *,
+    objective: str,
+    scope: str,
+    context_preset: str,
+) -> list[dict]:
+    attached: list[dict] = []
+    for node in nodes:
+        node_copy = dict(node)
+        if node_copy.get("references"):
+            attached.append(node_copy)
+            continue
+        query = " ".join(
+            part for part in [
+                str(node_copy.get("label") or ""),
+                str(node_copy.get("category") or ""),
+                str(node_copy.get("description") or ""),
+            ] if part
+        )
+        node_copy["references"] = dedupe_reference_links(
+            [
+                candidate_to_reference_link(candidate, source="ai")
+                for candidate in search_references(
+                query=query,
+                artifact_type="infra_map",
+                context_preset=context_preset,
+                objective=objective,
+                scope=scope,
+                target_kind="infra_node",
+                target_summary=query,
+                allowed_frameworks=[
+                    "environment_catalog",
+                    "infra_attack_patterns",
+                    "software_research_patterns",
+                    "attack",
+                    "owasp",
+                ],
+                limit=4,
+                )
+            ]
+        )
+        attached.append(node_copy)
+    return attached
+
+
+def _infra_candidate_references(
+    *,
+    query: str,
+    objective: str,
+    scope: str,
+    context_preset: str,
+    target_kind: str,
+    target_summary: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    return search_references(
+        query=query,
+        artifact_type="infra_map",
+        context_preset=context_preset,
+        objective=objective,
+        scope=scope,
+        target_kind=target_kind,
+        target_summary=target_summary,
+        allowed_frameworks=[
+            "environment_catalog",
+            "infra_attack_patterns",
+            "software_research_patterns",
+            "attack",
+            "owasp",
+        ],
+        limit=limit,
+    )
 
 
 def _dedupe_children(nodes: list[dict], parent_id: str, raw_children: list[dict], *, manually_added: bool = False) -> list[dict]:
@@ -450,6 +534,7 @@ def _build_overview_messages(
     planning_domain: str,
     planning_guidance: str,
     operator_guidance: str,
+    candidate_reference_block: str,
 ) -> list[dict[str, str]]:
     system_msg = (
         "You are a senior infrastructure architect and security consultant. "
@@ -467,6 +552,8 @@ def _build_overview_messages(
 """
     if operator_guidance:
         user_msg += f"\n**Operator guidance:** {operator_guidance}\n"
+    if candidate_reference_block:
+        user_msg += f"\n{candidate_reference_block}\n"
     user_msg += planning_guidance + """
 
 Return a JSON object:
@@ -507,6 +594,7 @@ def _build_branch_messages(
     planning_domain: str,
     planning_guidance: str,
     operator_guidance: str,
+    candidate_reference_block: str,
 ) -> list[dict[str, str]]:
     system_msg = (
         "You are a senior infrastructure architect and security consultant. "
@@ -525,6 +613,8 @@ def _build_branch_messages(
 """
     if operator_guidance:
         user_msg += f"\n**Operator guidance:** {operator_guidance}\n"
+    if candidate_reference_block:
+        user_msg += f"\n{candidate_reference_block}\n"
     user_msg += planning_guidance + f"""
 
 Return a JSON object:
@@ -558,6 +648,7 @@ def _build_branch_fallback_messages(
     branch: dict[str, str],
     overview_summary: str,
     planning_guidance: str,
+    candidate_reference_block: str,
 ) -> list[dict[str, str]]:
     system_msg = (
         "You are a senior infrastructure architect and security consultant. "
@@ -569,6 +660,8 @@ def _build_branch_fallback_messages(
 **Branch:** "{branch['label']}"
 **Branch description:** {branch['description']}
 **Current map summary:** {overview_summary or 'No summary yet'}
+
+{candidate_reference_block}
 
 {planning_guidance}
 
@@ -603,8 +696,28 @@ async def _generate_branch_nodes(
     planning_domain: str,
     planning_guidance: str,
     operator_guidance: str,
+    objective: str,
+    scope: str,
+    context_preset: str,
 ) -> tuple[list[dict[str, str]], str, list[str]]:
     warnings: list[str] = []
+    candidate_references = _infra_candidate_references(
+        query=" ".join(
+            part for part in [
+                branch["label"],
+                branch["description"],
+                overview_summary,
+                " ".join(sibling_labels),
+            ] if part
+        ),
+        objective=objective,
+        scope=scope,
+        context_preset=context_preset,
+        target_kind="infra_branch",
+        target_summary=" ".join(part for part in [root_label, branch["label"], branch["description"]] if part),
+        limit=10,
+    )
+    candidate_reference_block = format_reference_candidates_for_prompt(candidate_references)
     messages = _build_branch_messages(
         root_label=root_label,
         branch=branch,
@@ -614,6 +727,7 @@ async def _generate_branch_nodes(
         planning_domain=planning_domain,
         planning_guidance=planning_guidance,
         operator_guidance=operator_guidance,
+        candidate_reference_block=candidate_reference_block,
     )
     parsed, error_message = await _request_json_object_with_retries(
         config,
@@ -635,6 +749,7 @@ async def _generate_branch_nodes(
         branch=branch,
         overview_summary=overview_summary,
         planning_guidance=planning_guidance,
+        candidate_reference_block=candidate_reference_block,
     )
     fallback_parsed, fallback_error = await _request_json_object_with_retries(
         config,
@@ -715,6 +830,16 @@ async def _generate_infra_map_payload(
     operator_guidance: str,
 ) -> tuple[str, str, list[dict], str, dict[str, Any]]:
     warnings: list[str] = []
+    overview_candidates = _infra_candidate_references(
+        query=" ".join(part for part in [root_label, objective, description, environment_label, operator_guidance] if part),
+        objective=objective,
+        scope=description,
+        context_preset=environment_label,
+        target_kind="infra_map_overview",
+        target_summary=" ".join(part for part in [project_name, root_label, objective, description] if part),
+        limit=12,
+    )
+    overview_reference_block = format_reference_candidates_for_prompt(overview_candidates)
     overview_messages = _build_overview_messages(
         root_label=root_label,
         project_name=project_name,
@@ -726,6 +851,7 @@ async def _generate_infra_map_payload(
         planning_domain=planning_domain,
         planning_guidance=planning_guidance,
         operator_guidance=operator_guidance,
+        candidate_reference_block=overview_reference_block,
     )
     overview_parsed, overview_error = await _request_json_object_with_retries(
         config,
@@ -756,6 +882,9 @@ async def _generate_infra_map_payload(
             planning_domain=planning_domain,
             planning_guidance=planning_guidance,
             operator_guidance=operator_guidance,
+            objective=objective,
+            scope=description,
+            context_preset=environment_label,
         )
         if generated_nodes:
             branch_nodes[branch["temp_id"]] = generated_nodes
@@ -786,6 +915,12 @@ async def _generate_infra_map_payload(
         "generation_warnings": warnings,
     }
     nodes = _build_generated_nodes(overview["root"], overview["branches"], branch_nodes)
+    nodes = _attach_reference_links_to_nodes(
+        nodes,
+        objective=objective,
+        scope=description,
+        context_preset=environment_label,
+    )
     return overview["root"]["label"], overview["root"]["description"], nodes, ai_summary, metadata
 
 
@@ -858,6 +993,7 @@ async def delete_infra_map(im_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/{im_id}/ai-expand")
 async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = Depends(get_db)):
     """AI expands a specific node in the infra map, generating child nodes."""
+    started_at = perf_counter()
     im = await _get_or_404(im_id, db)
     provider = await get_active_provider_for_user(db)
     if not provider:
@@ -879,6 +1015,7 @@ async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = D
 
     # Build the path from root to this node
     path_labels = _build_path(nodes, data.node_id)
+    branch_context = _build_branch_context(nodes, data.node_id)
     existing_children = [n.get("label", "") for n in nodes if n.get("parent_id") == data.node_id]
     sibling_labels = [n.get("label", "") for n in nodes if n.get("parent_id") == target_node.get("parent_id") and n.get("id") != data.node_id]
     _, planning_label, planning_domain, planning_guidance = _infra_map_planning_context(
@@ -894,6 +1031,24 @@ async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = D
         ),
         getattr(project, "context_preset", "") if project else "",
     )
+    candidate_references = _infra_candidate_references(
+        query=" ".join(
+            part for part in [
+                target_node.get("label", ""),
+                target_node.get("description", ""),
+                " ".join(path_labels),
+                " ".join(existing_children),
+                data.user_guidance,
+            ] if part
+        ),
+        objective=(project.root_objective if project else "") or im.name,
+        scope=(project.description if project else "") or im.description,
+        context_preset=getattr(project, "context_preset", "") if project else "",
+        target_kind="infra_node",
+        target_summary=" ".join(part for part in [im.name, target_node.get("label", ""), target_node.get("description", "")] if part),
+        limit=10,
+    )
+    candidate_reference_block = format_reference_candidates_for_prompt(candidate_references)
 
     system_msg = (
         "You are a senior infrastructure architect and security consultant. "
@@ -911,10 +1066,14 @@ async def ai_expand_node(im_id: str, data: AIExpandRequest, db: AsyncSession = D
 **Map name:** {im.name}
 **Map summary:** {im.ai_summary or 'No summary yet'}
 **Node path (root → current):** {' → '.join(path_labels)}
+**Ancestor branch context:** {json.dumps(branch_context["ancestors"]) if branch_context["ancestors"] else 'Root or no ancestor detail available'}
 **Current node:** "{target_node.get('label', '')}"
 **Category:** {target_node.get('category', 'general')}
 **Sibling nodes near this branch (avoid duplication):** {json.dumps(sibling_labels) if sibling_labels else 'None'}
 **Existing children (don't duplicate):** {json.dumps(existing_children) if existing_children else 'None yet'}
+**Existing child detail under this branch:** {json.dumps(branch_context["existing_children"]) if branch_context["existing_children"] else 'No detailed child descriptions yet'}
+
+{candidate_reference_block}
 
 {planning_guidance}
 """
@@ -964,6 +1123,12 @@ Return ONLY valid JSON, no markdown fences.
     children_raw = parsed.get("children", [])
 
     new_nodes = _dedupe_children(nodes, data.node_id, children_raw)
+    new_nodes = _attach_reference_links_to_nodes(
+        new_nodes,
+        objective=project.root_objective if project else im.name,
+        scope=project.description if project else im.description,
+        context_preset=getattr(project, "context_preset", "") if project else "",
+    )
     if not new_nodes and not existing_children:
         raise HTTPException(502, "Infra-map expansion returned no usable child nodes")
 
@@ -987,6 +1152,26 @@ Return ONLY valid JSON, no markdown fences.
     }
     await db.commit()
     await db.refresh(im)
+    await record_analysis_run(
+        db,
+        project_id=im.project_id,
+        tool="infra_map",
+        run_type="node_expand",
+        status="completed",
+        artifact_kind="infra_map",
+        artifact_id=im.id,
+        artifact_name=im.name,
+        summary=(
+            f"Expanded '{target_node.get('label', 'node')}' with {len(new_nodes)} child node"
+            f"{'' if len(new_nodes) == 1 else 's'}."
+        ),
+        metadata={
+            "node_id": data.node_id,
+            "node_label": target_node.get("label", ""),
+            "child_count": len(new_nodes),
+        },
+        duration_ms=round((perf_counter() - started_at) * 1000),
+    )
 
     return _to_dict(im)
 
@@ -994,6 +1179,7 @@ Return ONLY valid JSON, no markdown fences.
 @router.post("/project/{project_id}/ai-generate")
 async def ai_generate_infra_map(project_id: str, data: AIGenerateRequest, db: AsyncSession = Depends(get_db)):
     """AI generates a complete infrastructure map from a root label."""
+    started_at = perf_counter()
     provider = await get_active_provider_for_user(db)
     if not provider:
         raise HTTPException(400, "No active LLM provider configured")
@@ -1035,6 +1221,25 @@ async def ai_generate_infra_map(project_id: str, data: AIGenerateRequest, db: As
     db.add(im)
     await db.commit()
     await db.refresh(im)
+    await record_analysis_run(
+        db,
+        project_id=project_id,
+        tool="infra_map",
+        run_type="map_generation",
+        status="completed",
+        artifact_kind="infra_map",
+        artifact_id=im.id,
+        artifact_name=im.name,
+        summary=(
+            f"Generated infrastructure map with {len(im.nodes or [])} node"
+            f"{'' if len(im.nodes or []) == 1 else 's'}."
+        ),
+        metadata={
+            "node_count": len(im.nodes or []),
+            "root_label": root_label,
+        },
+        duration_ms=round((perf_counter() - started_at) * 1000),
+    )
 
     return _to_dict(im)
 
@@ -1102,6 +1307,45 @@ def _build_path(nodes: list, node_id: str) -> list[str]:
         current_id = node.get("parent_id")
     path.reverse()
     return path
+
+
+def _build_branch_context(nodes: list[dict], node_id: str) -> dict[str, list[dict]]:
+    node_map = {node["id"]: node for node in nodes if node.get("id")}
+    lineage: list[dict] = []
+    current_id = node_id
+    seen: set[str] = set()
+
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        node = node_map.get(current_id)
+        if not node:
+            break
+        lineage.append(node)
+        current_id = node.get("parent_id")
+
+    lineage.reverse()
+    ancestors = [
+        {
+            "label": node.get("label", ""),
+            "category": node.get("category", "general"),
+            "description": (node.get("description", "") or "")[:180],
+        }
+        for node in lineage[:-1][-4:]
+    ]
+    existing_children = [
+        {
+            "label": node.get("label", ""),
+            "category": node.get("category", "general"),
+            "description": (node.get("description", "") or "")[:180],
+        }
+        for node in nodes
+        if node.get("parent_id") == node_id
+    ][:8]
+
+    return {
+        "ancestors": ancestors,
+        "existing_children": existing_children,
+    }
 
 
 def _has_children(temp_id: str, raw_nodes: list) -> bool:

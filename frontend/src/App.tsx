@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { useStore } from '@/stores/useStore';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { LandingView } from '@/views/LandingView';
 import { ProjectsView } from '@/views/ProjectsView';
 import { AuthView } from '@/views/AuthView';
 import { TreeEditorView } from '@/views/TreeEditorView';
@@ -65,6 +66,7 @@ export default function App() {
         <ProjectToolBar />
         <main className="flex-1 overflow-hidden">
           <ErrorBoundary>
+            {viewMode === 'landing' && <LandingView />}
             {viewMode === 'projects' && <ProjectsView />}
             {viewMode === 'project_home' && <ProjectHomeView />}
             {viewMode === 'tree' && <TreeEditorView />}

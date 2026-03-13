@@ -1,10 +1,12 @@
 """
-Threat Modeling API — STRIDE/PASTA workspace with AI-powered analysis.
+Threat Modeling API - STRIDE/PASTA workspace with AI-powered analysis.
 """
+import copy
 import hashlib
 import json
 import re
 import uuid
+from time import perf_counter
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Any, Optional
@@ -20,7 +22,13 @@ from ..services.access_control import (
     require_threat_model_access,
 )
 from ..services import llm_service
+from ..services.analysis_runs import record_analysis_run
 from ..services.environment_catalog_service import build_environment_catalog_outline_for_context
+from ..services.reference_search_service import (
+    dedupe_reference_links,
+    format_reference_candidates_for_prompt,
+    search_references,
+)
 from ..services.risk_engine import compute_inherent_risk
 
 router = APIRouter(prefix="/threat-models", tags=["threat_models"])
@@ -28,6 +36,86 @@ router = APIRouter(prefix="/threat-models", tags=["threat_models"])
 THREAT_CHUNK_COMPONENT_LIMIT = 4
 THREAT_REQUEST_RETRIES = 2
 DFD_MAX_ZONE_COUNT = 6
+
+SUPPORTED_THREAT_METHODOLOGIES = ("stride", "pasta", "linddun")
+
+THREAT_CATEGORY_OPTIONS: dict[str, tuple[str, ...]] = {
+    "stride": (
+        "Spoofing",
+        "Tampering",
+        "Repudiation",
+        "Information Disclosure",
+        "Denial of Service",
+        "Elevation of Privilege",
+    ),
+    "linddun": (
+        "Linkability",
+        "Identifiability",
+        "Non-repudiation",
+        "Detectability",
+        "Disclosure",
+        "Unawareness",
+        "Non-compliance",
+    ),
+}
+
+THREAT_STAGE_OPTIONS: dict[str, tuple[str, ...]] = {
+    "pasta": (
+        "Attack Simulation",
+        "Vulnerability Analysis",
+        "Risk Analysis",
+        "Exploitation",
+        "Impact",
+    ),
+}
+
+THREAT_CATEGORY_ALIASES: dict[str, dict[str, str]] = {
+    "stride": {
+        "spoof": "Spoofing",
+        "spoofing": "Spoofing",
+        "tamper": "Tampering",
+        "tampering": "Tampering",
+        "repudiation": "Repudiation",
+        "information disclosure": "Information Disclosure",
+        "information leak": "Information Disclosure",
+        "information leakage": "Information Disclosure",
+        "disclosure of information": "Information Disclosure",
+        "info disclosure": "Information Disclosure",
+        "denial of service": "Denial of Service",
+        "denial service": "Denial of Service",
+        "dos": "Denial of Service",
+        "elevation of privilege": "Elevation of Privilege",
+        "privilege escalation": "Elevation of Privilege",
+        "elevation": "Elevation of Privilege",
+        "eop": "Elevation of Privilege",
+    },
+    "pasta": {
+    },
+    "linddun": {
+        "linkability": "Linkability",
+        "identifiability": "Identifiability",
+        "non repudiation": "Non-repudiation",
+        "nonrepudiation": "Non-repudiation",
+        "detectability": "Detectability",
+        "disclosure": "Disclosure",
+        "unawareness": "Unawareness",
+        "non compliance": "Non-compliance",
+        "noncompliance": "Non-compliance",
+    },
+}
+
+THREAT_STAGE_ALIASES: dict[str, dict[str, str]] = {
+    "pasta": {
+        "attack simulation": "Attack Simulation",
+        "simulation": "Attack Simulation",
+        "vulnerability analysis": "Vulnerability Analysis",
+        "vulnerability": "Vulnerability Analysis",
+        "risk analysis": "Risk Analysis",
+        "risk": "Risk Analysis",
+        "exploitation": "Exploitation",
+        "impact": "Impact",
+    },
+}
 
 
 # --- Schemas ---
@@ -81,6 +169,51 @@ def _compact_json(value: Any) -> str:
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_methodology(value: Any) -> str:
+    normalized = _normalize_text(value).lower()
+    return normalized if normalized in SUPPORTED_THREAT_METHODOLOGIES else "stride"
+
+
+def _category_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _normalize_text(value).lower()).strip()
+
+
+def _canonical_category_options(methodology: str) -> tuple[str, ...]:
+    return THREAT_CATEGORY_OPTIONS.get(_normalize_methodology(methodology), ())
+
+
+def _canonical_stage_options(methodology: str) -> tuple[str, ...]:
+    return THREAT_STAGE_OPTIONS.get(_normalize_methodology(methodology), ())
+
+
+def _canonicalize_threat_category(methodology: str, value: Any) -> str | None:
+    normalized_key = _category_key(value)
+    if not normalized_key:
+        return None
+    canonical_options = _canonical_category_options(methodology)
+    canonical_lookup = {
+        _category_key(option): option
+        for option in canonical_options
+    }
+    if normalized_key in canonical_lookup:
+        return canonical_lookup[normalized_key]
+    return THREAT_CATEGORY_ALIASES.get(_normalize_methodology(methodology), {}).get(normalized_key)
+
+
+def _canonicalize_threat_stage(methodology: str, value: Any) -> str | None:
+    normalized_key = _category_key(value)
+    if not normalized_key:
+        return None
+    canonical_options = _canonical_stage_options(methodology)
+    canonical_lookup = {
+        _category_key(option): option
+        for option in canonical_options
+    }
+    if normalized_key in canonical_lookup:
+        return canonical_lookup[normalized_key]
+    return THREAT_STAGE_ALIASES.get(_normalize_methodology(methodology), {}).get(normalized_key)
 
 
 def _coerce_score(value: Any) -> int | None:
@@ -142,10 +275,27 @@ def _severity_rank(value: Any) -> int:
     }.get(_normalize_text(value).lower(), 0)
 
 
+def _has_required_content(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(_normalize_text(value))
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_required_content(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_required_content(item) for item in value.values())
+    return True
+
+
+def _has_required_keys(parsed: dict[str, Any], required_keys: tuple[str, ...]) -> bool:
+    return all(_has_required_content(parsed.get(key)) for key in required_keys)
+
+
 def _threat_signature(threat: dict[str, Any]) -> str:
     normalized_title = re.sub(r"[^a-z0-9]+", " ", _normalize_text(threat.get("title")).lower()).strip()
     return "|".join([
         _normalize_text(threat.get("component_id")).lower(),
+        _normalize_text(threat.get("pasta_stage")).lower(),
         _normalize_text(threat.get("category")).lower(),
         normalized_title,
     ])
@@ -162,6 +312,7 @@ def _threat_quality_score(threat: dict[str, Any]) -> tuple[int, int, int, int]:
         "trust_boundary",
         "business_impact",
         "detection_notes",
+        "references",
     )
     populated_details = sum(1 for key in detail_fields if _normalize_text(threat.get(key)))
     risk_score = _coerce_score(threat.get("risk_score")) or 0
@@ -173,9 +324,12 @@ def _normalize_generated_threats(
     threats: list[Any],
     components: list[dict[str, Any]] | None,
     data_flows: list[dict[str, Any]] | None,
+    methodology: str = "stride",
     seen_ids: set[str] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     normalized: list[dict[str, Any]] = []
+    invalid_classifications: list[str] = []
+    normalized_methodology = _normalize_methodology(methodology)
     if seen_ids is None:
         seen_ids = set()
     for item in threats:
@@ -193,6 +347,41 @@ def _normalize_generated_threats(
             threat["component_name"] = component_name
         if target_type and not str(threat.get("target_type") or "").strip():
             threat["target_type"] = target_type
+        if normalized_methodology == "pasta":
+            raw_category = _normalize_text(threat.get("category"))
+            raw_stage = (
+                threat.get("pasta_stage")
+                or threat.get("stage")
+                or threat.get("pasta_phase")
+                or threat.get("phase")
+            )
+            canonical_stage = _canonicalize_threat_stage(normalized_methodology, raw_stage)
+            if not canonical_stage:
+                legacy_stage = _canonicalize_threat_stage(normalized_methodology, raw_category)
+                if legacy_stage:
+                    canonical_stage = legacy_stage
+                    raw_category = _normalize_text(
+                        threat.get("technical_category")
+                        or threat.get("threat_type")
+                        or threat.get("stride_category")
+                    )
+            if not canonical_stage:
+                invalid_classifications.append(_normalize_text(threat.get("title")) or threat_id)
+                continue
+            threat["pasta_stage"] = canonical_stage
+            threat["category"] = _normalize_text(
+                threat.get("technical_category")
+                or threat.get("threat_type")
+                or threat.get("stride_category")
+                or raw_category
+            )
+        else:
+            threat.pop("pasta_stage", None)
+            canonical_category = _canonicalize_threat_category(normalized_methodology, threat.get("category"))
+            if not canonical_category:
+                invalid_classifications.append(_normalize_text(threat.get("title")) or threat_id)
+                continue
+            threat["category"] = canonical_category
         severity = _normalize_text(threat.get("severity")).lower()
         if severity:
             threat["severity"] = severity
@@ -208,9 +397,12 @@ def _normalize_generated_threats(
             risk_score = max(1, min(100, likelihood * impact))
         if risk_score is not None:
             threat["risk_score"] = risk_score
+        threat["references"] = dedupe_reference_links(
+            [item for item in threat.get("references", []) if isinstance(item, dict)]
+        )
 
         normalized.append(threat)
-    return normalized
+    return normalized, invalid_classifications
 
 
 def _merge_threats(threats: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -219,7 +411,12 @@ def _merge_threats(threats: list[dict[str, Any]]) -> list[dict[str, Any]]:
         signature = _threat_signature(threat)
         existing = merged.get(signature)
         if existing is None or _threat_quality_score(threat) > _threat_quality_score(existing):
-            merged[signature] = threat
+            merged_threat = dict(threat)
+            if existing:
+                merged_threat["references"] = dedupe_reference_links((existing.get("references") or []) + (threat.get("references") or []))
+            merged[signature] = merged_threat
+        elif existing is not None:
+            existing["references"] = dedupe_reference_links((existing.get("references") or []) + (threat.get("references") or []))
     return sorted(
         merged.values(),
         key=lambda threat: (
@@ -441,12 +638,26 @@ def _build_chunk_threat_messages(
     operator_guidance: str,
     chunk: dict[str, Any],
     overview: dict[str, Any],
+    candidate_reference_block: str,
 ) -> list[dict[str, str]]:
     overview_context = _compact_json({
         "summary": _normalize_text(overview.get("summary")),
         "highest_risk_areas": overview.get("highest_risk_areas", []),
         "recommended_attack_priorities": overview.get("recommended_attack_priorities", []),
     })
+    normalized_methodology = _normalize_methodology(methodology)
+    allowed_categories = ", ".join(_canonical_category_options(methodology))
+    allowed_stages = ", ".join(_canonical_stage_options(methodology))
+    if normalized_methodology == "pasta":
+        classification_fields = f"""      "pasta_stage": "Use exactly one of: {allowed_stages}",
+      "category": "Short technical threat class or abuse type (for example: credential abuse, session hijack, data exfiltration)","""
+        classification_rules = (
+            f"7. Use one exact PASTA stage label in \"pasta_stage\" from: {allowed_stages}\n"
+            "8. Keep \"category\" short and technical; do not reuse the PASTA stage label there"
+        )
+    else:
+        classification_fields = f"""      "category": "Use exactly one of: {allowed_categories}","""
+        classification_rules = f"7. Use one exact category label from this methodology only: {allowed_categories}"
     prompt = f"""You are an expert red team operator performing offensive threat modeling using {methodology.upper()}.
 Focus only on the current chunk of the target architecture and generate concrete, technically credible threats.
 
@@ -461,6 +672,7 @@ Focus only on the current chunk of the target architecture and generate concrete
 **Chunk Components:** {_compact_json(chunk.get("components", []))}
 **Chunk Data Flows:** {_compact_json(chunk.get("data_flows", []))}
 **Relevant Trust Boundaries:** {_compact_json(chunk.get("trust_boundaries", []))}
+{candidate_reference_block}
 
 {planning_guidance}
 
@@ -472,7 +684,7 @@ Return JSON:
       "component_id": "comp-1 or flow-1",
       "component_name": "Human-readable component or data-flow label",
       "target_type": "component|data_flow",
-      "category": "{methodology.upper()} category",
+{classification_fields}
       "title": "Specific threat title",
       "description": "Attacker-perspective description of the abuse case",
       "severity": "critical|high|medium|low",
@@ -488,7 +700,10 @@ Return JSON:
       "impact": 1-10,
       "risk_score": 1-100,
       "real_world_examples": "Relevant real-world patterns, CVEs, or campaigns when useful",
-      "mitre_technique": "MITRE ATT&CK technique ID if applicable"
+      "mitre_technique": "MITRE ATT&CK technique ID if applicable",
+      "references": [
+        {{"framework": "validated local framework", "ref_id": "validated local id", "ref_name": "name", "confidence": 0.0-1.0, "rationale": "brief reason", "source": "ai"}}
+      ]
     }}
   ]
 }}
@@ -499,6 +714,8 @@ Rules:
 3. Prefer concrete threats over generic filler
 4. Use deep technical detail when justified by the target and operator guidance
 5. Keep the response strictly to this chunk so the JSON stays compact
+6. Prefer the retrieved candidate references when assigning ATT&CK, CAPEC, CWE, OWASP, infrastructure, software-research, or environment-catalog references
+{classification_rules}
 
 Return ONLY valid JSON."""
     return [
@@ -539,7 +756,7 @@ async def _request_json_object_with_retries(
             last_error = response.get("message", "LLM request failed")
             continue
         parsed = llm_service.parse_json_object_response(response["content"])
-        if not required_keys or any(parsed.get(key) for key in required_keys):
+        if not required_keys or _has_required_keys(parsed, required_keys):
             return parsed, ""
         last_error = "LLM returned malformed or incomplete JSON"
     return {}, last_error
@@ -613,6 +830,8 @@ async def _generate_chunk_threats(
     config: dict[str, Any],
     *,
     project_name: str,
+    reference_context_preset: str,
+    reference_objective: str,
     scope: str,
     methodology: str,
     planning_label: str,
@@ -627,6 +846,33 @@ async def _generate_chunk_threats(
     warnings: list[str],
     seen_ids: set[str],
 ) -> list[dict[str, Any]]:
+    chunk_summary = " ".join(
+        [
+            _normalize_text(chunk.get("label")),
+            " ".join(_normalize_text(component.get("name")) for component in chunk.get("components", []) if isinstance(component, dict)),
+            " ".join(_normalize_text(flow.get("label")) for flow in chunk.get("data_flows", []) if isinstance(flow, dict)),
+        ]
+    )
+    candidate_references = search_references(
+        query=chunk_summary,
+        artifact_type="threat_model",
+        context_preset=reference_context_preset,
+        objective=reference_objective,
+        scope=scope,
+        target_kind="threat_chunk",
+        target_summary=chunk_summary,
+        allowed_frameworks=[
+            "attack",
+            "capec",
+            "cwe",
+            "owasp",
+            "infra_attack_patterns",
+            "software_research_patterns",
+            "environment_catalog",
+        ],
+        limit=12,
+    )
+    candidate_reference_block = format_reference_candidates_for_prompt(candidate_references)
     messages = _build_chunk_threat_messages(
         project_name,
         scope,
@@ -637,6 +883,7 @@ async def _generate_chunk_threats(
         operator_guidance,
         chunk,
         overview,
+        candidate_reference_block,
     )
     parsed, error_message = await _request_json_object_with_retries(
         config,
@@ -647,7 +894,23 @@ async def _generate_chunk_threats(
         required_keys=("threats",),
     )
     if parsed.get("threats"):
-        return _normalize_generated_threats(parsed.get("threats", []), components, data_flows, seen_ids)
+        normalized_threats, invalid_classifications = _normalize_generated_threats(
+            parsed.get("threats", []),
+            components,
+            data_flows,
+            methodology=methodology,
+            seen_ids=seen_ids,
+        )
+        if normalized_threats and not invalid_classifications:
+            return normalized_threats
+        if invalid_classifications:
+            invalid_preview = ", ".join(invalid_classifications[:3])
+            normalized_methodology = _normalize_methodology(methodology)
+            if normalized_methodology == "pasta":
+                error_message = "LLM returned threats without canonical PASTA stage labels"
+            else:
+                error_message = f"LLM returned threats with non-canonical {normalized_methodology.upper()} categories"
+            error_message += f" ({invalid_preview})" if invalid_preview else ""
 
     split_chunks = _split_threat_chunk(chunk, components, data_flows, trust_boundaries)
     if split_chunks:
@@ -659,6 +922,8 @@ async def _generate_chunk_threats(
             split_results.extend(await _generate_chunk_threats(
                 config,
                 project_name=project_name,
+                reference_context_preset=reference_context_preset,
+                reference_objective=reference_objective,
                 scope=scope,
                 methodology=methodology,
                 planning_label=planning_label,
@@ -1472,7 +1737,9 @@ async def list_threat_models(project_id: str, db: AsyncSession = Depends(get_db)
 @router.post("", status_code=201)
 async def create_threat_model(data: ThreatModelCreate, db: AsyncSession = Depends(get_db)):
     await require_project_access(data.project_id, db)
-    tm = ThreatModel(**data.model_dump())
+    payload = data.model_dump()
+    payload["methodology"] = _normalize_methodology(payload.get("methodology"))
+    tm = ThreatModel(**payload)
     db.add(tm)
     await db.commit()
     await db.refresh(tm)
@@ -1489,6 +1756,29 @@ async def get_threat_model(tm_id: str, db: AsyncSession = Depends(get_db)):
 async def update_threat_model(tm_id: str, data: ThreatModelUpdate, db: AsyncSession = Depends(get_db)):
     tm = await _get_or_404(tm_id, db)
     payload = data.model_dump(exclude_unset=True)
+    if "methodology" in payload:
+        payload["methodology"] = _normalize_methodology(payload.get("methodology"))
+    if "threats" in payload:
+        normalized_threats, invalid_classifications = _normalize_generated_threats(
+            payload.get("threats") or [],
+            payload.get("components") or tm.components or [],
+            payload.get("data_flows") or tm.data_flows or [],
+            methodology=payload.get("methodology") or tm.methodology,
+        )
+        if invalid_classifications:
+            normalized_methodology = _normalize_methodology(payload.get("methodology") or tm.methodology)
+            invalid_preview = ", ".join(invalid_classifications[:3])
+            if normalized_methodology == "pasta":
+                message = "Threats must include canonical PASTA stage labels"
+            else:
+                message = f"Threat categories must use canonical {normalized_methodology.upper()} labels"
+            raise HTTPException(
+                422,
+                message
+                + (f" (invalid: {invalid_preview})" if invalid_preview else ""),
+            )
+        payload["threats"] = normalized_threats
+    methodology_changed = "methodology" in payload and payload["methodology"] != tm.methodology
     for key, value in payload.items():
         setattr(tm, key, value)
     if any(key in payload for key in ("components", "data_flows", "trust_boundaries")):
@@ -1496,6 +1786,12 @@ async def update_threat_model(tm_id: str, data: ThreatModelUpdate, db: AsyncSess
             tm.threats = []
         tm.ai_summary = ""
         tm.dfd_metadata = {}
+        tm.analysis_metadata = {}
+        tm.deep_dive_cache = {}
+    elif methodology_changed:
+        if "threats" not in payload:
+            tm.threats = []
+        tm.ai_summary = ""
         tm.analysis_metadata = {}
         tm.deep_dive_cache = {}
     await db.commit()
@@ -1513,6 +1809,7 @@ async def delete_threat_model(tm_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/{tm_id}/ai-generate-dfd")
 async def ai_generate_dfd(tm_id: str, data: AIGenerateDFDRequest, db: AsyncSession = Depends(get_db)):
     """AI generates a staged Data Flow Diagram from a system description."""
+    started_at = perf_counter()
     tm = await _get_or_404(tm_id, db)
     provider = await get_active_provider_for_user(db)
     if not provider:
@@ -1703,34 +2000,37 @@ async def ai_generate_dfd(tm_id: str, data: AIGenerateDFDRequest, db: AsyncSessi
         if _normalize_text(zone.get("id")) and _normalize_text(zone.get("id")) not in completed_zone_ids
     ]
     if not pending_zone_ids and not flow_stage_completed and len(zone_plan) > 1:
-        cross_zone_messages = _build_dfd_cross_zone_flow_messages(
-            project_name=project.name if project else "Unknown",
-            methodology=tm.methodology,
-            system_description=data.system_description,
-            scope=tm.scope,
-            planning_label=planning_label,
-            planning_domain=planning_domain,
-            planning_guidance=planning_guidance,
-            operator_guidance=data.user_guidance,
-            topology_summary=topology_summary,
-            zone_plan=zone_plan,
-            components=components_state,
-            cross_zone_paths=cross_zone_paths,
-        )
-        cross_zone_result, cross_zone_error = await _request_json_object_with_retries(
-            config,
-            cross_zone_messages,
-            temperature=0.35,
-            max_tokens=4096,
-            timeout_override=90,
-            required_keys=("data_flows",),
-        )
-        cross_zone_flows = _normalize_cross_zone_flow_output(cross_zone_result, components_state)
-        if cross_zone_flows or not cross_zone_paths:
-            data_flow_state = _merge_dfd_flows(data_flow_state + cross_zone_flows)
+        if not cross_zone_paths:
             flow_stage_completed = True
         else:
-            warnings.append(f"Cross-zone flow generation incomplete: {cross_zone_error or 'empty response'}")
+            cross_zone_messages = _build_dfd_cross_zone_flow_messages(
+                project_name=project.name if project else "Unknown",
+                methodology=tm.methodology,
+                system_description=data.system_description,
+                scope=tm.scope,
+                planning_label=planning_label,
+                planning_domain=planning_domain,
+                planning_guidance=planning_guidance,
+                operator_guidance=data.user_guidance,
+                topology_summary=topology_summary,
+                zone_plan=zone_plan,
+                components=components_state,
+                cross_zone_paths=cross_zone_paths,
+            )
+            cross_zone_result, cross_zone_error = await _request_json_object_with_retries(
+                config,
+                cross_zone_messages,
+                temperature=0.35,
+                max_tokens=4096,
+                timeout_override=90,
+                required_keys=("data_flows",),
+            )
+            cross_zone_flows = _normalize_cross_zone_flow_output(cross_zone_result, components_state)
+            if cross_zone_flows:
+                data_flow_state = _merge_dfd_flows(data_flow_state + cross_zone_flows)
+                flow_stage_completed = True
+            else:
+                warnings.append(f"Cross-zone flow generation incomplete: {cross_zone_error or 'empty response'}")
         await _save_dfd_progress("running" if flow_stage_completed else "partial", "cross_zone_flows")
     elif len(zone_plan) <= 1:
         flow_stage_completed = True
@@ -1742,12 +2042,35 @@ async def ai_generate_dfd(tm_id: str, data: AIGenerateDFDRequest, db: AsyncSessi
     ]
     final_status = "completed" if not final_pending_zone_ids and flow_stage_completed else "partial"
     await _save_dfd_progress(final_status, "completed" if final_status == "completed" else ("zones" if final_pending_zone_ids else "cross_zone_flows"))
+    await record_analysis_run(
+        db,
+        project_id=tm.project_id,
+        tool="threat_model",
+        run_type="dfd_generation",
+        status=final_status,
+        artifact_kind="threat_model",
+        artifact_id=tm.id,
+        artifact_name=tm.name,
+        summary=(
+            f"DFD {final_status} with {len(tm.components or [])} component"
+            f"{'' if len(tm.components or []) == 1 else 's'} and {len(tm.data_flows or [])} flow"
+            f"{'' if len(tm.data_flows or []) == 1 else 's'}."
+        ),
+        metadata={
+            "component_count": len(tm.components or []),
+            "data_flow_count": len(tm.data_flows or []),
+            "pending_zone_count": len(final_pending_zone_ids),
+            "methodology": tm.methodology,
+        },
+        duration_ms=round((perf_counter() - started_at) * 1000),
+    )
     return _to_dict(tm)
 
 
 @router.post("/{tm_id}/ai-generate-threats")
 async def ai_generate_threats(tm_id: str, data: AIGenerateThreatsRequest, db: AsyncSession = Depends(get_db)):
     """AI analyzes the DFD and generates STRIDE/PASTA threats."""
+    started_at = perf_counter()
     tm = await _get_or_404(tm_id, db)
     provider = await get_active_provider_for_user(db)
     if not provider:
@@ -1800,12 +2123,21 @@ async def ai_generate_threats(tm_id: str, data: AIGenerateThreatsRequest, db: As
         raise HTTPException(400, "Generate a DFD with components before generating threats")
 
     seen_ids: set[str] = set()
-    generated_threats = _normalize_generated_threats(
-        tm.threats or [],
-        tm.components or [],
-        tm.data_flows or [],
-        seen_ids,
-    ) if resume_existing else []
+    if resume_existing:
+        generated_threats, existing_invalid_classifications = _normalize_generated_threats(
+            tm.threats or [],
+            tm.components or [],
+            tm.data_flows or [],
+            methodology=tm.methodology,
+            seen_ids=seen_ids,
+        )
+    else:
+        generated_threats = []
+        existing_invalid_classifications = []
+    if resume_existing and existing_invalid_classifications:
+        warnings.append(
+            "Discarded previously persisted threats with invalid methodology classification while resuming generation."
+        )
     completed_chunk_signatures = {
         signature for signature in existing_metadata.get("completed_chunk_signatures", [])
         if isinstance(signature, str) and signature
@@ -1891,6 +2223,8 @@ async def ai_generate_threats(tm_id: str, data: AIGenerateThreatsRequest, db: As
         chunk_results = await _generate_chunk_threats(
             config,
             project_name=project.name if project else "Unknown",
+            reference_context_preset=getattr(project, "context_preset", ""),
+            reference_objective=project.root_objective or tm.name or project.name,
             scope=tm.scope,
             methodology=tm.methodology,
             planning_label=planning_label,
@@ -1934,6 +2268,8 @@ async def ai_generate_threats(tm_id: str, data: AIGenerateThreatsRequest, db: As
                 supplement_results = await _generate_chunk_threats(
                     config,
                     project_name=project.name if project else "Unknown",
+                    reference_context_preset=getattr(project, "context_preset", ""),
+                    reference_objective=project.root_objective or tm.name or project.name,
                     scope=tm.scope,
                     methodology=tm.methodology,
                     planning_label=planning_label,
@@ -1973,6 +2309,28 @@ async def ai_generate_threats(tm_id: str, data: AIGenerateThreatsRequest, db: As
         }.issubset(_covered_component_ids_from_threats(merged_threats))
     ]
     await _save_progress(final_status, len(remaining_resume_chunks) if final_status == "partial" else 0)
+    await record_analysis_run(
+        db,
+        project_id=tm.project_id,
+        tool="threat_model",
+        run_type="threat_generation",
+        status=final_status,
+        artifact_kind="threat_model",
+        artifact_id=tm.id,
+        artifact_name=tm.name,
+        summary=(
+            f"Threat generation {final_status} with {len(tm.threats or [])} threat"
+            f"{'' if len(tm.threats or []) == 1 else 's'} across {len(tm.components or [])} component"
+            f"{'' if len(tm.components or []) == 1 else 's'}."
+        ),
+        metadata={
+            "threat_count": len(tm.threats or []),
+            "component_count": len(tm.components or []),
+            "remaining_resume_chunks": len(remaining_resume_chunks),
+            "methodology": tm.methodology,
+        },
+        duration_ms=round((perf_counter() - started_at) * 1000),
+    )
     return {
         **_to_dict(tm),
     }
@@ -1994,28 +2352,70 @@ async def link_threats_to_tree(tm_id: str, data: AILinkToTreeRequest, db: AsyncS
     )
     root_node = root_result.scalar_one_or_none()
 
-    threats_to_link = tm.threats
+    threats_to_link = copy.deepcopy(tm.threats or [])
     if data.threat_ids:
         id_set = set(data.threat_ids)
-        threats_to_link = [t for t in tm.threats if t.get("id") in id_set]
+        selected_threats = [(index, threat) for index, threat in enumerate(threats_to_link) if threat.get("id") in id_set]
+    else:
+        selected_threats = list(enumerate(threats_to_link))
 
-    created_ids = []
+    if not selected_threats:
+        return {
+            "created": 0,
+            "skipped": 0,
+            "node_ids": [],
+            "created_threat_ids": [],
+            "skipped_threat_ids": [],
+        }
+
+    linked_ids = {
+        threat.get("linked_node_id")
+        for _, threat in selected_threats
+        if isinstance(threat.get("linked_node_id"), str) and threat.get("linked_node_id")
+    }
+    valid_linked_ids: set[str] = set()
+    if linked_ids:
+        linked_result = await db.execute(
+            select(Node.id).where(Node.project_id == tm.project_id, Node.id.in_(linked_ids))
+        )
+        valid_linked_ids = set(linked_result.scalars().all())
+
+    sibling_query = select(Node).where(Node.project_id == tm.project_id)
+    if root_node:
+        sibling_query = sibling_query.where(Node.parent_id == root_node.id)
+    else:
+        sibling_query = sibling_query.where(Node.parent_id == None)
+    sibling_result = await db.execute(sibling_query)
+    existing_siblings = sibling_result.scalars().all()
+    next_sort_order = max((node.sort_order or 0 for node in existing_siblings), default=99) + 1
+
+    created_ids: list[str] = []
+    created_threat_ids: list[str] = []
+    skipped_threat_ids: list[str] = []
     y_offset = 200
-    for i, threat in enumerate(threats_to_link):
+    for i, (_, threat) in enumerate(selected_threats):
+        linked_node_id = threat.get("linked_node_id")
+        if linked_node_id and linked_node_id in valid_linked_ids:
+            if threat.get("id"):
+                skipped_threat_ids.append(threat["id"])
+            continue
+        if linked_node_id and linked_node_id not in valid_linked_ids:
+            threat.pop("linked_node_id", None)
+
         node = Node(
             project_id=tm.project_id,
             parent_id=root_node.id if root_node else None,
             node_type="weakness" if threat.get("severity") in ("critical", "high") else "attack_step",
             title=threat.get("title", "Threat"),
             description=threat.get("description", ""),
-            threat_category=threat.get("category", ""),
+            threat_category=threat.get("category") or threat.get("pasta_stage", ""),
             attack_surface=threat.get("attack_vector", ""),
             likelihood=threat.get("likelihood"),
             impact=threat.get("impact"),
             status="draft",
             position_x=200 + (i % 4) * 300,
             position_y=y_offset + (i // 4) * 200,
-            sort_order=100 + i,
+            sort_order=next_sort_order,
             notes=f"From threat model: {tm.name}\nMitigation: {threat.get('mitigation', '')}",
         )
         node.inherent_risk = compute_inherent_risk(
@@ -2024,16 +2424,23 @@ async def link_threats_to_tree(tm_id: str, data: AILinkToTreeRequest, db: AsyncS
         )
         db.add(node)
         await db.flush()
+        next_sort_order += 1
         created_ids.append(node.id)
+        if threat.get("id"):
+            created_threat_ids.append(threat["id"])
 
         # Update threat with linked node id
         threat["linked_node_id"] = node.id
 
-    # Deep copy to reliably trigger SQLAlchemy JSON dirty detection
-    import copy
-    tm.threats = copy.deepcopy(tm.threats)
+    tm.threats = threats_to_link
     await db.commit()
-    return {"created": len(created_ids), "node_ids": created_ids}
+    return {
+        "created": len(created_ids),
+        "skipped": len(skipped_threat_ids),
+        "node_ids": created_ids,
+        "created_threat_ids": created_threat_ids,
+        "skipped_threat_ids": skipped_threat_ids,
+    }
 
 
 @router.post("/{tm_id}/ai-deep-dive")

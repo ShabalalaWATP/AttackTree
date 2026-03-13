@@ -1,11 +1,16 @@
 import type {
   AttackNodeData,
   AuthLoginResponseData,
+  AuthSignupResponseData,
   AuthUserData,
+  AnalysisRunData,
+  DashboardPortfolioData,
+  DashboardProjectData,
   EnvironmentCatalogData,
   EnvironmentCatalogSummary,
   LLMAgentRequestData,
   LLMAgentResponseData,
+  LLMAgentRunStatusData,
   LLMSuggestRequestData,
   LLMSuggestResponseData,
   PlanningProfile,
@@ -20,6 +25,14 @@ const BASE = '/api';
 type ApiRequestOptions = RequestInit & {
   noAuth?: boolean;
 };
+
+export interface ThreatLinkToTreeResponse {
+  created: number;
+  skipped: number;
+  node_ids: string[];
+  created_threat_ids: string[];
+  skipped_threat_ids: string[];
+}
 
 function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
   if (!headers) return {};
@@ -115,7 +128,7 @@ export const api = {
   login: (data: { identifier: string; password: string }) =>
     request<AuthLoginResponseData>('/auth/login', { method: 'POST', body: JSON.stringify(data), noAuth: true }),
   signup: (data: { name: string; email: string; username: string; password: string }) =>
-    request<AuthLoginResponseData>('/auth/signup', { method: 'POST', body: JSON.stringify(data), noAuth: true }),
+    request<AuthSignupResponseData>('/auth/signup', { method: 'POST', body: JSON.stringify(data), noAuth: true }),
   getCurrentUser: () => request<AuthUserData>('/auth/me'),
   changePassword: (data: { current_password: string; new_password: string }) =>
     request<void>('/auth/change-password', { method: 'POST', body: JSON.stringify(data) }),
@@ -175,6 +188,17 @@ export const api = {
     if (filter) params.set('filter', filter);
     return request<{ framework: string; total: number; count: number; items: any[]; filter_field: string | null; filter_options: string[] }>(`/references/browse/${framework}?${params.toString()}`);
   },
+  searchReferences: (data: {
+    query: string;
+    artifact_type?: string;
+    context_preset?: string;
+    objective?: string;
+    scope?: string;
+    target_kind?: string;
+    target_summary?: string;
+    allowed_frameworks?: string[];
+    limit?: number;
+  }) => request<{ items: any[] }>('/references/search', { method: 'POST', body: JSON.stringify(data) }),
   listEnvironmentCatalogs: () => request<{ total: number; catalogs: EnvironmentCatalogSummary[] }>('/references/environment-catalogs'),
   getEnvironmentCatalog: (catalogId: string) => request<EnvironmentCatalogData>(`/references/environment-catalogs/${catalogId}`),
 
@@ -192,6 +216,12 @@ export const api = {
   // Audit
   listAuditEvents: (projectId: string, limit = 50, offset = 0) =>
     request<any[]>(`/audit/project/${projectId}?limit=${limit}&offset=${offset}`),
+
+  // Analysis Runs
+  listAnalysisRuns: (projectId: string, limit = 50) =>
+    request<AnalysisRunData[]>(`/analysis-runs/project/${projectId}?limit=${limit}`),
+  getDashboardPortfolio: () => request<DashboardPortfolioData>('/dashboard/portfolio'),
+  getProjectDashboard: (projectId: string) => request<DashboardProjectData>(`/dashboard/project/${projectId}`),
 
   // Snapshots
   listSnapshots: (projectId: string) => request<any[]>(`/snapshots/project/${projectId}`),
@@ -223,6 +253,7 @@ export const api = {
   suggestBranches: (data: LLMSuggestRequestData) => request<LLMSuggestResponseData>('/llm/suggest', { method: 'POST', body: JSON.stringify(data) }),
   generateSummary: (data: any) => request<any>('/llm/summarize', { method: 'POST', body: JSON.stringify(data) }),
   agentGenerateTree: (data: LLMAgentRequestData) => request<LLMAgentResponseData>('/llm/agent', { method: 'POST', body: JSON.stringify(data) }),
+  getAgentRunStatus: (id: string) => request<LLMAgentRunStatusData>(`/llm/agent-runs/${id}`),
 
   // Scenarios
   listScenarios: (projectId?: string, scope = projectId ? 'project' : 'standalone') => {
@@ -251,6 +282,7 @@ export const api = {
   listKillChains: (projectId: string) => request<any[]>(`/kill-chains/project/${projectId}`),
   createKillChain: (data: any) => request<any>('/kill-chains', { method: 'POST', body: JSON.stringify(data) }),
   getKillChain: (id: string) => request<any>(`/kill-chains/${id}`),
+  updateKillChain: (id: string, data: any) => request<any>(`/kill-chains/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteKillChain: (id: string) => request<void>(`/kill-chains/${id}`, { method: 'DELETE' }),
   aiMapKillChain: (id: string, data: { user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/kill-chains/${id}/ai-map`, { method: 'POST', body: JSON.stringify(data) }),
   aiGenerateKillChain: (projectId: string, data?: { framework?: string; user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/kill-chains/project/${projectId}/ai-generate`, { method: 'POST', body: data ? JSON.stringify(data) : undefined }),
@@ -264,12 +296,13 @@ export const api = {
   aiGenerateDFD: (id: string, data: { system_description: string; user_guidance?: string; methodology?: string; name?: string; planning_profile?: PlanningProfile; refresh?: boolean }) => request<any>(`/threat-models/${id}/ai-generate-dfd`, { method: 'POST', body: JSON.stringify(data) }),
   aiGenerateThreats: (id: string, data: { user_guidance?: string; planning_profile?: PlanningProfile }) => request<any>(`/threat-models/${id}/ai-generate-threats`, { method: 'POST', body: JSON.stringify(data) }),
   aiDeepDiveThreat: (tmId: string, data: { threat_id: string; refresh?: boolean }) => request<any>(`/threat-models/${tmId}/ai-deep-dive`, { method: 'POST', body: JSON.stringify(data) }),
-  linkThreatsToTree: (id: string, data: any) => request<any>(`/threat-models/${id}/link-to-tree`, { method: 'POST', body: JSON.stringify(data) }),
+  linkThreatsToTree: (id: string, data: any) => request<ThreatLinkToTreeResponse>(`/threat-models/${id}/link-to-tree`, { method: 'POST', body: JSON.stringify(data) }),
   aiFullThreatModel: (projectId: string, data: { system_description: string; user_guidance?: string; methodology?: string; name?: string; planning_profile?: PlanningProfile }) => request<any>(`/threat-models/project/${projectId}/ai-full-analysis`, { method: 'POST', body: JSON.stringify(data) }),
 
   // AI Chat (Brainstorm, Advisor, Challenger)
   aiBrainstorm: (data: {
     provider_id: string;
+    project_id?: string;
     project_name?: string;
     root_objective?: string;
     context_preset?: string;
@@ -282,7 +315,17 @@ export const api = {
     messages: Array<{ role: string; content: string }>;
   }) =>
     request<{ status: string; content: string; model: string; tokens: number; elapsed_ms: number }>('/ai-chat/brainstorm', { method: 'POST', body: JSON.stringify(data) }),
-  aiAdvisor: (data: { provider_id: string; question: string; project_name?: string; root_objective?: string; tree_context?: string }) =>
+  aiAdvisor: (data: {
+    provider_id: string;
+    question: string;
+    project_name?: string;
+    root_objective?: string;
+    tree_context?: string;
+    view_mode?: string;
+    page_title?: string;
+    page_summary?: string;
+    context_packets?: string[];
+  }) =>
     request<{ status: string; content: string; model: string; tokens: number; elapsed_ms: number }>('/ai-chat/advisor', { method: 'POST', body: JSON.stringify(data) }),
   aiChallengeScores: (data: { provider_id: string; node_title: string; node_description?: string; node_type?: string; likelihood?: number; impact?: number; effort?: number; exploitability?: number; detectability?: number; inherent_risk?: number; mitigations_summary?: string; tree_context?: string }) =>
     request<{ status: string; content: string; model: string; tokens: number; elapsed_ms: number }>('/ai-chat/challenge-scores', { method: 'POST', body: JSON.stringify(data) }),

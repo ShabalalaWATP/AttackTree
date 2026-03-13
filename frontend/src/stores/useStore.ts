@@ -1,11 +1,24 @@
 import { create } from 'zustand';
 import type { AttackNodeData, ProjectData } from '@/types';
 
-export type ViewMode = 'projects' | 'project_home' | 'tree' | 'dashboard' | 'references' | 'settings' | 'scenarios' | 'kill_chain' | 'threat_model' | 'brainstorm' | 'infra_map';
+export type ViewMode = 'landing' | 'projects' | 'project_home' | 'tree' | 'dashboard' | 'references' | 'settings' | 'scenarios' | 'kill_chain' | 'threat_model' | 'brainstorm' | 'infra_map';
+
+export interface AdvisorPageContext {
+  view: ViewMode;
+  title: string;
+  summary: string;
+  packets: string[];
+}
 
 interface UndoEntry {
   nodes: AttackNodeData[];
   label: string;
+}
+
+interface PendingViewSelection {
+  view: ViewMode;
+  artifactId?: string | null;
+  nodeId?: string | null;
 }
 
 interface AppState {
@@ -16,6 +29,12 @@ interface AppState {
   // Navigation
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
+  pendingViewSelection: PendingViewSelection | null;
+  openView: (mode: ViewMode, selection?: Omit<PendingViewSelection, 'view'>) => void;
+  clearPendingViewSelection: () => void;
+  advisorPageContext: AdvisorPageContext | null;
+  setAdvisorPageContext: (context: AdvisorPageContext | null) => void;
+  clearAdvisorPageContext: () => void;
 
   // Project
   currentProject: ProjectData | null;
@@ -95,8 +114,17 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  viewMode: 'projects',
+  viewMode: 'landing',
   setViewMode: (mode) => set({ viewMode: mode }),
+  pendingViewSelection: null,
+  openView: (view, selection) => set({
+    viewMode: view,
+    pendingViewSelection: selection ? { view, ...selection } : null,
+  }),
+  clearPendingViewSelection: () => set({ pendingViewSelection: null }),
+  advisorPageContext: null,
+  setAdvisorPageContext: (context) => set({ advisorPageContext: context }),
+  clearAdvisorPageContext: () => set({ advisorPageContext: null }),
 
   currentProject: null,
   setCurrentProject: (project) => set({ currentProject: project }),
@@ -199,7 +227,9 @@ export const useStore = create<AppState>((set, get) => ({
   setAiSuggestions: (suggestions) => set({ aiSuggestions: suggestions }),
 
   resetWorkspaceState: () => set({
-    viewMode: 'projects',
+    viewMode: 'landing',
+    pendingViewSelection: null,
+    advisorPageContext: null,
     currentProject: null,
     nodes: [],
     selectedNodeId: null,

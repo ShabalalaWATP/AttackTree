@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey
+from sqlalchemy import Column, String, ForeignKey, Float, Text
 from sqlalchemy.orm import relationship
 from ..database import Base
 
@@ -12,5 +12,8 @@ class ReferenceMapping(Base):
     framework = Column(String(50), nullable=False)  # attack, capec, cwe, owasp, masvs, custom
     ref_id = Column(String(50), nullable=False)  # e.g., T1566
     ref_name = Column(String(500), default="")
+    confidence = Column(Float, nullable=True)
+    rationale = Column(Text, default="")
+    source = Column(String(30), default="manual")
 
     node = relationship("Node", back_populates="reference_mappings")

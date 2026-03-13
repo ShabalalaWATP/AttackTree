@@ -36,6 +36,18 @@ export interface ReferenceMappingData {
   framework: string;
   ref_id: string;
   ref_name: string;
+  confidence?: number | null;
+  rationale?: string;
+  source?: string;
+}
+
+export interface ReferenceLink {
+  framework: string;
+  ref_id: string;
+  ref_name: string;
+  confidence?: number | null;
+  rationale?: string;
+  source?: string;
 }
 
 export interface CommentData {
@@ -153,6 +165,7 @@ export interface AuthUserData {
   email: string;
   role: 'admin' | 'user';
   is_active: boolean;
+  approval_status: 'approved' | 'pending';
   password_reset_required: boolean;
   created_at: string;
   updated_at: string;
@@ -161,6 +174,12 @@ export interface AuthUserData {
 export interface AuthLoginResponseData {
   access_token: string;
   token_type: string;
+  user: AuthUserData;
+}
+
+export interface AuthSignupResponseData {
+  message: string;
+  approval_required: boolean;
   user: AuthUserData;
 }
 
@@ -196,6 +215,104 @@ export interface SnapshotData {
   created_by: string;
 }
 
+export interface AnalysisRunData {
+  id: string;
+  project_id: string;
+  tool: string;
+  run_type: string;
+  status: 'completed' | 'partial' | 'queued' | 'running' | 'failed';
+  artifact_kind: string;
+  artifact_id: string | null;
+  artifact_name: string;
+  summary: string;
+  metadata_json: Record<string, unknown>;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface ArtifactCountsData {
+  scenarios: number;
+  kill_chains: number;
+  threat_models: number;
+  infra_maps: number;
+  snapshots: number;
+}
+
+export interface DashboardNodeSummaryData {
+  id: string;
+  title: string;
+  node_type: string;
+  inherent_risk: number | null;
+  residual_risk: number | null;
+  mitigation_count: number;
+  detection_count: number;
+  mapping_count: number;
+  status: string;
+  platform: string;
+  attack_surface: string;
+  required_access: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface DashboardRiskBucketData {
+  label: string;
+  count: number;
+  color: string;
+}
+
+export interface DashboardAnalysisData {
+  total_nodes: number;
+  scored: number;
+  avg_risk: number;
+  max_risk: number;
+  residual_scored: number;
+  avg_residual_risk: number;
+  residual_reduction_pct: number;
+  critical_count: number;
+  review_backlog: number;
+  gap_count: number;
+  no_mitigation_count: number;
+  no_detection_count: number;
+  no_mapping_count: number;
+  mitigation_pct: number;
+  detection_pct: number;
+  mapping_pct: number;
+  top_risks: DashboardNodeSummaryData[];
+  unmitigated: DashboardNodeSummaryData[];
+  gap_queue: DashboardNodeSummaryData[];
+  recent_updates: DashboardNodeSummaryData[];
+  by_type: Record<string, number>;
+  by_status: Record<string, number>;
+  by_surface: Record<string, number>;
+  by_platform: Record<string, number>;
+  by_access: Record<string, number>;
+  risk_buckets: DashboardRiskBucketData[];
+}
+
+export interface DashboardWorkspaceSummaryData {
+  project: ProjectData;
+  artifacts: ArtifactCountsData;
+  analysis: DashboardAnalysisData;
+  total_artifacts: number;
+}
+
+export interface DashboardPortfolioData {
+  workspaces: DashboardWorkspaceSummaryData[];
+  aggregate: DashboardAnalysisData;
+  artifact_totals: ArtifactCountsData;
+  project_scans: number;
+  standalone_scans: number;
+  contexts: Record<string, number>;
+}
+
+export interface DashboardProjectData {
+  project: ProjectData;
+  artifacts: ArtifactCountsData;
+  analysis: DashboardAnalysisData;
+  analysis_runs: AnalysisRunData[];
+}
+
 export interface LLMProviderData {
   id: string;
   name: string;
@@ -217,7 +334,8 @@ export interface LLMProviderData {
   updated_at: string;
 }
 
-export interface SuggestedNode {
+export interface SuggestedItem {
+  kind: 'branch' | 'mitigation' | 'detection' | 'mapping';
   title: string;
   description: string;
   node_type: string;
@@ -225,6 +343,15 @@ export interface SuggestedNode {
   threat_category: string;
   likelihood: number | null;
   impact: number | null;
+  effectiveness?: number | null;
+  coverage?: number | null;
+  data_source?: string;
+  framework?: string;
+  ref_id?: string;
+  ref_name?: string;
+  confidence?: number | null;
+  rationale?: string;
+  source?: string;
 }
 
 export interface LLMSuggestRequestData {
@@ -237,7 +364,7 @@ export interface LLMSuggestRequestData {
 }
 
 export interface LLMSuggestResponseData {
-  suggestions: SuggestedNode[];
+  suggestions: SuggestedItem[];
   prompt_used: string;
   model_used: string;
   raw_response: string;
@@ -265,7 +392,31 @@ export interface LLMAgentResponseData {
   model_used: string;
   elapsed_ms: number;
   passes_completed?: number;
+  total_passes?: number;
   warnings?: string[];
+  agent_run_id?: string;
+  background_processing?: boolean;
+  current_stage?: string;
+  post_processing_status?: string;
+  error_message?: string;
+  checkpoints?: Record<string, unknown>;
+}
+
+export interface LLMAgentRunStatusData {
+  id: string;
+  project_id: string;
+  status: string;
+  current_stage: string;
+  nodes_created: number;
+  passes_completed: number;
+  total_passes: number;
+  warnings: string[];
+  error_message: string;
+  model_used: string;
+  tokens_used: number;
+  elapsed_ms: number;
+  checkpoints: Record<string, unknown>;
+  background_processing: boolean;
 }
 
 export interface ReferenceItem {
@@ -275,6 +426,18 @@ export interface ReferenceItem {
   tactic?: string;
   severity?: string;
   category?: string;
+}
+
+export interface ReferenceSearchItem {
+  framework: string;
+  ref_id: string;
+  ref_name: string;
+  description?: string;
+  tactic?: string | null;
+  severity?: string | null;
+  category?: string | null;
+  score: number;
+  reasons: string[];
 }
 
 export interface EnvironmentCatalogNode {
@@ -289,6 +452,18 @@ export interface EnvironmentCatalogNode {
   dependencies?: string[];
   common_protocols?: string[];
   example_technologies?: string[];
+  shared_concepts?: EnvironmentCatalogConcept[];
+  related_catalogs?: EnvironmentCatalogRelatedCatalog[];
+}
+
+export interface EnvironmentCatalogConcept {
+  id: string;
+  label: string;
+}
+
+export interface EnvironmentCatalogRelatedCatalog {
+  id: string;
+  name: string;
 }
 
 export interface EnvironmentCatalogSummary {
@@ -300,6 +475,7 @@ export interface EnvironmentCatalogSummary {
   node_count: number;
   top_level_count: number;
   categories: string[];
+  shared_concepts?: EnvironmentCatalogConcept[];
 }
 
 export interface EnvironmentCatalogData extends EnvironmentCatalogSummary {

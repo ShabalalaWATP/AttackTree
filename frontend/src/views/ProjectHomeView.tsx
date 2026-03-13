@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useStore, type ViewMode } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
+import type { AnalysisRunData } from '@/types';
 import {
-  GitBranch, Brain, FlaskConical, Route, ShieldCheck, LayoutDashboard,
+  Activity, GitBranch, Brain, FlaskConical, Route, ShieldCheck, LayoutDashboard,
   Target, Clock, ChevronRight, Layers, Network
 } from 'lucide-react';
+import { useAdvisorPageContext } from '@/hooks/useAdvisorPageContext';
 
 interface ToolCard {
   id: ViewMode;
@@ -36,8 +38,9 @@ interface SavedItem {
 }
 
 export function ProjectHomeView() {
-  const { currentProject, nodes, setViewMode } = useStore();
+  const { currentProject, nodes, openView } = useStore();
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
+  const [recentRuns, setRecentRuns] = useState<AnalysisRunData[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -47,15 +50,18 @@ export function ProjectHomeView() {
     const load = async () => {
       setLoading(true);
       const items: SavedItem[] = [];
+      let runs: AnalysisRunData[] = [];
 
       try {
-        const [scenarios, killChains, threatModels, infraMaps, snapshots] = await Promise.all([
+        const [scenarios, killChains, threatModels, infraMaps, snapshots, loadedRuns] = await Promise.all([
           api.listScenarios(currentProject.id).catch(() => []),
           api.listKillChains(currentProject.id).catch(() => []),
           api.listThreatModels(currentProject.id).catch(() => []),
           api.listInfraMaps(currentProject.id).catch(() => []),
           api.listSnapshots(currentProject.id).catch(() => []),
+          api.listAnalysisRuns(currentProject.id, 12).catch(() => []),
         ]);
+        runs = Array.isArray(loadedRuns) ? loadedRuns : [];
 
         for (const s of scenarios) {
           items.push({
@@ -104,6 +110,7 @@ export function ProjectHomeView() {
 
       if (!cancelled) {
         setSavedItems(items);
+        setRecentRuns(runs);
         setLoading(false);
       }
     };
@@ -111,6 +118,22 @@ export function ProjectHomeView() {
     load();
     return () => { cancelled = true; };
   }, [currentProject?.id]);
+
+  const nodeCount = nodes.length;
+  const workspaceLabel = currentProject?.workspace_mode === 'standalone_scan' ? 'Standalone Scan' : 'Project Scan';
+  const advisorContext = useMemo(() => ({
+    view: 'project_home' as const,
+    title: currentProject ? `${currentProject.name} Workspace Home` : 'Workspace Home',
+    summary: currentProject?.root_objective || 'Workspace home view with launch shortcuts, saved analyses, and recent run activity.',
+    packets: [
+      `Workspace mode: ${workspaceLabel}`,
+      `Attack tree nodes: ${nodeCount}`,
+      `Saved analyses: ${savedItems.filter((item) => item.tool !== 'Snapshot').length}`,
+      `Recent runs: ${recentRuns.length}`,
+      currentProject?.context_preset ? `Context preset: ${currentProject.context_preset}` : '',
+    ],
+  }), [currentProject, nodeCount, recentRuns.length, savedItems, workspaceLabel]);
+  useAdvisorPageContext(advisorContext);
 
   if (!currentProject) {
     return (
@@ -120,8 +143,26 @@ export function ProjectHomeView() {
     );
   }
 
-  const nodeCount = nodes.length;
-  const workspaceLabel = currentProject.workspace_mode === 'standalone_scan' ? 'Standalone Scan' : 'Project Scan';
+  const openSavedItem = (item: SavedItem) => {
+    if (item.toolView === 'tree') {
+      openView('tree');
+      return;
+    }
+    openView(item.toolView, { artifactId: item.id });
+  };
+  const openRecentRun = (run: AnalysisRunData) => {
+    const targetView = toolViewForRun(run);
+    const artifactView = runArtifactView(run);
+    if (artifactView && run.artifact_id) {
+      openView(artifactView, { artifactId: run.artifact_id });
+      return;
+    }
+    if (targetView === 'tree' && run.artifact_kind === 'node' && run.artifact_id) {
+      openView('tree', { nodeId: run.artifact_id });
+      return;
+    }
+    openView(targetView);
+  };
 
   return (
     <div className="h-full overflow-auto">
@@ -139,6 +180,7 @@ export function ProjectHomeView() {
               <span className="px-2 py-1 rounded-full bg-primary/10 text-primary font-medium">{workspaceLabel}</span>
               <span className="flex items-center gap-1"><Layers size={12} /> {nodeCount} nodes</span>
               <span className="flex items-center gap-1"><Target size={12} /> {savedItems.filter(i => i.tool !== 'Snapshot').length} saved analyses</span>
+              <span className="flex items-center gap-1"><Activity size={12} /> {recentRuns.length} recent runs</span>
             </div>
           </div>
         </div>
@@ -150,7 +192,7 @@ export function ProjectHomeView() {
             {TOOLS.map(tool => (
               <button
                 key={tool.id}
-                onClick={() => setViewMode(tool.id)}
+                onClick={() => openView(tool.id)}
                 className="group text-left rounded-xl border border-border/40 bg-card/60 backdrop-blur-sm p-4 hover:border-primary/40 hover:bg-primary/5 transition-all duration-200"
               >
                 <div className={cn('w-10 h-10 rounded-lg bg-gradient-to-br flex items-center justify-center mb-3', tool.gradient)}>
@@ -164,6 +206,59 @@ export function ProjectHomeView() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+            Recent Runs in This Workspace
+          </h2>
+
+          {loading ? (
+            <div className="text-center py-8 text-sm text-muted-foreground">Loading…</div>
+          ) : recentRuns.length === 0 ? (
+            <div className="rounded-xl border border-border/40 bg-card/60 backdrop-blur-sm p-8 text-center">
+              <p className="text-sm text-muted-foreground">No project analysis runs recorded yet.</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border/40 bg-card/60 backdrop-blur-sm overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border/40 text-[11px] text-muted-foreground uppercase tracking-wider">
+                    <th className="text-left px-4 py-2.5 font-medium">Action</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Asset</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Summary</th>
+                    <th className="text-left px-4 py-2.5 font-medium">Status</th>
+                    <th className="text-left px-4 py-2.5 font-medium">When</th>
+                    <th className="px-4 py-2.5" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentRuns.map((run) => (
+                    <tr
+                      key={run.id}
+                      className="border-b border-border/20 hover:bg-white/5 cursor-pointer transition-colors"
+                      onClick={() => openRecentRun(run)}
+                    >
+                      <td className="px-4 py-2.5 font-medium">{formatRunType(run.run_type)}</td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground">{run.artifact_name || currentProject.name}</td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground max-w-[320px] truncate">{run.summary || 'No summary available'}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium border', runStatusClass(run.status))}>
+                          {formatRunStatus(run.status)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground tabular-nums">
+                        {formatRunTimestamp(run.created_at, run.duration_ms)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <ChevronRight size={13} className="text-muted-foreground" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Saved work table */}
@@ -195,7 +290,7 @@ export function ProjectHomeView() {
                     <tr
                       key={item.id}
                       className="border-b border-border/20 hover:bg-white/5 cursor-pointer transition-colors"
-                      onClick={() => setViewMode(item.toolView)}
+                      onClick={() => openSavedItem(item)}
                     >
                       <td className="px-4 py-2.5 font-medium truncate max-w-[220px]">{item.name}</td>
                       <td className="px-4 py-2.5">
@@ -236,4 +331,56 @@ function formatDate(iso: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function formatRunType(value: string): string {
+  return value
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatRunStatus(value: string): string {
+  if (value === 'completed') return 'Completed';
+  if (value === 'partial') return 'Partial';
+  if (value === 'running') return 'Running';
+  if (value === 'queued') return 'Queued';
+  if (value === 'failed') return 'Failed';
+  return 'Unknown';
+}
+
+function formatRunTimestamp(iso: string, durationMs: number): string {
+  const stamp = formatDate(iso);
+  if (!durationMs) return stamp;
+  const seconds = Math.round(durationMs / 1000);
+  if (seconds < 60) return `${stamp} · ${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${stamp} · ${minutes}m`;
+}
+
+function runStatusClass(status: string): string {
+  if (status === 'completed') return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300';
+  if (status === 'partial') return 'border-amber-500/20 bg-amber-500/10 text-amber-300';
+  if (status === 'running' || status === 'queued') return 'border-blue-500/20 bg-blue-500/10 text-blue-300';
+  if (status === 'failed') return 'border-red-500/20 bg-red-500/10 text-red-300';
+  return 'border-border/40 bg-background/40 text-muted-foreground';
+}
+
+function toolViewForRun(run: AnalysisRunData): ViewMode {
+  if (run.tool === 'attack_tree') return 'tree';
+  if (run.tool === 'brainstorm') return 'brainstorm';
+  if (run.tool === 'scenario') return 'scenarios';
+  if (run.tool === 'kill_chain') return 'kill_chain';
+  if (run.tool === 'threat_model') return 'threat_model';
+  if (run.tool === 'infra_map') return 'infra_map';
+  return 'dashboard';
+}
+
+function runArtifactView(run: AnalysisRunData): ViewMode | null {
+  if (!run.artifact_id) return null;
+  if (run.artifact_kind === 'scenario') return 'scenarios';
+  if (run.artifact_kind === 'kill_chain') return 'kill_chain';
+  if (run.artifact_kind === 'threat_model') return 'threat_model';
+  if (run.artifact_kind === 'infra_map') return 'infra_map';
+  return null;
 }

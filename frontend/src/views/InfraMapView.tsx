@@ -1,17 +1,20 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import type { PlanningProfile } from '@/types';
+import type { PlanningProfile, ReferenceLink } from '@/types';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { ReferencePicker } from '@/components/ReferencePicker';
 import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
+import { mergeReferenceLinks, normalizeReferenceLinks, removeReferenceLink } from '@/utils/referenceLinks';
+import { useAdvisorPageContext } from '@/hooks/useAdvisorPageContext';
 import toast from 'react-hot-toast';
 import {
   Network, Plus, Trash2, Sparkles, Loader2, X, BookOpen,
   ChevronRight, ChevronDown, Server, Database, Monitor, Shield,
   Cloud, Lock, Cpu, HardDrive, Radio, Building2, Users, Cog,
   Globe, Terminal, Wifi, Camera, Printer, Phone, ChevronsDown, ChevronsUp,
-  Brain, Zap, List, GitFork
+  Brain, Zap, List, GitFork, Pencil, Maximize2
 } from 'lucide-react';
 
 /* ───── Types ───── */
@@ -27,6 +30,7 @@ interface InfraNode {
   manually_added: boolean;
   position_x?: number | null;
   position_y?: number | null;
+  references?: ReferenceLink[];
 }
 
 interface InfraMapData {
@@ -51,9 +55,24 @@ interface InfraMapData {
   updated_at: string;
 }
 
-type LayoutMode = 'tree' | 'mindmap';
+type LayoutMode = 'tree' | 'mindmap' | 'map';
 
 type InfraNodeDraft = Pick<InfraNode, 'label' | 'category' | 'description' | 'icon_hint'>;
+
+function normalizeInfraNode(node: InfraNode): InfraNode {
+  return {
+    ...node,
+    references: normalizeReferenceLinks(node.references),
+  };
+}
+
+function normalizeInfraMap(data: InfraMapData): InfraMapData {
+  return {
+    ...data,
+    nodes: Array.isArray(data.nodes) ? data.nodes.map((node) => normalizeInfraNode(node)) : [],
+    analysis_metadata: data.analysis_metadata || {},
+  };
+}
 
 /* ───── Icon map ───── */
 
@@ -142,6 +161,10 @@ const MM_NODE_H = 40;
 const MM_H_GAP = 70;
 const MM_V_GAP = 10;
 const MM_PAD = 40;
+const CANVAS_MIN_SCALE = 0.08;
+const CANVAS_MAX_SCALE = 6;
+const CANVAS_ZOOM_IN_FACTOR = 1.18;
+const CANVAS_ZOOM_OUT_FACTOR = 0.84;
 
 interface LayoutItem {
   id: string;
@@ -180,6 +203,57 @@ interface MindMapPanState {
   startOffsetX: number;
   startOffsetY: number;
   moved: boolean;
+}
+
+const GM_ROOT_W = 220;
+const GM_ROOT_H = 108;
+const GM_GROUP_MIN_W = 230;
+const GM_GROUP_MIN_H = 140;
+const GM_GROUP_PAD_X = 22;
+const GM_GROUP_PAD_Y = 20;
+const GM_GROUP_TITLE_H = 56;
+const GM_GROUP_CHIP_W = 116;
+const GM_GROUP_CHIP_H = 30;
+const GM_GROUP_CHIP_GAP = 10;
+const GM_GROUP_MAX_VISIBLE = 6;
+const GM_CANVAS_PAD = 120;
+
+interface GroupedMapChip {
+  kind: 'node' | 'more';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  node?: InfraNode;
+  hiddenCount?: number;
+}
+
+interface GroupedMapGroup {
+  node: InfraNode;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  directChildren: InfraNode[];
+  descendants: InfraNode[];
+  chips: GroupedMapChip[];
+}
+
+interface GroupedMapLayout {
+  width: number;
+  height: number;
+  root: {
+    node: InfraNode;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
+  groups: GroupedMapGroup[];
+}
+
+function clampCanvasScale(scale: number) {
+  return Math.min(CANVAS_MAX_SCALE, Math.max(CANVAS_MIN_SCALE, scale));
 }
 
 function computeMindMapLayout(nodes: InfraNode[], childMap: Map<string, InfraNode[]>) {
@@ -321,10 +395,134 @@ function extractStoredMindMapPositions(nodes: InfraNode[]): Record<string, MindM
   }, {});
 }
 
+function collectDescendantNodes(nodeId: string, childMap: Map<string, InfraNode[]>): InfraNode[] {
+  const descendants: InfraNode[] = [];
+  const stack = [...(childMap.get(nodeId) || [])];
+  const seen = new Set<string>();
+
+  while (stack.length > 0) {
+    const current = stack.shift();
+    if (!current || seen.has(current.id)) continue;
+    seen.add(current.id);
+    descendants.push(current);
+    stack.push(...(childMap.get(current.id) || []));
+  }
+
+  return descendants;
+}
+
+function computeGroupedMapLayout(nodes: InfraNode[], childMap: Map<string, InfraNode[]>): GroupedMapLayout {
+  const roots = nodes.filter((node) => !node.parent_id);
+  if (roots.length === 0) {
+    return { width: 960, height: 680, root: null, groups: [] };
+  }
+
+  const root = roots[0];
+  const directGroups = childMap.get(root.id) || [];
+  const groupsSource = directGroups.length > 0 ? directGroups : roots.slice(1);
+
+  const groupDrafts = groupsSource.map((node) => {
+    const directChildren = childMap.get(node.id) || [];
+    const descendants = collectDescendantNodes(node.id, childMap);
+    const chipNodes = directChildren.length > 0 ? directChildren : descendants;
+    const visibleChipNodes = chipNodes.slice(0, GM_GROUP_MAX_VISIBLE);
+    const hiddenCount = Math.max(0, chipNodes.length - visibleChipNodes.length);
+    const chipCount = visibleChipNodes.length + (hiddenCount > 0 ? 1 : 0);
+    const columnCount = chipCount <= 1 ? 1 : 2;
+    const rowCount = chipCount > 0 ? Math.ceil(chipCount / columnCount) : 0;
+    const chipAreaWidth = chipCount > 0
+      ? columnCount * GM_GROUP_CHIP_W + (columnCount - 1) * GM_GROUP_CHIP_GAP
+      : 0;
+    const width = Math.max(GM_GROUP_MIN_W, chipAreaWidth + GM_GROUP_PAD_X * 2);
+    const height = Math.max(
+      GM_GROUP_MIN_H,
+      GM_GROUP_TITLE_H + (rowCount > 0 ? rowCount * GM_GROUP_CHIP_H + (rowCount - 1) * GM_GROUP_CHIP_GAP : 0) + GM_GROUP_PAD_Y * 2,
+    );
+
+    const chips: GroupedMapChip[] = [];
+    const chipEntries = [
+      ...visibleChipNodes.map((chipNode): GroupedMapChip => ({
+        kind: 'node',
+        x: 0,
+        y: 0,
+        width: GM_GROUP_CHIP_W,
+        height: GM_GROUP_CHIP_H,
+        node: chipNode,
+      })),
+      ...(hiddenCount > 0 ? [{
+        kind: 'more' as const,
+        x: 0,
+        y: 0,
+        width: GM_GROUP_CHIP_W,
+        height: GM_GROUP_CHIP_H,
+        hiddenCount,
+      }] : []),
+    ];
+
+    chipEntries.forEach((chip, index) => {
+      const column = index % columnCount;
+      const row = Math.floor(index / columnCount);
+      chips.push({
+        ...chip,
+        x: GM_GROUP_PAD_X + column * (GM_GROUP_CHIP_W + GM_GROUP_CHIP_GAP),
+        y: GM_GROUP_TITLE_H + GM_GROUP_PAD_Y + row * (GM_GROUP_CHIP_H + GM_GROUP_CHIP_GAP),
+      });
+    });
+
+    return {
+      node,
+      width,
+      height,
+      directChildren,
+      descendants,
+      chips,
+    };
+  });
+
+  const maxGroupWidth = groupDrafts.reduce((max, group) => Math.max(max, group.width), GM_GROUP_MIN_W);
+  const maxGroupHeight = groupDrafts.reduce((max, group) => Math.max(max, group.height), GM_GROUP_MIN_H);
+  const groupCount = Math.max(groupDrafts.length, 1);
+  const radiusX = Math.max(320, maxGroupWidth + 120 + (groupCount > 4 ? 80 : 0));
+  const radiusY = Math.max(220, maxGroupHeight + 40 + (groupCount > 4 ? 70 : 0));
+  const width = Math.max(1200, radiusX * 2 + maxGroupWidth + GM_ROOT_W + GM_CANVAS_PAD * 2);
+  const height = Math.max(760, radiusY * 2 + maxGroupHeight + GM_ROOT_H + GM_CANVAS_PAD * 2);
+  const centerX = width / 2;
+  const centerY = height / 2;
+
+  const groups = groupDrafts.map((group, index) => {
+    const angle = (-Math.PI / 2) + (2 * Math.PI * index) / groupCount;
+    const groupX = centerX + Math.cos(angle) * radiusX - group.width / 2;
+    const groupY = centerY + Math.sin(angle) * radiusY - group.height / 2;
+    return {
+      ...group,
+      x: groupX,
+      y: groupY,
+      chips: group.chips.map((chip) => ({
+        ...chip,
+        x: groupX + chip.x,
+        y: groupY + chip.y,
+      })),
+    };
+  });
+
+  return {
+    width,
+    height,
+    root: {
+      node: root,
+      x: centerX - GM_ROOT_W / 2,
+      y: centerY - GM_ROOT_H / 2,
+      width: GM_ROOT_W,
+      height: GM_ROOT_H,
+    },
+    groups,
+  };
+}
+
 /* ───── Component ───── */
 
 export function InfraMapView() {
-  const { currentProject } = useStore();
+  const { currentProject, pendingViewSelection, clearPendingViewSelection } = useStore();
   const [infraMaps, setInfraMaps] = useState<InfraMapData[]>([]);
   const [selected, setSelected] = useState<InfraMapData | null>(null);
   const [genLoading, setGenLoading] = useState(false);
@@ -344,6 +542,7 @@ export function InfraMapView() {
   const [savingNode, setSavingNode] = useState(false);
   const [editDraft, setEditDraft] = useState<InfraNodeDraft | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('tree');
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [mindMapViewport, setMindMapViewport] = useState<MindMapViewport>({ scale: 1, offsetX: 24, offsetY: 24 });
   const [mindMapNodePositions, setMindMapNodePositions] = useState<Record<string, MindMapPosition>>({});
   const mindmapRef = useRef<HTMLDivElement>(null);
@@ -353,6 +552,26 @@ export function InfraMapView() {
   const selectedRef = useRef<InfraMapData | null>(null);
   const nodePositionsRef = useRef<Record<string, MindMapPosition>>({});
   const selectedPlanningProfile = useMemo(() => getPlanningProfileOption(planningProfile), [planningProfile]);
+  const advisorSelectedNode = useMemo(
+    () => (selected?.nodes || []).find((node) => node.id === selectedNodeId) || null,
+    [selected?.nodes, selectedNodeId],
+  );
+  const advisorContext = useMemo(() => ({
+    view: 'infra_map' as const,
+    title: selected ? `Infrastructure Map: ${selected.name}` : 'Infrastructure Map',
+    summary: selected
+      ? `Reviewing the infrastructure map in ${layoutMode} layout${advisorSelectedNode ? ` with ${advisorSelectedNode.label} selected` : ''}.`
+      : 'Infrastructure mapping workspace for topology, dependencies, and trust relationships.',
+    packets: [
+      `Layout mode: ${layoutMode}`,
+      selected ? `Map nodes: ${selected.nodes.length}` : '',
+      advisorSelectedNode ? `Selected infrastructure node: ${advisorSelectedNode.label}` : '',
+      advisorSelectedNode?.category ? `Selected node category: ${advisorSelectedNode.category}` : '',
+      selected?.analysis_metadata?.generation_status ? `Generation status: ${selected.analysis_metadata.generation_status}` : '',
+      showGuidance ? `Operator guidance open with ${selectedPlanningProfile.label}` : '',
+    ],
+  }), [advisorSelectedNode, layoutMode, selected, selectedPlanningProfile.label, showGuidance]);
+  useAdvisorPageContext(advisorContext);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -372,41 +591,59 @@ export function InfraMapView() {
   }, [selected?.nodes]);
 
   useEffect(() => {
-    setMindMapViewport({ scale: 1, offsetX: 24, offsetY: 24 });
-  }, [selected?.id]);
+    if (!isFullscreen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFullscreen(false);
+      }
+    };
+
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen]);
 
   const loadInfraMaps = async () => {
     try {
       const previousSelectedId = selected?.id;
-      const data = currentProject
+      const rawData = currentProject
         ? await api.listInfraMaps(currentProject.id)
         : await api.listStandaloneInfraMaps();
+      const data = Array.isArray(rawData) ? rawData.map((item) => normalizeInfraMap(item)) : [];
+      const requestedMapId = pendingViewSelection?.view === 'infra_map' ? pendingViewSelection.artifactId : null;
       setInfraMaps(data);
-      const nextSelected = data.find(m => m.id === previousSelectedId) || data[0] || null;
+      const nextSelected = requestedMapId
+        ? data.find((map) => map.id === requestedMapId) || data[0] || null
+        : data.find((map) => map.id === previousSelectedId) || data[0] || null;
       setSelected(nextSelected);
       setSelectedNodeId(null);
       setShowAddChild(null);
       setNodeQuery('');
       const rootNode = (nextSelected?.nodes || []).find((n: InfraNode) => !n.parent_id);
       setExpandedNodes(rootNode ? new Set([rootNode.id]) : new Set());
+      if (requestedMapId) {
+        clearPendingViewSelection();
+      }
     } catch (e: any) { toast.error(e.message); }
   };
 
   const applyMapUpdate = useCallback((result: InfraMapData) => {
-    setSelected(result);
+    const normalized = normalizeInfraMap(result);
+    setSelected(normalized);
     setInfraMaps(prev => {
-      const existingIndex = prev.findIndex(map => map.id === result.id);
+      const existingIndex = prev.findIndex(map => map.id === normalized.id);
       if (existingIndex === -1) {
-        return [result, ...prev];
+        return [normalized, ...prev];
       }
       const next = [...prev];
-      next[existingIndex] = result;
+      next[existingIndex] = normalized;
       return next;
     });
-  }, []);
-
-  const handleResetMindMapView = useCallback(() => {
-    setMindMapViewport({ scale: 1, offsetX: 24, offsetY: 24 });
   }, []);
 
   const handleResetMindMapLayout = useCallback(async () => {
@@ -457,7 +694,7 @@ export function InfraMapView() {
     try {
       const payload: any = { name: createName || 'Infrastructure Map' };
       if (currentProject) payload.project_id = currentProject.id;
-      const im = await api.createInfraMap(payload);
+      const im = normalizeInfraMap(await api.createInfraMap(payload));
       setInfraMaps(prev => [im, ...prev]);
       setSelected(im);
       setExpandedNodes(new Set());
@@ -681,6 +918,35 @@ export function InfraMapView() {
     }
   };
 
+  const updateSelectedNodeReferences = useCallback(async (nextReferences: ReferenceLink[]) => {
+    if (!selected || !selectedNode) return;
+    const updatedNodes = (selected.nodes || []).map((node) => (
+      node.id === selectedNode.id ? { ...node, references: normalizeReferenceLinks(nextReferences) } : node
+    ));
+    try {
+      const result = await api.updateInfraMap(selected.id, { nodes: updatedNodes });
+      applyMapUpdate(result);
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  }, [applyMapUpdate, selected, selectedNode]);
+
+  const addSelectedNodeReference = useCallback((item: {
+    framework: string;
+    ref_id: string;
+    ref_name: string;
+    score: number;
+    reasons: string[];
+  }) => {
+    if (!selectedNode) return;
+    void updateSelectedNodeReferences(mergeReferenceLinks(selectedNode.references || [], [item]));
+  }, [selectedNode, updateSelectedNodeReferences]);
+
+  const removeSelectedNodeReference = useCallback((framework: string, refId: string) => {
+    if (!selectedNode) return;
+    void updateSelectedNodeReferences(removeReferenceLink(selectedNode.references || [], framework, refId));
+  }, [selectedNode, updateSelectedNodeReferences]);
+
   // Mind map layout
   const mmLayout = useMemo(() => computeMindMapLayout(nodes, childMap), [nodes, childMap]);
   const mmDisplayItems = useMemo(
@@ -721,6 +987,62 @@ export function InfraMapView() {
     };
   }, [mmDisplayItems]);
 
+  const groupedMapLayout = useMemo(
+    () => computeGroupedMapLayout(nodes, childMap),
+    [childMap, nodes],
+  );
+
+  const handleResetCanvasView = useCallback(() => {
+    const container = mindmapRef.current;
+    const target = layoutMode === 'map' ? groupedMapLayout : mmCanvas;
+    if (!container) {
+      setMindMapViewport({ scale: 1, offsetX: 24, offsetY: 24 });
+      return;
+    }
+
+    const availableWidth = Math.max(container.clientWidth - 40, 320);
+    const availableHeight = Math.max(container.clientHeight - 40, 280);
+    const scale = Math.min(
+      CANVAS_MAX_SCALE,
+      clampCanvasScale(Math.min(availableWidth / target.width, availableHeight / target.height)),
+    );
+
+    setMindMapViewport({
+      scale,
+      offsetX: (container.clientWidth - target.width * scale) / 2,
+      offsetY: (container.clientHeight - target.height * scale) / 2,
+    });
+  }, [groupedMapLayout, layoutMode, mmCanvas]);
+
+  const handleAdjustCanvasZoom = useCallback((factor: number) => {
+    const container = mindmapRef.current;
+    if (!container) return;
+    const anchorX = container.clientWidth / 2;
+    const anchorY = container.clientHeight / 2;
+
+    setMindMapViewport((prev) => {
+      const nextScale = clampCanvasScale(prev.scale * factor);
+      if (Math.abs(nextScale - prev.scale) < 0.001) {
+        return prev;
+      }
+      const contentX = (anchorX - prev.offsetX) / prev.scale;
+      const contentY = (anchorY - prev.offsetY) / prev.scale;
+      return {
+        scale: nextScale,
+        offsetX: anchorX - contentX * nextScale,
+        offsetY: anchorY - contentY * nextScale,
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (layoutMode === 'tree') return;
+    const frame = window.requestAnimationFrame(() => {
+      handleResetCanvasView();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [handleResetCanvasView, isFullscreen, layoutMode, selected?.id]);
+
   const handleMindMapWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     const container = mindmapRef.current;
@@ -731,7 +1053,10 @@ export function InfraMapView() {
     const cursorY = event.clientY - rect.top;
 
     setMindMapViewport(prev => {
-      const nextScale = Math.min(2.4, Math.max(0.45, prev.scale * (event.deltaY < 0 ? 1.1 : 0.92)));
+      const nextScale = clampCanvasScale(prev.scale * (event.deltaY < 0 ? CANVAS_ZOOM_IN_FACTOR : CANVAS_ZOOM_OUT_FACTOR));
+      if (Math.abs(nextScale - prev.scale) < 0.001) {
+        return prev;
+      }
       const contentX = (cursorX - prev.offsetX) / prev.scale;
       const contentY = (cursorY - prev.offsetY) / prev.scale;
       return {
@@ -877,7 +1202,10 @@ export function InfraMapView() {
 
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
             {!isExpanding ? (
-              <button onClick={(e) => { e.stopPropagation(); handleAiExpand(node.id); }} className="p-1 rounded hover:bg-cyan-500/20 text-cyan-500" title="AI expand"><Sparkles size={12} /></button>
+              <>
+                <button onClick={(e) => { e.stopPropagation(); setSelectedNodeId(node.id); }} className="p-1 rounded hover:bg-accent text-muted-foreground" title="Edit details"><Pencil size={12} /></button>
+                <button onClick={(e) => { e.stopPropagation(); handleAiExpand(node.id); }} className="p-1 rounded hover:bg-cyan-500/20 text-cyan-500" title="AI deep dive this branch"><Sparkles size={12} /></button>
+              </>
             ) : (
               <Loader2 size={12} className="animate-spin text-cyan-500" />
             )}
@@ -995,10 +1323,16 @@ export function InfraMapView() {
 
                   <div className="absolute -top-2 -right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
                     {!isExpanding ? (
-                      <button onClick={(e) => { e.stopPropagation(); handleAiExpand(node.id); }}
-                        className="p-1 rounded-full bg-cyan-600 text-white shadow hover:bg-cyan-700" title="AI expand">
-                        <Sparkles size={10} />
-                      </button>
+                      <>
+                        <button onClick={(e) => { e.stopPropagation(); setSelectedNodeId(node.id); }}
+                          className="p-1 rounded-full bg-card border shadow text-muted-foreground hover:text-foreground" title="Edit details">
+                          <Pencil size={10} />
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); handleAiExpand(node.id); }}
+                          className="p-1 rounded-full bg-cyan-600 text-white shadow hover:bg-cyan-700" title="AI deep dive this branch">
+                          <Sparkles size={10} />
+                        </button>
+                      </>
                     ) : (
                       <span className="p-1 rounded-full bg-cyan-600 text-white shadow"><Loader2 size={10} className="animate-spin" /></span>
                     )}
@@ -1036,11 +1370,284 @@ export function InfraMapView() {
     );
   };
 
+  const renderGroupedMap = () => {
+    const root = groupedMapLayout.root;
+    if (!root) return null;
+
+    const visibleGroups = groupedMapLayout.groups.reduce<GroupedMapGroup[]>((acc, group) => {
+      const visibleChips = visibleNodeIds
+        ? group.chips.filter((chip) => chip.kind === 'node' && chip.node && visibleNodeIds.has(chip.node.id))
+        : group.chips;
+      const shouldShow = !visibleNodeIds
+        || visibleNodeIds.has(group.node.id)
+        || visibleChips.length > 0;
+      if (!shouldShow) return acc;
+
+      acc.push({
+        ...group,
+        chips: visibleNodeIds
+          ? visibleChips
+          : group.chips,
+      });
+      return acc;
+    }, []);
+
+    const nodeAnchors = new Map<string, { x: number; y: number; width: number; height: number }>();
+    nodeAnchors.set(root.node.id, root);
+    visibleGroups.forEach((group) => {
+      nodeAnchors.set(group.node.id, group);
+      group.chips.forEach((chip) => {
+        if (chip.kind === 'node' && chip.node) {
+          nodeAnchors.set(chip.node.id, chip);
+        }
+      });
+    });
+
+    return (
+      <div
+        ref={mindmapRef}
+        className={cn(
+          'flex-1 overflow-hidden bg-background/50 select-none',
+          panStateRef.current ? 'cursor-grabbing' : 'cursor-grab',
+        )}
+        style={{ position: 'relative' }}
+        onWheel={handleMindMapWheel}
+        onMouseDown={handleMindMapBackgroundMouseDown}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            transform: `translate(${mindMapViewport.offsetX}px, ${mindMapViewport.offsetY}px) scale(${mindMapViewport.scale})`,
+            transformOrigin: '0 0',
+          }}
+        >
+          <div style={{ width: `${groupedMapLayout.width}px`, height: `${groupedMapLayout.height}px`, position: 'relative' }}>
+            <svg
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+            >
+              {visibleGroups.map((group) => {
+                const color = CAT_SVG_COLORS[group.node.category] || '#6b7280';
+                const startX = root.x + root.width / 2;
+                const startY = root.y + root.height / 2;
+                const endX = group.x + group.width / 2;
+                const endY = group.y + group.height / 2;
+                const controlX = startX + (endX - startX) * 0.45;
+                return (
+                  <path
+                    key={`edge-${group.node.id}`}
+                    d={`M${startX},${startY} C${controlX},${startY} ${controlX},${endY} ${endX},${endY}`}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={1.5}
+                    strokeOpacity={0.4}
+                  />
+                );
+              })}
+            </svg>
+
+            <div
+              data-mindmap-node="true"
+              className={cn(
+                'absolute rounded-[999px] border bg-card/95 px-6 py-5 text-center shadow-xl backdrop-blur group',
+                (CATEGORY_COLORS[root.node.category] || CATEGORY_COLORS.infrastructure).border,
+                selectedNodeId === root.node.id && 'ring-2 ring-cyan-500/60 border-cyan-500/50',
+              )}
+              style={{ left: root.x, top: root.y, width: root.width, height: root.height }}
+              onClick={() => setSelectedNodeId(selectedNodeId === root.node.id ? null : root.node.id)}
+            >
+              <div className="flex h-full flex-col items-center justify-center gap-2">
+                <div className={cn(
+                  'rounded-full px-3 py-1 text-[10px] font-medium uppercase tracking-wide',
+                  (CATEGORY_COLORS[root.node.category] || CATEGORY_COLORS.infrastructure).bg,
+                  (CATEGORY_COLORS[root.node.category] || CATEGORY_COLORS.infrastructure).text,
+                )}>
+                  Root
+                </div>
+                <div className="text-lg font-semibold leading-tight">{root.node.label}</div>
+                <div className="text-[11px] text-muted-foreground line-clamp-2">
+                  {root.node.description || 'Primary infrastructure scope'}
+                </div>
+              </div>
+              <div className="absolute -top-2 -right-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  onClick={(event) => { event.stopPropagation(); handleAiExpand(root.node.id); }}
+                  className="rounded-full bg-cyan-600 p-1 text-white shadow hover:bg-cyan-700"
+                  title="AI deep dive this root"
+                >
+                  {expandingNode === root.node.id ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                </button>
+                <button
+                  onClick={(event) => { event.stopPropagation(); setShowAddChild(showAddChild === root.node.id ? null : root.node.id); setAddChildLabel(''); }}
+                  className="rounded-full border bg-card p-1 text-muted-foreground shadow hover:text-foreground"
+                  title="Add child"
+                >
+                  <Plus size={10} />
+                </button>
+              </div>
+            </div>
+
+            {visibleGroups.map((group) => {
+              const catStyle = CATEGORY_COLORS[group.node.category] || CATEGORY_COLORS.general;
+              return (
+                <div
+                  key={group.node.id}
+                  data-mindmap-node="true"
+                  className={cn(
+                    'absolute rounded-[48px] border bg-card/95 px-5 py-4 shadow-lg backdrop-blur transition-shadow group hover:shadow-xl',
+                    catStyle.border,
+                    selectedNodeId === group.node.id && 'ring-2 ring-cyan-500/60 border-cyan-500/50',
+                  )}
+                  style={{ left: group.x, top: group.y, width: group.width, height: group.height }}
+                  onClick={() => setSelectedNodeId(selectedNodeId === group.node.id ? null : group.node.id)}
+                >
+                  <div className="flex h-full flex-col">
+                    <div className="text-center">
+                      <div className="text-sm font-semibold leading-tight">{group.node.label}</div>
+                      <div className={cn('mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium', catStyle.bg, catStyle.text)}>
+                        {group.node.category}
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {group.directChildren.length || group.descendants.length} mapped items
+                      </div>
+                    </div>
+
+                    <div className="relative mt-4 flex-1">
+                      {group.chips.map((chip) => {
+                        if (chip.kind === 'more') {
+                          return (
+                            <div
+                              key={`more-${group.node.id}`}
+                              className="absolute flex items-center justify-center rounded-full border border-dashed border-border/70 bg-background/50 px-3 text-[11px] text-muted-foreground"
+                              style={{ left: chip.x - group.x, top: chip.y - group.y, width: chip.width, height: chip.height }}
+                            >
+                              +{chip.hiddenCount} more
+                            </div>
+                          );
+                        }
+
+                        if (!chip.node) return null;
+                        const chipStyle = CATEGORY_COLORS[chip.node.category] || CATEGORY_COLORS.general;
+                        return (
+                          <div
+                            key={chip.node.id}
+                            data-mindmap-node="true"
+                            className={cn(
+                              'absolute flex items-center gap-2 rounded-full border bg-background/85 px-3 shadow-sm transition-all group/chip hover:bg-accent/20',
+                              chipStyle.border,
+                              selectedNodeId === chip.node.id && 'ring-2 ring-cyan-500/60 border-cyan-500/40',
+                            )}
+                            style={{ left: chip.x - group.x, top: chip.y - group.y, width: chip.width, height: chip.height }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedNodeId(selectedNodeId === chip.node!.id ? null : chip.node!.id);
+                            }}
+                          >
+                            <div className={cn('rounded-full p-1 shrink-0', chipStyle.bg, chipStyle.text)}>
+                              {ICON_MAP_SM[chip.node.icon_hint] || <Cog size={10} />}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-[11px] font-medium">{chip.node.label}</div>
+                            </div>
+                            <div className="absolute -top-2 -right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/chip:opacity-100">
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setShowAddChild(showAddChild === chip.node!.id ? null : chip.node!.id);
+                                  setAddChildLabel('');
+                                }}
+                                className="rounded-full border bg-card p-1 text-muted-foreground shadow hover:text-foreground"
+                                title="Add child"
+                              >
+                                <Plus size={8} />
+                              </button>
+                              {chip.node.parent_id && (
+                                <button
+                                  onClick={(event) => { event.stopPropagation(); handleDeleteNode(chip.node!.id); }}
+                                  className="rounded-full border bg-card p-1 text-muted-foreground shadow hover:text-destructive"
+                                  title="Delete"
+                                >
+                                  <Trash2 size={8} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="absolute -top-2 -right-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      onClick={(event) => { event.stopPropagation(); handleAiExpand(group.node.id); }}
+                      className="rounded-full bg-cyan-600 p-1 text-white shadow hover:bg-cyan-700"
+                      title="AI deep dive this branch"
+                    >
+                      {expandingNode === group.node.id ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                    </button>
+                    <button
+                      onClick={(event) => { event.stopPropagation(); setShowAddChild(showAddChild === group.node.id ? null : group.node.id); setAddChildLabel(''); }}
+                      className="rounded-full border bg-card p-1 text-muted-foreground shadow hover:text-foreground"
+                      title="Add child"
+                    >
+                      <Plus size={10} />
+                    </button>
+                    {group.node.parent_id && (
+                      <button
+                        onClick={(event) => { event.stopPropagation(); handleDeleteNode(group.node.id); }}
+                        className="rounded-full border bg-card p-1 text-muted-foreground shadow hover:text-destructive"
+                        title="Delete"
+                      >
+                        <Trash2 size={9} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {showAddChild && nodeAnchors.has(showAddChild) && (() => {
+              const anchor = nodeAnchors.get(showAddChild)!;
+              return (
+                <div
+                  className="absolute z-20 flex items-center gap-1 rounded-lg border bg-card p-1.5 shadow-lg"
+                  style={{ left: anchor.x + anchor.width + 8, top: anchor.y + Math.max(0, anchor.height / 2 - 16) }}
+                >
+                  <input
+                    autoFocus
+                    value={addChildLabel}
+                    onChange={(event) => setAddChildLabel(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') handleAddManualChild(showAddChild);
+                      if (event.key === 'Escape') setShowAddChild(null);
+                    }}
+                    placeholder="New item..."
+                    className="w-32 rounded border bg-transparent px-2 py-1 text-xs"
+                  />
+                  <button onClick={() => handleAddManualChild(showAddChild)} className="rounded bg-cyan-600 px-2 py-1 text-xs text-white hover:bg-cyan-700">Add</button>
+                  <button onClick={() => setShowAddChild(null)} className="rounded p-0.5 hover:bg-accent"><X size={10} /></button>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ─── Shared toolbar + chrome ───
   const isStandalone = !currentProject;
+  const contentContainerClass = cn(
+    'flex-1 flex overflow-hidden',
+    isFullscreen && 'fixed inset-4 z-50 overflow-hidden rounded-2xl border border-border/50 bg-background shadow-2xl'
+  );
 
   return (
-    <div className="h-full flex flex-col">
+    <>
+      {isFullscreen && (
+        <div className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
+      )}
+      <div className="h-full flex flex-col relative">
       {/* ──── Top Toolbar ──── */}
       <div className="border-b px-4 py-2 flex items-center gap-2 bg-card shrink-0 flex-wrap">
         <Network size={16} className="text-emerald-500" />
@@ -1106,6 +1713,16 @@ export function InfraMapView() {
             <GitFork size={12} className="rotate-90" />
             Mind Map
           </button>
+          <button
+            onClick={() => setLayoutMode('map')}
+            className={cn('flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors',
+              layoutMode === 'map' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
+            title="Grouped category map"
+          >
+            <Network size={12} />
+            Map
+          </button>
         </div>
 
         <div className="border-l h-5 mx-1" />
@@ -1147,6 +1764,15 @@ export function InfraMapView() {
         {selected && (
           <button onClick={() => setDeleteConfirmId(selected.id)} className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive">
             <Trash2 size={14} />
+          </button>
+        )}
+        {!isFullscreen && selected && (
+          <button
+            onClick={() => setIsFullscreen(true)}
+            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+            title="Open full screen"
+          >
+            <Maximize2 size={14} />
           </button>
         )}
       </div>
@@ -1250,6 +1876,9 @@ export function InfraMapView() {
                 Clear
               </button>
             )}
+            <span className="text-[11px] text-muted-foreground">
+              Select a node to edit details, add children, delete it, or ask AI to deep dive that branch.
+            </span>
           </div>
         </div>
       )}
@@ -1295,7 +1924,16 @@ export function InfraMapView() {
         </div>
       ) : (
         /* Main content: tree or mind map + detail panel */
-        <div className="flex-1 flex overflow-hidden">
+        <div className={contentContainerClass}>
+          {isFullscreen && (
+            <button
+              onClick={() => setIsFullscreen(false)}
+              className="absolute top-4 right-4 z-20 rounded-full border border-border/60 bg-card/95 p-2 text-muted-foreground shadow-lg backdrop-blur hover:bg-accent hover:text-foreground"
+              title="Exit full screen"
+            >
+              <X size={16} />
+            </button>
+          )}
           {layoutMode === 'tree' ? (
             /* ── Tree Panel ── */
             <div className="flex-1 overflow-auto">
@@ -1323,48 +1961,110 @@ export function InfraMapView() {
                 )}
               </div>
             </div>
-          ) : (
+          ) : layoutMode === 'mindmap' ? (
             /* ── Mind Map Canvas ── */
-            <>
-              {/* Stats ribbon for mind map too */}
-              <div className="flex flex-col flex-1 overflow-hidden">
-                <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b text-[10px] text-muted-foreground bg-card/50 shrink-0">
-                  <span>{totalNodes} nodes</span>
-                  {nodeQuery && <span>{visibleNodesCount} visible</span>}
-                  <span>{depth} levels deep</span>
-                  <span>{describedNodes} described</span>
-                  <span>{manualNodes} manual</span>
-                  <span>{Math.round(mindMapViewport.scale * 100)}% zoom</span>
-                  <span>Wheel to zoom</span>
-                  <span>Drag canvas to pan</span>
-                  <span>Drag nodes to reposition</span>
-                  {Object.entries(categories).slice(0, 6).map(([cat, count]) => {
-                    const style = CATEGORY_COLORS[cat] || CATEGORY_COLORS.general;
-                    return (
-                      <span key={cat} className="flex items-center gap-1">
-                        <span className={cn('w-2 h-2 rounded-full', style.bg.replace('/10', '/50'))} />
-                        {cat}: {count}
-                      </span>
-                    );
-                  })}
-                  <div className="ml-auto flex items-center gap-2">
-                    <button
-                      onClick={handleResetMindMapView}
-                      className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
-                    >
-                      Reset View
-                    </button>
-                    <button
-                      onClick={() => { void handleResetMindMapLayout(); }}
-                      className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
-                    >
-                      Auto Layout
-                    </button>
-                  </div>
+            <div className="flex flex-col flex-1 overflow-hidden">
+              <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b text-[10px] text-muted-foreground bg-card/50 shrink-0">
+                <span>{totalNodes} nodes</span>
+                {nodeQuery && <span>{visibleNodesCount} visible</span>}
+                <span>{depth} levels deep</span>
+                <span>{describedNodes} described</span>
+                <span>{manualNodes} manual</span>
+                <span>{Math.round(mindMapViewport.scale * 100)}% zoom</span>
+                <span>Wheel to zoom</span>
+                <span>Drag canvas to pan</span>
+                <span>Drag nodes to reposition</span>
+                {Object.entries(categories).slice(0, 6).map(([cat, count]) => {
+                  const style = CATEGORY_COLORS[cat] || CATEGORY_COLORS.general;
+                  return (
+                    <span key={cat} className="flex items-center gap-1">
+                      <span className={cn('w-2 h-2 rounded-full', style.bg.replace('/10', '/50'))} />
+                      {cat}: {count}
+                    </span>
+                  );
+                })}
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={() => handleAdjustCanvasZoom(CANVAS_ZOOM_OUT_FACTOR)}
+                    disabled={mindMapViewport.scale <= CANVAS_MIN_SCALE + 0.001}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Zoom out"
+                  >
+                    -
+                  </button>
+                  <button
+                    onClick={() => handleAdjustCanvasZoom(CANVAS_ZOOM_IN_FACTOR)}
+                    disabled={mindMapViewport.scale >= CANVAS_MAX_SCALE - 0.001}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Zoom in"
+                  >
+                    +
+                  </button>
+                  <button
+                    onClick={handleResetCanvasView}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
+                  >
+                    Reset View
+                  </button>
+                  <button
+                    onClick={() => { void handleResetMindMapLayout(); }}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
+                  >
+                    Auto Layout
+                  </button>
                 </div>
-                {renderMindMap()}
               </div>
-            </>
+              {renderMindMap()}
+            </div>
+          ) : (
+            /* ── Grouped Map Canvas ── */
+            <div className="flex flex-col flex-1 overflow-hidden">
+              <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b text-[10px] text-muted-foreground bg-card/50 shrink-0">
+                <span>{totalNodes} nodes</span>
+                {nodeQuery && <span>{visibleNodesCount} visible</span>}
+                <span>{groupedMapLayout.groups.length} AI groups</span>
+                <span>{describedNodes} described</span>
+                <span>{manualNodes} manual</span>
+                <span>{Math.round(mindMapViewport.scale * 100)}% zoom</span>
+                <span>Wheel to zoom</span>
+                <span>Drag canvas to pan</span>
+                <span>Top-level AI branches become grouped map bubbles</span>
+                {Object.entries(categories).slice(0, 6).map(([cat, count]) => {
+                  const style = CATEGORY_COLORS[cat] || CATEGORY_COLORS.general;
+                  return (
+                    <span key={cat} className="flex items-center gap-1">
+                      <span className={cn('w-2 h-2 rounded-full', style.bg.replace('/10', '/50'))} />
+                      {cat}: {count}
+                    </span>
+                  );
+                })}
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={() => handleAdjustCanvasZoom(CANVAS_ZOOM_OUT_FACTOR)}
+                    disabled={mindMapViewport.scale <= CANVAS_MIN_SCALE + 0.001}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Zoom out"
+                  >
+                    -
+                  </button>
+                  <button
+                    onClick={() => handleAdjustCanvasZoom(CANVAS_ZOOM_IN_FACTOR)}
+                    disabled={mindMapViewport.scale >= CANVAS_MAX_SCALE - 0.001}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Zoom in"
+                  >
+                    +
+                  </button>
+                  <button
+                    onClick={handleResetCanvasView}
+                    className="rounded border px-2 py-1 text-[10px] hover:bg-accent"
+                  >
+                    Fit Map
+                  </button>
+                </div>
+              </div>
+              {renderGroupedMap()}
+            </div>
           )}
 
           {/* ── Detail Panel ── */}
@@ -1462,6 +2162,52 @@ export function InfraMapView() {
                   </div>
                 )}
 
+                <div className="space-y-2 rounded-xl border border-border/50 p-3 bg-background/40">
+                  <div className="text-[10px] text-muted-foreground font-semibold">Node References</div>
+                  <ReferencePicker
+                    artifactType="infra_map"
+                    contextPreset={currentProject?.context_preset || ''}
+                    objective={currentProject?.root_objective || selected?.name || selectedNode.label}
+                    scope={currentProject?.description || selected?.description || ''}
+                    targetKind={selectedNode.category}
+                    targetSummary={[selectedNode.label, selectedNode.description, selectedNodePath.join(' ')].filter(Boolean).join(' ')}
+                    placeholder="Search references for this node"
+                    onAdd={addSelectedNodeReference}
+                  />
+                  {(selectedNode.references || []).length > 0 ? (
+                    <div className="space-y-1">
+                      {(selectedNode.references || []).map((reference) => (
+                        <div key={`${reference.framework}:${reference.ref_id}`} className="flex items-start gap-2 rounded border bg-background/60 px-2 py-1.5">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 text-[10px]">
+                              <span className="font-semibold uppercase tracking-wide text-muted-foreground">{reference.framework}</span>
+                              <span className="font-mono text-cyan-400">{reference.ref_id}</span>
+                            </div>
+                            <div className="mt-0.5 text-[11px] font-medium">{reference.ref_name}</div>
+                            {(reference.source || reference.confidence != null || reference.rationale) && (
+                              <div className="mt-0.5 text-[10px] text-muted-foreground leading-4">
+                                {reference.source ? `Source: ${reference.source}` : ''}
+                                {reference.confidence != null ? `${reference.source ? ' · ' : ''}${Math.round(reference.confidence * 100)}%` : ''}
+                                {reference.rationale ? ` · ${reference.rationale}` : ''}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeSelectedNodeReference(reference.framework, reference.ref_id)}
+                            className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                            title="Remove reference"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">No references attached to this node yet.</p>
+                  )}
+                </div>
+
                 {(childMap.get(selectedNode.id) || []).length > 0 && (
                   <div>
                     <div className="text-[10px] text-muted-foreground font-semibold mb-1">
@@ -1488,7 +2234,7 @@ export function InfraMapView() {
                   <button onClick={() => handleAiExpand(selectedNode.id)} disabled={expandingNode === selectedNode.id}
                     className="flex items-center gap-1 px-3 py-1.5 rounded bg-cyan-600 text-white text-xs font-medium hover:bg-cyan-700 disabled:opacity-50">
                     {expandingNode === selectedNode.id ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                    AI Expand
+                    AI Deep Dive
                   </button>
                   <button onClick={() => { setShowAddChild(selectedNode.id); setAddChildLabel(''); }}
                     className="flex items-center gap-1 px-3 py-1.5 rounded border text-xs hover:bg-accent">
@@ -1526,7 +2272,8 @@ export function InfraMapView() {
         confirmLabel="Delete"
         destructive
       />
-    </div>
+      </div>
+    </>
   );
 }
 

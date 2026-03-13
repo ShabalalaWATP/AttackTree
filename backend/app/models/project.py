@@ -26,6 +26,7 @@ class Project(Base):
     edges = relationship("Edge", back_populates="project", cascade="all, delete-orphan")
     snapshots = relationship("Snapshot", back_populates="project", cascade="all, delete-orphan")
     audit_events = relationship("AuditEvent", back_populates="project", cascade="all, delete-orphan")
+    analysis_runs = relationship("AnalysisRun", back_populates="project", cascade="all, delete-orphan")
     kill_chains = relationship("KillChain", back_populates="project", cascade="all, delete-orphan")
     threat_models = relationship("ThreatModel", back_populates="project", cascade="all, delete-orphan")
     scenarios = relationship("Scenario", back_populates="project", cascade="all, delete-orphan")

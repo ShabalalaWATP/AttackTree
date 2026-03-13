@@ -1,17 +1,74 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import {
   NODE_TYPE_CONFIG,
   type NodeType,
   type AttackNodeData,
-  type SuggestedNode,
+  type SuggestedItem,
   type NodeExtendedMetadata,
   type VulnerabilityCard,
 } from '@/types';
 import toast from 'react-hot-toast';
 import { Sparkles, Check, X, Loader2, Brain, FileText, Shield, MapPin, FlaskConical } from 'lucide-react';
 import { cn } from '@/utils/cn';
+
+const TITLE_STOP_WORDS = new Set(['a', 'an', 'and', 'for', 'in', 'of', 'on', 'the', 'to', 'via', 'with']);
+
+function normalizeTitleToken(token: string): string {
+  const normalized = token.trim().toLowerCase();
+  if (normalized.length > 4 && normalized.endsWith('ies')) return `${normalized.slice(0, -3)}y`;
+  if (
+    normalized.length > 3
+    && normalized.endsWith('es')
+  ) {
+    if (
+      ['s', 'x', 'z'].includes(normalized[normalized.length - 3] || '')
+      || ['sh', 'ch'].includes(normalized.slice(-4, -2))
+    ) {
+      return normalized.slice(0, -2);
+    }
+    if (['a', 'e', 'i', 'o', 'u'].includes(normalized[normalized.length - 3] || '')) {
+      return normalized.slice(0, -1);
+    }
+  }
+  if (normalized.length > 3 && normalized.endsWith('s')) return normalized.slice(0, -1);
+  return normalized;
+}
+
+function normalizedTitleTokens(title: string): string[] {
+  return (title.toLowerCase().match(/[a-z0-9]+/g) || [])
+    .map(normalizeTitleToken)
+    .filter(token => token && !TITLE_STOP_WORDS.has(token));
+}
+
+function normalizeTitleForDedupe(title: string): string {
+  return normalizedTitleTokens(title).join(' ');
+}
+
+function titleSimilarity(left: string, right: string): number {
+  const leftTokens = new Set(normalizedTitleTokens(left));
+  const rightTokens = new Set(normalizedTitleTokens(right));
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  if (leftTokens.size === rightTokens.size && [...leftTokens].every(token => rightTokens.has(token))) {
+    return 1;
+  }
+  const overlap = [...leftTokens].filter(token => rightTokens.has(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return union ? overlap / union : 0;
+}
+
+function findNearDuplicateSibling(title: string, siblingNodes: AttackNodeData[]): { node: AttackNodeData; score: number } | null {
+  let bestMatch: { node: AttackNodeData; score: number } | null = null;
+  for (const sibling of siblingNodes) {
+    const score = titleSimilarity(title, sibling.title);
+    if (score >= 0.72 && (!bestMatch || score > bestMatch.score)) {
+      bestMatch = { node: sibling, score };
+    }
+  }
+  return bestMatch;
+}
 
 function getNodeMetadata(node?: AttackNodeData): NodeExtendedMetadata {
   if (!node?.extended_metadata || typeof node.extended_metadata !== 'object' || Array.isArray(node.extended_metadata)) {
@@ -86,12 +143,12 @@ function inferPromptProfile(node: AttackNodeData | undefined, contextPreset: str
 }
 
 export function AISuggestionsPanel() {
-  const { selectedNodeId, nodes, currentProject, setAiSuggestionsOpen, pushUndo, addNodeLocal } = useStore();
+  const { selectedNodeId, nodes, currentProject, setAiSuggestionsOpen, pushUndo, addNodeLocal, setNodes } = useStore();
   const selectedNode = nodes.find(n => n.id === selectedNodeId);
   const selectedNodeMetadata = getNodeMetadata(selectedNode);
   const vulnerabilityCards = getVulnerabilityCards(selectedNode);
   const inferredPromptProfile = inferPromptProfile(selectedNode, currentProject?.context_preset);
-  const [suggestions, setSuggestions] = useState<SuggestedNode[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestedItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [summaryText, setSummaryText] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -100,6 +157,7 @@ export function AISuggestionsPanel() {
   const [technicalDepth, setTechnicalDepth] = useState<'standard' | 'deep'>('standard');
   const [promptProfile, setPromptProfile] = useState('auto');
   const [analystContext, setAnalystContext] = useState('');
+  const [pendingNearDuplicate, setPendingNearDuplicate] = useState<{ suggestion: SuggestedItem; match: AttackNodeData; score: number } | null>(null);
 
   useEffect(() => {
     const nextProfile = inferPromptProfile(selectedNode, currentProject?.context_preset);
@@ -139,7 +197,13 @@ export function AISuggestionsPanel() {
     }
   };
 
-  const acceptSuggestion = async (suggestion: any) => {
+  const refreshProjectNodes = async () => {
+    if (!currentProject) return;
+    const freshNodes = await api.listNodes(currentProject.id);
+    setNodes(freshNodes);
+  };
+
+  const createSuggestionNode = async (suggestion: SuggestedItem) => {
     if (!selectedNodeId || !currentProject) return;
     try {
       pushUndo('Accept AI suggestion');
@@ -158,11 +222,114 @@ export function AISuggestionsPanel() {
         position_y: (parent?.position_y || 0) + 180,
       });
       addNodeLocal(newNode);
+      await refreshProjectNodes();
       setSuggestions(prev => prev.filter(s => s !== suggestion));
       toast.success(`Added: ${suggestion.title}`);
     } catch (e: any) {
       toast.error(e.message);
     }
+  };
+
+  const createMitigationSuggestion = async (suggestion: SuggestedItem) => {
+    if (!selectedNodeId || !currentProject) return;
+    try {
+      pushUndo('Accept AI mitigation');
+      await api.createMitigation({
+        node_id: selectedNodeId,
+        title: suggestion.title || 'Suggested Mitigation',
+        description: suggestion.description || '',
+        effectiveness: suggestion.effectiveness ?? 0.5,
+        status: 'planned',
+      });
+      await refreshProjectNodes();
+      setSuggestions(prev => prev.filter(s => s !== suggestion));
+      toast.success(`Mitigation added: ${suggestion.title}`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  };
+
+  const createDetectionSuggestion = async (suggestion: SuggestedItem) => {
+    if (!selectedNodeId || !currentProject) return;
+    try {
+      pushUndo('Accept AI detection');
+      await api.createDetection({
+        node_id: selectedNodeId,
+        title: suggestion.title || 'Suggested Detection',
+        description: suggestion.description || '',
+        coverage: suggestion.coverage ?? 0.5,
+        data_source: suggestion.data_source || '',
+      });
+      await refreshProjectNodes();
+      setSuggestions(prev => prev.filter(s => s !== suggestion));
+      toast.success(`Detection added: ${suggestion.title}`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  };
+
+  const createMappingSuggestion = async (suggestion: SuggestedItem) => {
+    if (!selectedNodeId || !suggestion.framework || !suggestion.ref_id) return;
+    try {
+      pushUndo('Accept AI mapping');
+      await api.createMapping({
+        node_id: selectedNodeId,
+        framework: suggestion.framework,
+        ref_id: suggestion.ref_id,
+        ref_name: suggestion.ref_name || suggestion.title || '',
+        confidence: suggestion.confidence ?? null,
+        rationale: suggestion.rationale || '',
+        source: suggestion.source || 'ai',
+      });
+      await refreshProjectNodes();
+      setSuggestions(prev => prev.filter(s => s !== suggestion));
+      toast.success(`Mapping added: ${suggestion.framework.toUpperCase()} ${suggestion.ref_id}`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  };
+
+  const acceptSuggestion = async (suggestion: SuggestedItem) => {
+    if (!selectedNodeId || !currentProject) return;
+    if (suggestion.kind === 'mitigation') {
+      await createMitigationSuggestion(suggestion);
+      return;
+    }
+    if (suggestion.kind === 'detection') {
+      await createDetectionSuggestion(suggestion);
+      return;
+    }
+    if (suggestion.kind === 'mapping') {
+      await createMappingSuggestion(suggestion);
+      return;
+    }
+    const siblingNodes = nodes.filter(node => node.parent_id === selectedNodeId);
+    const normalizedSuggestionTitle = normalizeTitleForDedupe(suggestion.title);
+    const exactDuplicate = siblingNodes.find(node => normalizeTitleForDedupe(node.title) === normalizedSuggestionTitle);
+    if (exactDuplicate) {
+      toast.error(`A sibling node named "${exactDuplicate.title}" already exists under this branch.`);
+      setSuggestions(prev => prev.filter(s => s !== suggestion));
+      return;
+    }
+
+    const nearDuplicate = findNearDuplicateSibling(suggestion.title, siblingNodes);
+    if (nearDuplicate) {
+      setPendingNearDuplicate({
+        suggestion,
+        match: nearDuplicate.node,
+        score: nearDuplicate.score,
+      });
+      return;
+    }
+
+    await createSuggestionNode(suggestion);
+  };
+
+  const confirmNearDuplicate = async () => {
+    if (!pendingNearDuplicate) return;
+    const suggestion = pendingNearDuplicate.suggestion;
+    setPendingNearDuplicate(null);
+    await createSuggestionNode(suggestion);
   };
 
   const handleSummary = async (type: 'technical' | 'executive') => {
@@ -322,13 +489,40 @@ export function AISuggestionsPanel() {
                 <div key={i} className="p-2 rounded border bg-card text-xs space-y-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1">
-                      <span className="text-[10px] text-muted-foreground">{NODE_TYPE_CONFIG[s.node_type as NodeType]?.icon || '⚔️'} {s.node_type}</span>
+                      {s.kind === 'branch' && (
+                        <span className="text-[10px] text-muted-foreground">{NODE_TYPE_CONFIG[s.node_type as NodeType]?.icon || '⚔️'} {s.node_type}</span>
+                      )}
+                      {s.kind === 'mitigation' && <span className="text-[10px] text-muted-foreground">🛡 mitigation</span>}
+                      {s.kind === 'detection' && <span className="text-[10px] text-muted-foreground">👁 detection</span>}
+                      {s.kind === 'mapping' && (
+                        <span className="text-[10px] text-muted-foreground">
+                          📚 {(s.framework || '').toUpperCase()} {s.ref_id || ''}
+                        </span>
+                      )}
                       <div className="font-semibold">{s.title}</div>
+                      {s.kind === 'mapping' && s.ref_name && s.ref_name !== s.title && (
+                        <div className="text-muted-foreground">{s.ref_name}</div>
+                      )}
                       {s.description && <div className="text-muted-foreground">{s.description}</div>}
                       {(s.likelihood || s.impact) && (
                         <div className="flex gap-2 mt-1 text-[10px]">
                           {s.likelihood && <span>L: {s.likelihood}</span>}
                           {s.impact && <span>I: {s.impact}</span>}
+                        </div>
+                      )}
+                      {s.kind === 'mitigation' && typeof s.effectiveness === 'number' && (
+                        <div className="text-[10px] text-muted-foreground">Effectiveness: {Math.round(s.effectiveness * 100)}%</div>
+                      )}
+                      {s.kind === 'detection' && (
+                        <div className="text-[10px] text-muted-foreground">
+                          {typeof s.coverage === 'number' ? `Coverage: ${Math.round(s.coverage * 100)}%` : ''}
+                          {s.data_source ? `${typeof s.coverage === 'number' ? ' · ' : ''}${s.data_source}` : ''}
+                        </div>
+                      )}
+                      {s.kind === 'mapping' && (typeof s.confidence === 'number' || s.rationale) && (
+                        <div className="text-[10px] text-muted-foreground">
+                          {typeof s.confidence === 'number' ? `Confidence: ${Math.round(s.confidence * 100)}%` : ''}
+                          {s.rationale ? `${typeof s.confidence === 'number' ? ' · ' : ''}${s.rationale}` : ''}
                         </div>
                       )}
                     </div>
@@ -377,6 +571,20 @@ export function AISuggestionsPanel() {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!pendingNearDuplicate}
+        onOpenChange={(open) => { if (!open) setPendingNearDuplicate(null); }}
+        onConfirm={confirmNearDuplicate}
+        title="Near-Duplicate Suggestion"
+        description={
+          pendingNearDuplicate
+            ? `"${pendingNearDuplicate.suggestion.title}" looks very similar to existing sibling "${pendingNearDuplicate.match.title}" (${Math.round(pendingNearDuplicate.score * 100)}% overlap). Add it anyway?`
+            : ''
+        }
+        confirmLabel="Add Anyway"
+        destructive={false}
+      />
     </div>
   );
 }

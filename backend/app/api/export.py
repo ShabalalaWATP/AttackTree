@@ -6,11 +6,13 @@ from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..models.project import Project
 from ..models.node import Node
+from ..models.reference_mapping import ReferenceMapping
 from ..schemas.export import ExportRequest
 from ..schemas.node import NodeResponse
 from ..services import export_service
 from ..services.access_control import require_project_access
 from ..services.auth import get_current_user_id, get_current_user_name
+from ..services.tree_service import recalculate_project_tree_scores
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -158,7 +160,21 @@ async def import_json(data: dict, db: AsyncSession = Depends(get_db)):
             extended_metadata=node_data.get("extended_metadata", {}) or {},
         )
         db.add(node)
+        for mapping in node_data.get("reference_mappings", []) or []:
+            if not isinstance(mapping, dict):
+                continue
+            db.add(ReferenceMapping(
+                node_id=node.id,
+                framework=mapping.get("framework", ""),
+                ref_id=mapping.get("ref_id", ""),
+                ref_name=mapping.get("ref_name", ""),
+                confidence=mapping.get("confidence"),
+                rationale=mapping.get("rationale", ""),
+                source=mapping.get("source", "manual"),
+            ))
 
+    await db.flush()
+    await recalculate_project_tree_scores(db, project.id)
     await db.commit()
     return {"status": "success", "project_id": project.id, "nodes_imported": len(nodes_data)}
 
@@ -166,60 +182,7 @@ async def import_json(data: dict, db: AsyncSession = Depends(get_db)):
 @router.get("/risk-engine/{project_id}")
 async def recalculate_risk(project_id: str, db: AsyncSession = Depends(get_db)):
     """Recalculate all risk scores for a project's tree."""
-    from ..services.risk_engine import compute_inherent_risk, compute_residual_risk, rollup_or_risk, rollup_and_risk
-
     await require_project_access(project_id, db)
-    result = await db.execute(
-        select(Node).where(Node.project_id == project_id)
-        .options(selectinload(Node.mitigations))
-        .order_by(Node.sort_order)
-    )
-    nodes = result.scalars().all()
-
-    # Build parent-children map
-    children_map: dict[str | None, list] = {}
-    node_map: dict[str, Node] = {}
-    for n in nodes:
-        node_map[n.id] = n
-        children_map.setdefault(n.parent_id, []).append(n)
-
-    # Bottom-up traversal
-    def _process(node: Node):
-        # First process children
-        for child in children_map.get(node.id, []):
-            _process(child)
-
-        # Compute local inherent risk
-        node.inherent_risk = compute_inherent_risk(
-            node.likelihood, node.impact, node.effort,
-            node.exploitability, node.detectability,
-        )
-
-        # Mitigation-based residual
-        max_eff = 0.0
-        if node.mitigations:
-            max_eff = max((m.effectiveness for m in node.mitigations), default=0.0)
-        node.residual_risk = compute_residual_risk(node.inherent_risk, max_eff)
-
-        # Roll-up from children
-        child_nodes = children_map.get(node.id, [])
-        if child_nodes:
-            child_risks = []
-            for c in child_nodes:
-                r = c.inherent_risk if c.inherent_risk is not None else c.rolled_up_risk
-                if r is not None:
-                    child_risks.append(r)
-
-            if child_risks:
-                if node.logic_type in ("AND", "SEQUENCE"):
-                    node.rolled_up_risk = rollup_and_risk(child_risks)
-                else:
-                    node.rolled_up_risk = rollup_or_risk(child_risks)
-
-    # Process from roots
-    roots = children_map.get(None, [])
-    for root in roots:
-        _process(root)
-
+    nodes_processed = await recalculate_project_tree_scores(db, project_id)
     await db.commit()
-    return {"status": "success", "nodes_processed": len(nodes)}
+    return {"status": "success", "nodes_processed": nodes_processed}

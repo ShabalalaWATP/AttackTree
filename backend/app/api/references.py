@@ -5,12 +5,18 @@ from ..database import get_db
 from ..models.reference_mapping import ReferenceMapping
 from ..models.node import Node
 from ..schemas.reference_mapping import ReferenceMappingCreate, ReferenceMappingUpdate, ReferenceMappingResponse
+from ..schemas.reference_search import ReferenceSearchRequest, ReferenceSearchResponse, ReferenceSearchItem
 from ..services.access_control import require_node_access
 from ..services.auth import get_current_user_id
 from ..services.audit import log_event
 from ..services.environment_catalog_service import (
     get_environment_catalog,
     list_environment_catalog_summaries,
+)
+from ..services.reference_search_service import (
+    SUPPORTED_REFERENCE_FRAMEWORKS,
+    search_references,
+    validate_reference_identifier,
 )
 
 router = APIRouter(prefix="/references", tags=["references"])
@@ -26,6 +32,8 @@ async def list_mappings(node_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("", response_model=ReferenceMappingResponse, status_code=201)
 async def create_mapping(data: ReferenceMappingCreate, db: AsyncSession = Depends(get_db)):
     node = await require_node_access(data.node_id, db)
+    if not validate_reference_identifier(data.framework, data.ref_id):
+        raise HTTPException(400, f"Unknown reference identifier: {data.framework}:{data.ref_id}")
     ref = ReferenceMapping(**data.model_dump())
     db.add(ref)
 
@@ -53,6 +61,10 @@ async def update_mapping(mapping_id: str, data: ReferenceMappingUpdate, db: Asyn
         raise HTTPException(404, "Mapping not found")
 
     update_data = data.model_dump(exclude_unset=True)
+    next_framework = update_data.get("framework", ref.framework)
+    next_ref_id = update_data.get("ref_id", ref.ref_id)
+    if not validate_reference_identifier(next_framework, next_ref_id):
+        raise HTTPException(400, f"Unknown reference identifier: {next_framework}:{next_ref_id}")
     for key, value in update_data.items():
         setattr(ref, key, value)
 
@@ -98,6 +110,8 @@ REFERENCE_DIR = Path(__file__).parent.parent / "reference_data"
 
 FILTER_FIELDS = {
     "attack": "tactic",
+    "infra_attack_patterns": "category",
+    "software_research_patterns": "category",
     "capec": "severity",
     "cwe": "severity",
     "owasp": "category",
@@ -105,6 +119,8 @@ FILTER_FIELDS = {
 
 
 def _load_framework(framework: str) -> list[dict]:
+    if framework not in SUPPORTED_REFERENCE_FRAMEWORKS or framework == "environment_catalog":
+        raise HTTPException(404, f"Reference data for '{framework}' not found")
     file_path = REFERENCE_DIR / f"{framework}.json"
     if not file_path.exists():
         raise HTTPException(404, f"Reference data for '{framework}' not found")
@@ -114,7 +130,7 @@ def _load_framework(framework: str) -> list[dict]:
 
 @router.get("/browse/{framework}")
 async def browse_reference_data(framework: str, q: str = "", filter: str = ""):
-    """Browse local reference data by framework (attack, capec, cwe, owasp)."""
+    """Browse local reference data by framework (attack, infra_attack_patterns, software_research_patterns, capec, cwe, owasp)."""
     data = _load_framework(framework)
 
     # Collect filter options from the full dataset
@@ -140,6 +156,22 @@ async def browse_reference_data(framework: str, q: str = "", filter: str = ""):
         "filter_field": filter_field,
         "filter_options": filter_options,
     }
+
+
+@router.post("/search", response_model=ReferenceSearchResponse)
+async def search_reference_data(data: ReferenceSearchRequest):
+    items = search_references(
+        query=data.query,
+        artifact_type=data.artifact_type,
+        context_preset=data.context_preset,
+        objective=data.objective,
+        scope=data.scope,
+        target_kind=data.target_kind,
+        target_summary=data.target_summary,
+        allowed_frameworks=data.allowed_frameworks,
+        limit=data.limit,
+    )
+    return ReferenceSearchResponse(items=[ReferenceSearchItem(**item) for item in items])
 
 
 @router.get("/environment-catalogs")

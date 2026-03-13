@@ -24,6 +24,7 @@ export function AuthView() {
   const [signupUsername, setSignupUsername] = useState('');
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
+  const [signupPasswordConfirm, setSignupPasswordConfirm] = useState('');
 
   const handleSuccess = (session: AuthLoginResponseData) => {
     queryClient.clear();
@@ -53,19 +54,28 @@ export function AuthView() {
   };
 
   const handleSignup = async () => {
-    if (!signupName.trim() || !signupUsername.trim() || !signupEmail.trim() || !signupPassword.trim()) {
-      toast.error('Complete the sign-up form, including a username.');
+    if (!signupName.trim() || !signupUsername.trim() || !signupEmail.trim() || !signupPassword.trim() || !signupPasswordConfirm.trim()) {
+      toast.error('Complete the sign-up form, including both password fields.');
+      return;
+    }
+    if (signupPassword !== signupPasswordConfirm) {
+      toast.error('Passwords do not match.');
       return;
     }
 
     setSubmitting(true);
     try {
-      handleSuccess(await api.signup({
+      const response = await api.signup({
         name: signupName.trim(),
         username: signupUsername.trim(),
         email: signupEmail.trim(),
         password: signupPassword,
-      }));
+      });
+      setMode('login');
+      setLoginIdentifier(signupUsername.trim() || signupEmail.trim());
+      setSignupPassword('');
+      setSignupPasswordConfirm('');
+      toast.success(response.message);
     } catch (error: any) {
       toast.error(error.message || 'Sign-up failed');
     } finally {
@@ -84,7 +94,7 @@ export function AuthView() {
               <img
                 src={ocpLogo}
                 alt="Offensive Cyber Planner logo"
-                className="relative w-full max-w-[22rem] drop-shadow-[0_18px_40px_rgba(34,211,238,0.28)] animate-[bounce_3.6s_ease-in-out_infinite]"
+                className="animate-auth-logo-float relative w-full max-w-[22rem] drop-shadow-[0_18px_40px_rgba(34,211,238,0.28)]"
               />
             </div>
 
@@ -95,8 +105,12 @@ export function AuthView() {
               </div>
               <h1 className="text-4xl font-black tracking-tight">Offensive Cyber Planner</h1>
               <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                Every analyst signs into an isolated workspace with their own projects, scenarios, infrastructure maps,
-                and LLM provider settings. Nothing in the planning surface is rendered until auth succeeds.
+                This tool is designed to support offensive cyber planning and authorised red-team assessment of your own
+                systems. It combines AI-assisted attack trees, threat modelling, kill-chain planning, scenario work, and
+                infrastructure mapping so you can organise complex assessments into structured projects with shared
+                objectives, notes, and analysis context. The workspace also includes thousands of built-in references
+                across ATT&amp;CK, CAPEC, CWE, OWASP, and environment catalogs, with room to attach CVE and advisory
+                context where it matters.
               </p>
             </div>
 
@@ -106,8 +120,8 @@ export function AuthView() {
                 body="Projects, standalone scans, API providers, and tags are scoped to the signed-in user."
               />
               <FeatureCard
-                title="Admin Control"
-                body="Admins can create users, disable accounts, set passwords, and remove access centrally."
+                title="Bring Your Own API Keys"
+                body="Connect your own OpenAI-compatible, local, or hosted models so AI-assisted planning runs against infrastructure and credentials you control."
               />
               <FeatureCard
                 title="VM Ready"
@@ -195,9 +209,20 @@ export function AuthView() {
                     type="password"
                     value={signupPassword}
                     onChange={(event) => setSignupPassword(event.target.value)}
-                    onKeyDown={(event) => event.key === 'Enter' && handleSignup()}
                     className="input-field mt-2"
                     placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Confirm Password</label>
+                  <input
+                    type="password"
+                    value={signupPasswordConfirm}
+                    onChange={(event) => setSignupPasswordConfirm(event.target.value)}
+                    onKeyDown={(event) => event.key === 'Enter' && handleSignup()}
+                    className="input-field mt-2"
+                    placeholder="Re-enter your password"
                     autoComplete="new-password"
                   />
                 </div>
@@ -212,9 +237,6 @@ export function AuthView() {
               </div>
             )}
 
-            <div className="mt-6 rounded-2xl border border-amber-500/15 bg-amber-500/5 p-4 text-xs leading-5 text-muted-foreground">
-              Default admin users and placeholder users are seeded on first startup, including the requested admin login `admin12345` / `admin12345`. Replace those passwords before exposing the VM to a wider team.
-            </div>
           </section>
         </div>
       </div>

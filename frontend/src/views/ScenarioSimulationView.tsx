@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PlanningProfile } from '@/types';
+import type { ReferenceLink } from '@/types';
 import {
   AlertTriangle,
   BadgeAlert,
@@ -11,7 +12,6 @@ import {
   Globe,
   Layers3,
   Loader2,
-  Play,
   Plus,
   Radar,
   Shield,
@@ -24,8 +24,11 @@ import toast from 'react-hot-toast';
 import { useStore } from '@/stores/useStore';
 import { api } from '@/utils/api';
 import { cn } from '@/utils/cn';
+import { ReferencePicker } from '@/components/ReferencePicker';
 import { getPlanningProfileOption, PLANNING_PROFILE_OPTIONS } from '@/utils/planningProfiles';
 import { formatContextPreset, getContextPresetOption, getEnvironmentContextPresets } from '@/utils/contextPresets';
+import { mergeReferenceLinks, normalizeReferenceLinks, removeReferenceLink } from '@/utils/referenceLinks';
+import { useAdvisorPageContext } from '@/hooks/useAdvisorPageContext';
 
 interface ScenarioData {
   id: string;
@@ -59,6 +62,7 @@ interface ScenarioData {
   modified_scores: Record<string, Record<string, number>>;
   assumptions: string;
   planning_notes: string;
+  reference_mappings: ReferenceLink[];
   ai_narrative: string;
   ai_recommendations: Array<{ priority: string; title: string; description: string }>;
   impact_summary: Record<string, any>;
@@ -66,7 +70,44 @@ interface ScenarioData {
   updated_at: string;
 }
 
-type ScopeFilter = 'workspace' | 'project' | 'standalone';
+type ScenarioScope = ScenarioData['scope'];
+type ScopeFilter = 'all' | 'project' | 'standalone';
+type ScenarioWizardMode = 'draft' | 'output';
+
+interface ScenarioWizardDraft {
+  scope: ScenarioScope;
+  name: string;
+  description: string;
+  scenario_type: string;
+  operation_goal: string;
+  target_profile: string;
+  target_environment: string;
+  execution_tempo: string;
+  stealth_level: string;
+  access_level: string;
+  attacker_type: string;
+  attacker_skill: string;
+  attacker_resources: string;
+  attacker_motivation: string;
+  entry_vectors: string[];
+  campaign_phases: string[];
+  constraints: string[];
+  success_criteria: string[];
+  planning_notes: string;
+}
+
+const SCENARIO_FILTER_OPTIONS: Array<{ id: ScopeFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'project', label: 'This Project' },
+  { id: 'standalone', label: 'Library' },
+];
+
+const SCENARIO_WIZARD_STEPS = [
+  'Where It Lives',
+  'Mission',
+  'Attacker',
+  'Focus',
+];
 
 function isRecord(value: unknown): value is Record<string, any> {
   return !!value && typeof value === 'object';
@@ -173,6 +214,7 @@ function normalizeScenario(value: any): ScenarioData {
     modified_scores: normalizeModifiedScores(value?.modified_scores),
     assumptions: typeof value?.assumptions === 'string' ? value.assumptions : '',
     planning_notes: typeof value?.planning_notes === 'string' ? value.planning_notes : '',
+    reference_mappings: normalizeReferenceLinks(value?.reference_mappings),
     ai_narrative: typeof value?.ai_narrative === 'string' ? value.ai_narrative : '',
     ai_recommendations: recommendationList(value?.ai_recommendations),
     impact_summary: normalizeImpactSummary(value?.impact_summary),
@@ -254,19 +296,107 @@ const SCENARIO_PRESETS = [
 ];
 
 export function ScenarioSimulationView() {
-  const { currentProject, nodes, setNodes } = useStore();
+  const { currentProject, nodes, setNodes, pendingViewSelection, clearPendingViewSelection } = useStore();
   const [scenarios, setScenarios] = useState<ScenarioData[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>(currentProject ? 'workspace' : 'standalone');
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>(currentProject ? 'all' : 'standalone');
   const [loading, setLoading] = useState(false);
-  const [simLoading, setSimLoading] = useState(false);
-  const [aiLoading, setAiLoading] = useState(false);
+  const [outputLoading, setOutputLoading] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [question, setQuestion] = useState('');
   const [planningProfile, setPlanningProfile] = useState<PlanningProfile>('planning_first');
   const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedPatchIdRef = useRef<string | null>(null);
   const queuedPatchRef = useRef<Partial<ScenarioData>>({});
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardStep, setWizardStep] = useState(0);
+  const [wizardMode, setWizardMode] = useState<ScenarioWizardMode | null>(null);
+  const [wizardDraft, setWizardDraft] = useState<ScenarioWizardDraft>(() => createWizardDraft());
+  const [showSetupDetails, setShowSetupDetails] = useState(false);
+
+  function createWizardDraft(preset?: Partial<ScenarioData>): ScenarioWizardDraft {
+    const scope: ScenarioScope = !currentProject || scopeFilter === 'standalone' ? 'standalone' : 'project';
+    const projectPreset = currentProject?.context_preset ? formatContextPreset(currentProject.context_preset) : '';
+    return {
+      scope,
+      name: preset?.name || `${scope === 'project' ? 'Project' : 'Library'} Scenario ${scenarios.length + 1}`,
+      description: preset?.description || '',
+      scenario_type: preset?.scenario_type || 'campaign',
+      operation_goal: preset?.operation_goal || currentProject?.root_objective || '',
+      target_profile: preset?.target_profile || currentProject?.name || '',
+      target_environment: preset?.target_environment || projectPreset,
+      execution_tempo: preset?.execution_tempo || 'balanced',
+      stealth_level: preset?.stealth_level || 'balanced',
+      access_level: preset?.access_level || 'external',
+      attacker_type: preset?.attacker_type || 'opportunistic',
+      attacker_skill: preset?.attacker_skill || 'Medium',
+      attacker_resources: preset?.attacker_resources || 'Medium',
+      attacker_motivation: preset?.attacker_motivation || '',
+      entry_vectors: preset?.entry_vectors || [],
+      campaign_phases: preset?.campaign_phases || [],
+      constraints: preset?.constraints || [],
+      success_criteria: preset?.success_criteria || [],
+      planning_notes: preset?.planning_notes || '',
+    };
+  }
+
+  function buildScenarioPayload(draft: ScenarioWizardDraft) {
+    const scope: ScenarioScope = draft.scope === 'project' && currentProject ? 'project' : 'standalone';
+    return {
+      scope,
+      project_id: scope === 'project' ? currentProject?.id : null,
+      name: draft.name.trim() || `${scope === 'project' ? 'Project' : 'Library'} Scenario ${scenarios.length + 1}`,
+      description: draft.description.trim(),
+      scenario_type: draft.scenario_type,
+      operation_goal: draft.operation_goal.trim(),
+      target_profile: draft.target_profile.trim(),
+      target_environment: draft.target_environment.trim(),
+      execution_tempo: draft.execution_tempo,
+      stealth_level: draft.stealth_level,
+      access_level: draft.access_level,
+      attacker_type: draft.attacker_type,
+      attacker_skill: draft.attacker_skill,
+      attacker_resources: draft.attacker_resources,
+      attacker_motivation: draft.attacker_motivation.trim(),
+      entry_vectors: draft.entry_vectors,
+      campaign_phases: draft.campaign_phases,
+      constraints: draft.constraints,
+      dependencies: [],
+      intelligence_gaps: [],
+      success_criteria: draft.success_criteria,
+      assumptions: '',
+      planning_notes: draft.planning_notes.trim(),
+    };
+  }
+
+  function buildSimulationPayload(scenario: ScenarioData) {
+    return {
+      disabled_controls: scenario.disabled_controls || [],
+      degraded_detections: scenario.degraded_detections || [],
+      modified_scores: scenario.modified_scores || {},
+      attacker_type: scenario.attacker_type,
+      attacker_skill: scenario.attacker_skill,
+      attacker_resources: scenario.attacker_resources,
+      execution_tempo: scenario.execution_tempo,
+      stealth_level: scenario.stealth_level,
+      access_level: scenario.access_level,
+      focus_node_ids: scenario.focus_node_ids || [],
+      focus_tags: scenario.focus_tags || [],
+    };
+  }
+
+  function openScenarioWizard(preset?: Partial<ScenarioData>) {
+    setWizardDraft(createWizardDraft(preset));
+    setWizardStep(0);
+    setWizardMode(null);
+    setWizardOpen(true);
+  }
+
+  function closeScenarioWizard() {
+    if (wizardMode) return;
+    setWizardOpen(false);
+    setWizardStep(0);
+  }
 
   const selected = useMemo(
     () => scenarios.find((scenario) => scenario.id === selectedId) ?? null,
@@ -276,12 +406,37 @@ export function ScenarioSimulationView() {
     () => getPlanningProfileOption(planningProfile),
     [planningProfile],
   );
+  const advisorContext = useMemo(() => ({
+    view: 'scenarios' as const,
+    title: selected ? `Scenario: ${selected.name}` : 'Scenario Planning',
+    summary: selected
+      ? (selected.operation_goal || selected.description || 'Reviewing the selected scenario plan, attacker profile, and generated analysis.')
+      : 'Scenario library and planning workspace for operational what-if analysis.',
+    packets: [
+      selected ? `Scenario type: ${selected.scenario_type}` : '',
+      selected ? `Attacker type: ${selected.attacker_type}` : '',
+      selected ? `Target environment: ${selected.target_environment || 'Unspecified'}` : '',
+      selected ? `Focus nodes: ${selected.focus_node_ids.length}` : '',
+      selected ? `Disabled controls: ${selected.disabled_controls.length}` : '',
+      selected ? `Degraded detections: ${selected.degraded_detections.length}` : '',
+      selected?.ai_narrative ? 'Decision brief available' : '',
+      selected?.impact_summary?.executive_summary ? 'Scenario analysis available' : '',
+      `Planning profile: ${selectedPlanningProfile.label}`,
+    ],
+  }), [selected, selectedPlanningProfile.label]);
+  useAdvisorPageContext(advisorContext);
 
   useEffect(() => {
     if (!currentProject && scopeFilter !== 'standalone') {
       setScopeFilter('standalone');
     }
   }, [currentProject, scopeFilter]);
+
+  useEffect(() => {
+    if (!currentProject) {
+      setWizardDraft((current) => (current.scope === 'project' ? { ...current, scope: 'standalone' } : current));
+    }
+  }, [currentProject]);
 
   useEffect(() => {
     if (currentProject && nodes.length === 0) {
@@ -307,6 +462,10 @@ export function ScenarioSimulationView() {
     }
   }, [selectedId]);
 
+  useEffect(() => {
+    setShowSetupDetails(false);
+  }, [selectedId]);
+
   const allMitigations = useMemo(
     () => nodes.flatMap((node) => (node.mitigations || []).map((mitigation) => ({ ...mitigation, nodeName: node.title }))),
     [nodes]
@@ -320,12 +479,21 @@ export function ScenarioSimulationView() {
     setLoading(true);
     try {
       const rawData =
-        scopeFilter === 'workspace'
+        scopeFilter === 'all'
           ? await api.listScenarioWorkspace(currentProject?.id)
           : await api.listScenarios(currentProject?.id, scopeFilter);
       const data = Array.isArray(rawData) ? rawData.map((item) => normalizeScenario(item)) : [];
+      const requestedScenarioId = pendingViewSelection?.view === 'scenarios' ? pendingViewSelection.artifactId : null;
       setScenarios(data);
-      setSelectedId((current) => (current && data.some((item: ScenarioData) => item.id === current) ? current : data[0]?.id ?? null));
+      setSelectedId((current) => {
+        if (requestedScenarioId) {
+          return data.find((item: ScenarioData) => item.id === requestedScenarioId)?.id || data[0]?.id || null;
+        }
+        return current && data.some((item: ScenarioData) => item.id === current) ? current : data[0]?.id ?? null;
+      });
+      if (requestedScenarioId) {
+        clearPendingViewSelection();
+      }
     } catch (error: any) {
       toast.error(error.message);
       setScenarios([]);
@@ -400,41 +568,53 @@ export function ScenarioSimulationView() {
     setSelectedId(normalized.id);
   }
 
-  async function handleCreate(preset?: Partial<ScenarioData>) {
-    const scope = !currentProject || scopeFilter === 'standalone' ? 'standalone' : 'project';
-    const payload = {
-      scope,
-      project_id: scope === 'project' ? currentProject?.id : null,
-      name: preset?.name || `${scope === 'project' ? 'Project' : 'Standalone'} Scenario ${scenarios.length + 1}`,
-      description: preset?.description || '',
-      scenario_type: preset?.scenario_type || 'campaign',
-      operation_goal: preset?.operation_goal || currentProject?.root_objective || '',
-      target_profile: preset?.target_profile || currentProject?.name || '',
-      target_environment: preset?.target_environment || (currentProject?.context_preset ? formatContextPreset(currentProject.context_preset) : ''),
-      execution_tempo: preset?.execution_tempo || 'balanced',
-      stealth_level: preset?.stealth_level || 'balanced',
-      access_level: preset?.access_level || 'external',
-      attacker_type: preset?.attacker_type || 'opportunistic',
-      attacker_skill: preset?.attacker_skill || 'Medium',
-      attacker_resources: preset?.attacker_resources || 'Medium',
-      attacker_motivation: preset?.attacker_motivation || '',
-      entry_vectors: preset?.entry_vectors || [],
-      campaign_phases: preset?.campaign_phases || [],
-      constraints: preset?.constraints || [],
-      dependencies: preset?.dependencies || [],
-      intelligence_gaps: preset?.intelligence_gaps || [],
-      success_criteria: preset?.success_criteria || [],
-      assumptions: preset?.assumptions || '',
-      planning_notes: preset?.planning_notes || '',
-    };
+  function addScenarioReference(item: {
+    framework: string;
+    ref_id: string;
+    ref_name: string;
+    score: number;
+    reasons: string[];
+  }) {
+    if (!selected) return;
+    void patchScenario({
+      reference_mappings: mergeReferenceLinks(selected.reference_mappings, [item]),
+    });
+  }
 
+  function removeScenarioReference(framework: string, refId: string) {
+    if (!selected) return;
+    void patchScenario({
+      reference_mappings: removeReferenceLink(selected.reference_mappings, framework, refId),
+    });
+  }
+
+  async function createScenario(payload: ReturnType<typeof buildScenarioPayload>) {
+    const created = await api.createScenario(payload);
+    const normalized = normalizeScenario(created);
+    setScenarios((current) => [normalized, ...current]);
+    setSelectedId(normalized.id);
+    if (currentProject && scopeFilter !== 'all' && scopeFilter !== normalized.scope) {
+      setScopeFilter('all');
+    }
+    return normalized;
+  }
+
+  async function handleWizardSubmit(mode: ScenarioWizardMode) {
+    setWizardMode(mode);
     try {
-      const created = await api.createScenario(payload);
-      const normalized = normalizeScenario(created);
-      setScenarios((current) => [normalized, ...current]);
-      setSelectedId(normalized.id);
+      const created = await createScenario(buildScenarioPayload(wizardDraft));
+      if (mode === 'output') {
+        await generateScenarioOutput(created, '');
+        toast.success('Scenario created with analysis and decision brief');
+      } else {
+        toast.success('Scenario created');
+      }
+      setWizardOpen(false);
+      setWizardStep(0);
     } catch (error: any) {
       toast.error(error.message);
+    } finally {
+      setWizardMode(null);
     }
   }
 
@@ -449,45 +629,27 @@ export function ScenarioSimulationView() {
     }
   }
 
-  async function handleSimulate() {
-    if (!selected) return;
-    setSimLoading(true);
-    try {
-      await flushScenarioPatch(selected.id);
-      const result = await api.simulateScenario(selected.id, {
-        disabled_controls: selected.disabled_controls || [],
-        degraded_detections: selected.degraded_detections || [],
-        modified_scores: selected.modified_scores || {},
-        attacker_type: selected.attacker_type,
-        attacker_skill: selected.attacker_skill,
-        attacker_resources: selected.attacker_resources,
-        execution_tempo: selected.execution_tempo,
-        stealth_level: selected.stealth_level,
-        access_level: selected.access_level,
-        focus_node_ids: selected.focus_node_ids || [],
-        focus_tags: selected.focus_tags || [],
-      });
-      syncScenario(normalizeScenario(result));
-      toast.success('Planning pass complete');
-    } catch (error: any) {
-      toast.error(error.message);
-    } finally {
-      setSimLoading(false);
-    }
+  async function generateScenarioOutput(scenario: ScenarioData, briefQuestion: string) {
+    const simulated = await api.simulateScenario(scenario.id, buildSimulationPayload(scenario));
+    const normalizedSimulation = normalizeScenario(simulated);
+    syncScenario(normalizedSimulation);
+    const brief = await api.aiAnalyzeScenario(normalizedSimulation.id, { question: briefQuestion, planning_profile: planningProfile });
+    const normalizedBrief = normalizeScenario(brief);
+    syncScenario(normalizedBrief);
+    return normalizedBrief;
   }
 
-  async function handleAiAnalyze() {
+  async function handleGenerateOutput() {
     if (!selected) return;
-    setAiLoading(true);
+    setOutputLoading(true);
     try {
       await flushScenarioPatch(selected.id);
-      const result = await api.aiAnalyzeScenario(selected.id, { question, planning_profile: planningProfile });
-      syncScenario(normalizeScenario(result));
-      toast.success('AI planning brief ready');
+      await generateScenarioOutput(selected, question);
+      toast.success('Scenario analysis and brief ready');
     } catch (error: any) {
       toast.error(error.message);
     } finally {
-      setAiLoading(false);
+      setOutputLoading(false);
     }
   }
 
@@ -534,16 +696,19 @@ export function ScenarioSimulationView() {
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <FlaskConical size={16} className="text-cyan-400" />
-                Scenario Workspace
+                Scenario Library
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 {currentProject
-                  ? `Planning against ${currentProject.name} plus standalone scenarios`
-                  : 'Standalone planning library for cyber operations'}
+                  ? `Keep multiple scenarios for ${currentProject.name} or save reusable ones to your library`
+                  : 'Keep reusable scenarios in your standalone planning library'}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-2">
+                {scenarios.length} scenario{scenarios.length === 1 ? '' : 's'} in this view
               </p>
             </div>
             <div className="flex gap-1">
-              <button onClick={() => handleCreate()} className="p-2 rounded-lg hover:bg-accent" title="New scenario">
+              <button onClick={() => openScenarioWizard()} className="p-2 rounded-lg hover:bg-accent" title="Add scenario">
                 <Plus size={14} />
               </button>
               <button onClick={handleAiSuggest} disabled={suggestLoading} className="p-2 rounded-lg hover:bg-accent" title="Generate diverse scenarios">
@@ -553,19 +718,15 @@ export function ScenarioSimulationView() {
           </div>
 
           <div className="flex gap-1">
-            {[
-              { id: 'workspace', label: 'Workspace', disabled: !currentProject },
-              { id: 'project', label: 'Project', disabled: !currentProject },
-              { id: 'standalone', label: 'Standalone', disabled: false },
-            ].map((option) => (
+            {SCENARIO_FILTER_OPTIONS.map((option) => (
               <button
                 key={option.id}
-                onClick={() => !option.disabled && setScopeFilter(option.id as ScopeFilter)}
-                disabled={option.disabled}
+                onClick={() => !(option.id !== 'standalone' && !currentProject) && setScopeFilter(option.id)}
+                disabled={option.id !== 'standalone' && !currentProject}
                 className={cn(
                   'flex-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium border transition-colors',
                   scopeFilter === option.id ? 'border-primary bg-primary/10 text-primary' : 'border-border/50 text-muted-foreground hover:bg-accent',
-                  option.disabled && 'opacity-40 cursor-not-allowed'
+                  option.id !== 'standalone' && !currentProject && 'opacity-40 cursor-not-allowed'
                 )}
               >
                 {option.label}
@@ -573,11 +734,15 @@ export function ScenarioSimulationView() {
             ))}
           </div>
 
+          <p className="text-[11px] leading-5 text-muted-foreground">
+            Scenarios only live in two places: this project or your standalone library. <span className="text-foreground">All</span> simply shows both together.
+          </p>
+
           <div className="grid grid-cols-2 gap-2">
             {SCENARIO_PRESETS.slice(0, 4).map((preset) => (
               <button
                 key={preset.name}
-                onClick={() => handleCreate(preset)}
+                onClick={() => openScenarioWizard(preset)}
                 className="rounded-xl border border-border/40 bg-background/60 px-3 py-2 text-left hover:border-primary/30 hover:bg-primary/5 transition-colors"
               >
                 <div className="text-xs font-semibold">{preset.name}</div>
@@ -592,7 +757,7 @@ export function ScenarioSimulationView() {
             <div className="text-sm text-muted-foreground text-center py-12">Loading scenarios...</div>
           ) : scenarios.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border/50 p-5 text-center text-sm text-muted-foreground">
-              Create a scenario manually, use a preset, or generate a coverage set with AI.
+              Start a guided scenario, use a template, or generate a coverage set with AI.
             </div>
           ) : (
             scenarios.map((scenario) => (
@@ -622,7 +787,7 @@ export function ScenarioSimulationView() {
                   </button>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 mt-3 text-[10px]">
-                  <Pill tone={scenario.scope === 'project' ? 'cyan' : 'slate'}>{scenario.scope}</Pill>
+                  <Pill tone={scenario.scope === 'project' ? 'cyan' : 'slate'}>{scenario.scope === 'project' ? 'Project' : 'Library'}</Pill>
                   <Pill tone="violet">{getScenarioTypeLabel(scenario.scenario_type)}</Pill>
                   <Pill tone={scenario.status === 'completed' ? 'emerald' : 'amber'}>{scenario.status}</Pill>
                 </div>
@@ -634,7 +799,7 @@ export function ScenarioSimulationView() {
 
       <main className="flex-1 overflow-auto">
         {!selected ? (
-          <EmptyScenarioState currentProjectName={currentProject?.name || ''} />
+          <EmptyScenarioState currentProjectName={currentProject?.name || ''} onCreate={() => openScenarioWizard()} />
         ) : (
           <div className="max-w-6xl mx-auto px-6 py-6 space-y-5">
             <section className="rounded-3xl border border-border/40 bg-card/70 backdrop-blur-sm p-5">
@@ -642,7 +807,7 @@ export function ScenarioSimulationView() {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                     <Pill tone={selected.scope === 'project' ? 'cyan' : 'slate'}>
-                      {selected.scope === 'project' ? `Linked to ${selected.project_name || 'project'}` : 'Standalone'}
+                      {selected.scope === 'project' ? `Linked to ${selected.project_name || 'project'}` : 'Library'}
                     </Pill>
                     <Pill tone="violet">{getScenarioTypeLabel(selected.scenario_type)}</Pill>
                     {selected.project_id && !linkedProjectActive && (
@@ -664,13 +829,13 @@ export function ScenarioSimulationView() {
 
                 <div className="w-full lg:w-[280px] rounded-2xl border border-border/40 bg-background/40 p-4 space-y-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Attachment</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Where It Lives</div>
                     <div className="mt-2 flex gap-2">
                       <button
                         onClick={() => patchScenario({ scope: 'standalone', project_id: null, project_name: '' } as Partial<ScenarioData>)}
                         className={cn('flex-1 rounded-xl px-3 py-2 text-xs font-medium border', selected.scope === 'standalone' ? 'border-primary bg-primary/10 text-primary' : 'border-border/50 hover:bg-accent')}
                       >
-                        Standalone
+                        Library
                       </button>
                       <button
                         onClick={() => currentProject && patchScenario({ scope: 'project', project_id: currentProject.id, project_name: currentProject.name } as Partial<ScenarioData>)}
@@ -683,7 +848,7 @@ export function ScenarioSimulationView() {
                   </div>
 
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">AI Planning Mode</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Analysis Style</div>
                     <select
                       value={planningProfile}
                       onChange={(event) => setPlanningProfile(event.target.value as PlanningProfile)}
@@ -703,23 +868,41 @@ export function ScenarioSimulationView() {
                     <MetricCard label="Readiness" value={profile.readiness_score} />
                   </div>
 
-                  <div className="flex gap-2">
-                    <button onClick={handleSimulate} disabled={simLoading} className="flex-1 rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50 flex items-center justify-center gap-2">
-                      {simLoading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
-                      Run Planning Pass
-                    </button>
-                    <button onClick={handleAiAnalyze} disabled={aiLoading} className="flex-1 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50 flex items-center justify-center gap-2">
-                      {aiLoading ? <Loader2 size={15} className="animate-spin" /> : <Brain size={15} />}
-                      AI Brief
-                    </button>
-                  </div>
+                  <button onClick={handleGenerateOutput} disabled={outputLoading} className="w-full rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                    {outputLoading ? <Loader2 size={15} className="animate-spin" /> : <Brain size={15} />}
+                    Generate Analysis + Brief
+                  </button>
+
+                  <button
+                    onClick={() => setShowSetupDetails((current) => !current)}
+                    className="w-full rounded-xl border border-border/50 px-4 py-2.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    {showSetupDetails ? 'Hide Setup Details' : 'Review Or Edit Setup'}
+                  </button>
                 </div>
               </div>
             </section>
 
-            <div className="grid gap-5 xl:grid-cols-[1.35fr_1fr]">
-              <div className="space-y-5">
-                <Panel icon={<BriefcaseBusiness size={15} />} title="Mission Framing" description="Define what the operation is trying to achieve and the terrain it applies to.">
+            <section className="rounded-3xl border border-border/40 bg-card/60 p-4 backdrop-blur-sm">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Scenario Setup</div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Mission framing, attacker conditions, project focus, and supporting references are hidden by default so the analysis stays in focus.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <Pill tone={selected.scope === 'project' ? 'cyan' : 'slate'}>{selected.scope === 'project' ? 'Project linked' : 'Library scenario'}</Pill>
+                  <Pill tone="violet">{selected.target_environment || 'Environment pending'}</Pill>
+                  <Pill tone="amber">{selected.entry_vectors.length} vector{selected.entry_vectors.length === 1 ? '' : 's'}</Pill>
+                </div>
+              </div>
+            </section>
+
+            {showSetupDetails && (
+              <div className="grid gap-5 xl:grid-cols-[1.35fr_1fr]">
+                <div className="space-y-5">
+                  <Panel icon={<BriefcaseBusiness size={15} />} title="Mission Framing" description="Define what the operation is trying to achieve and the terrain it applies to.">
                   <div className="grid md:grid-cols-2 gap-4">
                     <ChoiceBlock
                       label="Scenario Type"
@@ -767,16 +950,16 @@ export function ScenarioSimulationView() {
                             onClick={() => patchScenario({ target_environment: formatContextPreset(currentProject.context_preset) })}
                             className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
                           >
-                            Use workspace preset: {formatContextPreset(currentProject.context_preset)}
+                            Use project preset: {formatContextPreset(currentProject.context_preset)}
                           </button>
                         ) : null}
                         <span>Start with a known environment label, then refine it if the terrain is more specific.</span>
                       </div>
                     </div>
                   </div>
-                </Panel>
+                  </Panel>
 
-                <Panel icon={<Radar size={15} />} title="Operational Design" description="Broaden coverage beyond one path by structuring vectors, phases, and conditions.">
+                  <Panel icon={<Radar size={15} />} title="Operational Design" description="Broaden coverage beyond one path by structuring vectors, phases, and conditions.">
                   <div className="grid lg:grid-cols-2 gap-4">
                     <TokenEditor
                       label="Entry Vectors"
@@ -835,9 +1018,9 @@ export function ScenarioSimulationView() {
                       onChange={(value) => patchScenarioText({ planning_notes: value })}
                     />
                   </div>
-                </Panel>
+                  </Panel>
 
-                <Panel icon={<Globe size={15} />} title="Adversary Model" description="Use a richer attacker profile to shape the simulated operating conditions.">
+                  <Panel icon={<Globe size={15} />} title="Adversary Model" description="Use a richer attacker profile to shape the simulated operating conditions.">
                   <div className="grid lg:grid-cols-2 gap-4">
                     <ChoiceBlock label="Attacker Type" value={selected.attacker_type} options={ATTACKER_TYPES.map((item) => item.id)} display={(item) => ATTACKER_TYPES.find((option) => option.id === item)?.label || item} onSelect={(value) => patchScenario({ attacker_type: value })} />
                     <ChoiceBlock label="Skill Level" value={selected.attacker_skill} options={SKILL_LEVELS} onSelect={(value) => patchScenario({ attacker_skill: value })} />
@@ -855,21 +1038,21 @@ export function ScenarioSimulationView() {
                       />
                     </div>
                   </div>
-                </Panel>
-              </div>
+                  </Panel>
+                </div>
 
-              <div className="space-y-5">
-                <Panel icon={<Focus size={15} />} title="Workspace Focus" description="When linked to the active workspace, focus the scenario on nodes, controls, and detections that matter.">
+                <div className="space-y-5">
+                  <Panel icon={<Focus size={15} />} title="Project Focus" description="When linked to the current project, focus the scenario on nodes, controls, and detections that matter.">
                   {!selected.project_id ? (
-                    <InlineNotice tone="amber" text="This scenario is standalone. Attach it to the current workspace to use tree-driven planning controls." />
+                    <InlineNotice tone="amber" text="This scenario is in the library. Attach it to the current project to use tree-driven planning controls." />
                   ) : !linkedProjectActive ? (
-                    <InlineNotice tone="amber" text="Open the linked workspace to edit node, control, and detection focus from the tree." />
+                    <InlineNotice tone="amber" text="Open the linked project to edit node, control, and detection focus from the tree." />
                   ) : (
                     <div className="space-y-4">
                         <div>
                           <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Focus Nodes</div>
                           {nodes.length === 0 ? (
-                            <InlineNotice tone="amber" text="No attack tree nodes exist in this workspace yet." />
+                            <InlineNotice tone="amber" text="No attack tree nodes exist in this project yet." />
                           ) : (
                           <div className="max-h-52 overflow-auto space-y-2">
                             {nodes.map((node) => (
@@ -908,53 +1091,107 @@ export function ScenarioSimulationView() {
                       />
                     </div>
                   )}
-                </Panel>
+                  </Panel>
 
-                <Panel icon={<Crosshair size={15} />} title="Planning Output" description="Use the latest planning pass, AI brief, and workspace-specific impacts to drive next decisions.">
-                  <div className="grid grid-cols-2 gap-3">
-                    {planningMode ? (
-                      <>
-                        <MetricCard label="Coverage" value={profile.coverage_score} />
-                        <MetricCard label="Complexity" value={profile.complexity_score} />
-                        <MetricCard label="Exposure" value={profile.exposure_score} />
-                        <MetricCard label="Readiness" value={profile.readiness_score} />
-                      </>
+                  <Panel icon={<BriefcaseBusiness size={15} />} title="Supporting References" description="Anchor the scenario to the most relevant frameworks, attack patterns, and environment concepts.">
+                  <ReferencePicker
+                    artifactType="scenario"
+                    contextPreset={currentProject?.context_preset || ''}
+                    objective={selected.operation_goal || currentProject?.root_objective || selected.name}
+                    scope={selected.description || currentProject?.description || ''}
+                    targetKind="scenario"
+                    targetSummary={[
+                      selected.name,
+                      selected.description,
+                      selected.target_environment,
+                      selected.entry_vectors.join(' '),
+                      selected.campaign_phases.join(' '),
+                    ].filter(Boolean).join(' ')}
+                    placeholder="Search supporting references for this scenario"
+                    onAdd={addScenarioReference}
+                  />
+                  <div className="mt-3 space-y-2">
+                    {selected.reference_mappings.length === 0 ? (
+                      <InlineNotice tone="cyan" text="No supporting references attached yet." />
                     ) : (
-                      <>
-                        <MetricCard label="Baseline Risk" value={impact.original_risk} />
-                        <MetricCard label="Scenario Risk" value={impact.simulated_risk} accent={impact.delta > 0 ? 'red' : 'emerald'} />
-                        <MetricCard label="Risk Delta" value={impact.delta} accent={impact.delta > 0 ? 'red' : 'emerald'} />
-                        <MetricCard label="Affected Nodes" value={impact.affected_nodes} />
-                      </>
+                      selected.reference_mappings.map((reference) => (
+                        <div key={`${reference.framework}:${reference.ref_id}`} className="rounded-xl border border-border/40 bg-background/40 px-3 py-2">
+                          <div className="flex items-start gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="font-semibold uppercase tracking-wide text-muted-foreground">{reference.framework}</span>
+                                <span className="font-mono text-cyan-400">{reference.ref_id}</span>
+                              </div>
+                              <div className="mt-1 text-sm font-medium">{reference.ref_name}</div>
+                              {(reference.source || reference.confidence != null || reference.rationale) && (
+                                <div className="mt-1 text-[11px] text-muted-foreground leading-5">
+                                  {reference.source ? `Source: ${reference.source}` : ''}
+                                  {reference.confidence != null ? `${reference.source ? ' · ' : ''}Confidence: ${Math.round(reference.confidence * 100)}%` : ''}
+                                  {reference.rationale ? ` · ${reference.rationale}` : ''}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeScenarioReference(reference.framework, reference.ref_id)}
+                              className="rounded-lg border border-transparent p-1.5 text-muted-foreground transition-colors hover:border-destructive/20 hover:bg-destructive/5 hover:text-destructive"
+                              title="Remove reference"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      ))
                     )}
                   </div>
-
-                  {impact.note && <InlineNotice tone="cyan" text={impact.note} className="mt-4" />}
-
-                  {impact.planning_findings?.length > 0 && (
-                    <div className="mt-4 space-y-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Planning Findings</div>
-                      {impact.planning_findings.map((item: string, index: number) => (
-                        <div key={index} className="flex gap-2 text-xs rounded-xl bg-background/40 px-3 py-2">
-                          <BadgeAlert size={13} className="text-amber-400 shrink-0 mt-0.5" />
-                          <span>{item}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="mt-4">
-                    <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Ask AI a specific question</label>
-                    <input
-                      value={question}
-                      onChange={(event) => setQuestion(event.target.value)}
-                      placeholder="What would stress the defender most? Which path deserves first attention?"
-                      className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
-                    />
-                  </div>
-                </Panel>
+                  </Panel>
+                </div>
               </div>
-            </div>
+            )}
+
+            <Panel icon={<Crosshair size={15} />} title="Scenario Analysis" description="Use the latest analysis, briefing output, and project-specific impacts to drive next decisions.">
+              <div className="grid grid-cols-2 gap-3">
+                {planningMode ? (
+                  <>
+                    <MetricCard label="Coverage" value={profile.coverage_score} />
+                    <MetricCard label="Complexity" value={profile.complexity_score} />
+                    <MetricCard label="Exposure" value={profile.exposure_score} />
+                    <MetricCard label="Readiness" value={profile.readiness_score} />
+                  </>
+                ) : (
+                  <>
+                    <MetricCard label="Baseline Risk" value={impact.original_risk} />
+                    <MetricCard label="Scenario Risk" value={impact.simulated_risk} accent={impact.delta > 0 ? 'red' : 'emerald'} />
+                    <MetricCard label="Risk Delta" value={impact.delta} accent={impact.delta > 0 ? 'red' : 'emerald'} />
+                    <MetricCard label="Affected Nodes" value={impact.affected_nodes} />
+                  </>
+                )}
+              </div>
+
+              {impact.note && <InlineNotice tone="cyan" text={impact.note} className="mt-4" />}
+
+              {impact.planning_findings?.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Analysis Findings</div>
+                  {impact.planning_findings.map((item: string, index: number) => (
+                    <div key={index} className="flex gap-2 text-xs rounded-xl bg-background/40 px-3 py-2">
+                      <BadgeAlert size={13} className="text-amber-400 shrink-0 mt-0.5" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Guide the brief</label>
+                <input
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  placeholder="Optional: What would stress the defender most? Which path deserves first attention?"
+                  className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+              </div>
+            </Panel>
 
             {!planningMode && impact.node_details?.length > 0 && (
               <Panel icon={<Layers3 size={15} />} title="Most Affected Nodes" description="Where the scenario changed risk the most in the linked attack tree.">
@@ -997,7 +1234,7 @@ export function ScenarioSimulationView() {
 
             {(impact.executive_summary || selected.ai_narrative || selected.ai_recommendations?.length > 0) && (
               <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
-                <Panel icon={<Brain size={15} />} title="AI Planning Brief" description="Narrative analysis, phase framing, and decision support.">
+                <Panel icon={<Brain size={15} />} title="Decision Brief" description="Narrative analysis, phase framing, and decision support.">
                   {impact.executive_summary && <p className="text-sm leading-7 whitespace-pre-wrap">{impact.executive_summary}</p>}
                   {selected.ai_narrative && <p className="text-sm leading-7 whitespace-pre-wrap mt-4">{selected.ai_narrative}</p>}
                   {impact.phase_plan?.length > 0 && (
@@ -1045,11 +1282,25 @@ export function ScenarioSimulationView() {
           </div>
         )}
       </main>
+
+      <ScenarioWizardModal
+        open={wizardOpen}
+        draft={wizardDraft}
+        step={wizardStep}
+        submitting={wizardMode}
+        currentProjectName={currentProject?.name || ''}
+        currentProjectPreset={currentProject?.context_preset ? formatContextPreset(currentProject.context_preset) : ''}
+        hasProject={!!currentProject}
+        onClose={closeScenarioWizard}
+        onDraftChange={(updates) => setWizardDraft((current) => ({ ...current, ...updates }))}
+        onStepChange={setWizardStep}
+        onSubmit={handleWizardSubmit}
+      />
     </div>
   );
 }
 
-function EmptyScenarioState({ currentProjectName }: { currentProjectName: string }) {
+function EmptyScenarioState({ currentProjectName, onCreate }: { currentProjectName: string; onCreate: () => void }) {
   return (
     <div className="h-full flex items-center justify-center px-6">
       <div className="max-w-3xl w-full rounded-[32px] border border-border/40 bg-card/70 backdrop-blur-sm p-8">
@@ -1059,12 +1310,382 @@ function EmptyScenarioState({ currentProjectName }: { currentProjectName: string
         </div>
         <h1 className="text-3xl font-bold max-w-2xl">Broaden coverage first, then go deep on the paths and conditions that matter.</h1>
         <p className="text-sm text-muted-foreground mt-3 max-w-2xl leading-7">
-          Build standalone scenario libraries for operations planning, or attach scenarios to {currentProjectName || 'a project'} to stress specific tree paths, controls, and detections.
+          Keep multiple scenarios in a reusable library, or attach them to {currentProjectName || 'a project'} to stress specific tree paths, controls, and detections.
         </p>
+        <div className="mt-6">
+          <button onClick={onCreate} className="rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-700">
+            Start Guided Scenario
+          </button>
+        </div>
         <div className="grid gap-4 md:grid-cols-3 mt-6">
-          <FeatureCard icon={<Globe size={16} />} title="Standalone" text="Use scenarios as a planning dossier even without a project tree." />
-          <FeatureCard icon={<Shield size={16} />} title="Project-Linked" text="Attach scenarios to a project and stress controls, detections, and focused nodes." />
-          <FeatureCard icon={<Brain size={16} />} title="AI Briefing" text="Generate broader scenario coverage and deep planning briefs from the current state." />
+          <FeatureCard icon={<Globe size={16} />} title="Library" text="Keep reusable scenarios even when they are not tied to one project." />
+          <FeatureCard icon={<Shield size={16} />} title="Project Linked" text="Attach scenarios to a project and stress controls, detections, and focused nodes." />
+              <FeatureCard icon={<Brain size={16} />} title="Analysis + Brief" text="Generate the scenario assessment first, then the decision brief from the same current state." />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ScenarioWizardModal({
+  open,
+  draft,
+  step,
+  submitting,
+  currentProjectName,
+  currentProjectPreset,
+  hasProject,
+  onClose,
+  onDraftChange,
+  onStepChange,
+  onSubmit,
+}: {
+  open: boolean;
+  draft: ScenarioWizardDraft;
+  step: number;
+  submitting: ScenarioWizardMode | null;
+  currentProjectName: string;
+  currentProjectPreset: string;
+  hasProject: boolean;
+  onClose: () => void;
+  onDraftChange: (updates: Partial<ScenarioWizardDraft>) => void;
+  onStepChange: (step: number) => void;
+  onSubmit: (mode: ScenarioWizardMode) => void;
+}) {
+  if (!open) return null;
+
+  const busy = submitting !== null;
+  const lastStep = SCENARIO_WIZARD_STEPS.length - 1;
+  const canGoBack = step > 0 && !busy;
+  const canGoForward = step < lastStep && !busy;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm sm:items-center">
+      <div className="flex w-full max-w-5xl max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-[32px] border border-border/50 bg-card/95 shadow-2xl">
+        <div className="shrink-0 border-b border-border/40 px-6 py-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.25em] text-cyan-400">Scenario Setup</div>
+              <h2 className="mt-2 text-2xl font-bold">Capture the basics in a simple order, then review the result.</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-7 text-muted-foreground">
+                You can keep multiple scenarios. Each one lives either in the current project or in your standalone library.
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              disabled={busy}
+              className="rounded-xl border border-border/50 px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="mt-5 grid gap-2 md:grid-cols-4">
+            {SCENARIO_WIZARD_STEPS.map((label, index) => (
+              <button
+                key={label}
+                onClick={() => !busy && onStepChange(index)}
+                disabled={busy}
+                className={cn(
+                  'rounded-2xl border px-3 py-3 text-left transition-colors',
+                  step === index ? 'border-primary bg-primary/10' : 'border-border/40 bg-background/40 hover:bg-accent',
+                  busy && 'cursor-not-allowed opacity-70'
+                )}
+              >
+                <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Step {index + 1}</div>
+                <div className="mt-1 text-sm font-semibold">{label}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto px-6 py-6 pb-8">
+          {busy ? (
+            <div className="flex min-h-[360px] items-center justify-center">
+              <div className="max-w-md text-center">
+                <Loader2 size={28} className="mx-auto animate-spin text-cyan-400" />
+                <div className="mt-4 text-xl font-semibold">
+                  {submitting === 'output'
+                    ? 'Creating the scenario, generating analysis, and writing the brief'
+                    : 'Creating the scenario'}
+                </div>
+                <p className="mt-3 text-sm leading-7 text-muted-foreground">
+                  The setup window will close as soon as the scenario is ready and the report view can take over.
+                </p>
+              </div>
+            </div>
+          ) : step === 0 ? (
+            <div className="space-y-5">
+              <div className="max-w-3xl">
+                <h3 className="text-xl font-semibold">Choose where this scenario should live</h3>
+                <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                  There are only two places a scenario can live. Save it to this project if you want to use the project attack tree, or save it to the library if you want to reuse it elsewhere.
+                </p>
+              </div>
+
+              {!hasProject && (
+                <InlineNotice tone="amber" text="No project is open right now, so this scenario will be saved to the standalone library." />
+              )}
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <button
+                  onClick={() => hasProject && onDraftChange({ scope: 'project' })}
+                  disabled={!hasProject}
+                  className={cn(
+                    'rounded-[28px] border p-5 text-left transition-colors',
+                    draft.scope === 'project' ? 'border-primary bg-primary/10' : 'border-border/40 bg-background/40 hover:bg-accent',
+                    !hasProject && 'cursor-not-allowed opacity-50'
+                  )}
+                >
+                  <div className="text-sm font-semibold">Current Project</div>
+                  <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                    Use {currentProjectName || 'the active project'} tree nodes, controls, detections, and project context during planning.
+                  </p>
+                </button>
+                <button
+                  onClick={() => onDraftChange({ scope: 'standalone' })}
+                  className={cn(
+                    'rounded-[28px] border p-5 text-left transition-colors',
+                    draft.scope === 'standalone' ? 'border-primary bg-primary/10' : 'border-border/40 bg-background/40 hover:bg-accent'
+                  )}
+                >
+                  <div className="text-sm font-semibold">Standalone Library</div>
+                  <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                    Keep this scenario reusable and independent from any one project. You can still refine and run it like any other scenario.
+                  </p>
+                </button>
+              </div>
+            </div>
+          ) : step === 1 ? (
+            <div className="space-y-6">
+              <div className="max-w-3xl">
+                <h3 className="text-xl font-semibold">Describe what you want to plan</h3>
+                <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                  Keep this simple. Name the scenario, describe the operational question, and give the AI enough context to produce a useful first pass.
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Scenario Name</label>
+                  <input
+                    value={draft.name}
+                    onChange={(event) => onDraftChange({ name: event.target.value })}
+                    placeholder="Quarter-end phishing exercise"
+                    className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Target Profile</label>
+                  <input
+                    value={draft.target_profile}
+                    onChange={(event) => onDraftChange({ target_profile: event.target.value })}
+                    placeholder="Business unit, organisation, or user group"
+                    className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                </div>
+              </div>
+
+              <ChoiceBlock
+                label="Scenario Type"
+                value={draft.scenario_type}
+                options={SCENARIO_TYPES.map((item) => item.id)}
+                display={(item) => getScenarioTypeLabel(item)}
+                onSelect={(value) => onDraftChange({ scenario_type: value })}
+              />
+
+              <TextAreaField
+                label="What are you trying to learn or achieve?"
+                value={draft.operation_goal}
+                placeholder="Test identity escalation paths across the production estate"
+                onChange={(value) => onDraftChange({ operation_goal: value })}
+              />
+
+              <TextAreaField
+                label="Scenario Context"
+                value={draft.description}
+                placeholder="Short plain-English description of the situation, change, or concern"
+                onChange={(value) => onDraftChange({ description: value })}
+              />
+
+              <div>
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Environment or Terrain</label>
+                <input
+                  list="scenario-wizard-environment-presets"
+                  value={draft.target_environment}
+                  onChange={(event) => onDraftChange({ target_environment: event.target.value })}
+                  placeholder="Cloud tenant, datacentre, corporate network, hybrid estate"
+                  className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+                <datalist id="scenario-wizard-environment-presets">
+                  {ENVIRONMENT_PRESET_OPTIONS.map((preset) => (
+                    <option key={preset.id} value={preset.name} />
+                  ))}
+                </datalist>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  {currentProjectPreset ? (
+                    <button
+                      type="button"
+                      onClick={() => onDraftChange({ target_environment: currentProjectPreset })}
+                      className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
+                    >
+                      Use project preset: {currentProjectPreset}
+                    </button>
+                  ) : null}
+                  <span>Start broad here. You can add more detail after the first pass.</span>
+                </div>
+              </div>
+            </div>
+          ) : step === 2 ? (
+            <div className="space-y-6">
+              <div className="max-w-3xl">
+                <h3 className="text-xl font-semibold">Set the attacker conditions</h3>
+                <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                  These settings tell the planner how capable, fast, and stealthy the simulated attacker should be.
+                </p>
+              </div>
+
+              <div className="grid gap-5 lg:grid-cols-2">
+                <ChoiceBlock
+                  label="Attacker Type"
+                  value={draft.attacker_type}
+                  options={ATTACKER_TYPES.map((item) => item.id)}
+                  display={(item) => ATTACKER_TYPES.find((option) => option.id === item)?.label || item}
+                  onSelect={(value) => onDraftChange({ attacker_type: value })}
+                />
+                <ChoiceBlock
+                  label="Access Level"
+                  value={draft.access_level}
+                  options={ACCESS_OPTIONS}
+                  display={formatEnumLabel}
+                  onSelect={(value) => onDraftChange({ access_level: value })}
+                />
+                <ChoiceBlock label="Skill Level" value={draft.attacker_skill} options={SKILL_LEVELS} onSelect={(value) => onDraftChange({ attacker_skill: value })} />
+                <ChoiceBlock label="Resources" value={draft.attacker_resources} options={RESOURCE_LEVELS} onSelect={(value) => onDraftChange({ attacker_resources: value })} />
+                <ChoiceBlock
+                  label="Execution Tempo"
+                  value={draft.execution_tempo}
+                  options={TEMPO_OPTIONS}
+                  display={formatEnumLabel}
+                  onSelect={(value) => onDraftChange({ execution_tempo: value })}
+                />
+                <ChoiceBlock
+                  label="Stealth Level"
+                  value={draft.stealth_level}
+                  options={STEALTH_OPTIONS}
+                  display={formatEnumLabel}
+                  onSelect={(value) => onDraftChange({ stealth_level: value })}
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Motivation</label>
+                <input
+                  value={draft.attacker_motivation}
+                  onChange={(event) => onDraftChange({ attacker_motivation: event.target.value })}
+                  placeholder="Fraud, espionage, disruption, validation, coercion"
+                  className="mt-2 w-full rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="max-w-3xl">
+                <h3 className="text-xl font-semibold">Add the most important focus and limits</h3>
+                <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                  Give the planner the main routes, phases, and boundaries to respect. Anything else can be refined after the first result appears.
+                </p>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <TokenEditor
+                  label="Likely Entry Vectors"
+                  helper="One per line. Keep only the main options."
+                  value={draft.entry_vectors}
+                  onChange={(value) => onDraftChange({ entry_vectors: value })}
+                />
+                <TokenEditor
+                  label="Likely Campaign Phases"
+                  helper="Sequence the operation in simple stages."
+                  value={draft.campaign_phases}
+                  onChange={(value) => onDraftChange({ campaign_phases: value })}
+                />
+                <TokenEditor
+                  label="Constraints"
+                  helper="Operational limits, timing, legal bounds, blast-radius constraints."
+                  value={draft.constraints}
+                  onChange={(value) => onDraftChange({ constraints: value })}
+                />
+                <TokenEditor
+                  label="Success Criteria"
+                  helper="How you will know the scenario plan was useful or complete."
+                  value={draft.success_criteria}
+                  onChange={(value) => onDraftChange({ success_criteria: value })}
+                />
+              </div>
+
+              <TextAreaField
+                label="Anything else the planner should keep in mind?"
+                value={draft.planning_notes}
+                placeholder="Optional notes, assumptions, or caveats for the first pass"
+                onChange={(value) => onDraftChange({ planning_notes: value })}
+              />
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <WizardOutcomeCard
+                  title="Save Setup Only"
+                  description="Keep the scenario ready without generating output yet."
+                />
+                <WizardOutcomeCard
+                  title="Generate Analysis + Brief"
+                  description="Build the first scenario assessment, then write the narrative decision brief automatically."
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-border/40 px-6 py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="text-sm text-muted-foreground">
+            Step {step + 1} of {SCENARIO_WIZARD_STEPS.length}. You can refine the full scenario after this setup closes.
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => canGoBack && onStepChange(step - 1)}
+              disabled={!canGoBack}
+              className="rounded-xl border border-border/50 px-4 py-2 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Back
+            </button>
+            {step < lastStep ? (
+              <button
+                onClick={() => canGoForward && onStepChange(step + 1)}
+                disabled={!canGoForward}
+                className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Continue
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => onSubmit('draft')}
+                  disabled={busy}
+                  className="rounded-xl border border-border/50 px-4 py-2 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save Setup Only
+                </button>
+                <button
+                  onClick={() => onSubmit('output')}
+                  disabled={busy}
+                  className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save And Generate Analysis + Brief
+                </button>
+              </>
+            )}
+          </div>
+        </div>
         </div>
       </div>
     </div>
@@ -1304,6 +1925,15 @@ function FeatureCard({ icon, title, text }: { icon: React.ReactNode; title: stri
       <div className="w-9 h-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">{icon}</div>
       <div className="font-semibold text-sm mt-3">{title}</div>
       <div className="text-sm text-muted-foreground mt-1 leading-6">{text}</div>
+    </div>
+  );
+}
+
+function WizardOutcomeCard({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="rounded-2xl border border-border/40 bg-background/40 p-4">
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="mt-2 text-xs leading-6 text-muted-foreground">{description}</div>
     </div>
   );
 }

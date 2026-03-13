@@ -17,13 +17,25 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-type LibraryId = 'attack' | 'capec' | 'cwe' | 'owasp' | 'environment_catalog';
+type LibraryId = 'attack' | 'infra_attack_patterns' | 'software_research_patterns' | 'capec' | 'cwe' | 'owasp' | 'environment_catalog';
 
 const LIBRARIES: Array<{ id: LibraryId; name: string; description: string; icon: React.ReactNode }> = [
   { id: 'attack', name: 'MITRE ATT&CK', description: 'Adversary tactics, techniques, and procedures', icon: <BookOpen size={14} /> },
+  {
+    id: 'infra_attack_patterns',
+    name: 'Infrastructure Attack Patterns',
+    description: 'Curated cross-domain attack types against management planes, OT, timing, physical systems, remote access, and facility technology',
+    icon: <Network size={14} />,
+  },
+  {
+    id: 'software_research_patterns',
+    name: 'Software Security Research Patterns',
+    description: 'Defensive reverse-engineering, adversarial test-theme, and vulnerability-triage patterns for mapping software attack surfaces, trust boundaries, and hardening priorities',
+    icon: <BookOpen size={14} />,
+  },
   { id: 'capec', name: 'CAPEC', description: 'Common attack pattern enumeration and classification', icon: <BookOpen size={14} /> },
   { id: 'cwe', name: 'CWE', description: 'Common weakness enumeration', icon: <BookOpen size={14} /> },
-  { id: 'owasp', name: 'OWASP', description: 'Open Web Application Security Project references', icon: <BookOpen size={14} /> },
+  { id: 'owasp', name: 'OWASP', description: 'OWASP Top 10 and adjacent security project references across web, API, mobile, AI, infrastructure, and machine identity risk domains', icon: <BookOpen size={14} /> },
   { id: 'environment_catalog', name: 'Environment Catalog', description: 'Hierarchical planning models for industrial, telecoms, transport, defence, energy, and facility environments', icon: <Layers3 size={14} /> },
 ];
 
@@ -38,6 +50,8 @@ function stringifyCatalogNode(node: EnvironmentCatalogNode): string {
     node.label,
     node.description,
     node.category,
+    ...(node.shared_concepts || []).map((concept) => concept.label),
+    ...(node.related_catalogs || []).map((catalog) => catalog.name),
     ...(node.attack_surfaces || []),
     ...(node.telemetry || []),
     ...(node.management_interfaces || []),
@@ -112,6 +126,15 @@ function CatalogNodeCard({
                 </span>
               )}
             </div>
+            {node.shared_concepts?.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {node.shared_concepts.map((concept) => (
+                  <span key={concept.id} className="rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-[10px] text-primary">
+                    {concept.label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <p className="text-xs leading-relaxed text-muted-foreground">{node.description}</p>
             <div className="grid gap-2 sm:grid-cols-2">
               {node.common_protocols?.length ? (
@@ -151,6 +174,18 @@ function CatalogNodeCard({
                 </div>
               ) : null}
             </div>
+            {node.related_catalogs?.length ? (
+              <div>
+                <div className="text-[10px] font-semibold uppercase text-muted-foreground">Also Seen In</div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {node.related_catalogs.map((catalog) => (
+                    <span key={catalog.id} className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                      {catalog.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {selectedNodeId && (
               <button
                 onClick={() => onAdd(node)}
@@ -218,6 +253,16 @@ export function ReferencesView() {
   });
 
   const { data: attackData } = useQuery({ queryKey: ['references', 'attack', '', ''], queryFn: () => api.browseReferences('attack', '', ''), staleTime: 60_000 });
+  const { data: infraAttackPatternsData } = useQuery({
+    queryKey: ['references', 'infra_attack_patterns', '', ''],
+    queryFn: () => api.browseReferences('infra_attack_patterns', '', ''),
+    staleTime: 60_000,
+  });
+  const { data: softwareResearchPatternsData } = useQuery({
+    queryKey: ['references', 'software_research_patterns', '', ''],
+    queryFn: () => api.browseReferences('software_research_patterns', '', ''),
+    staleTime: 60_000,
+  });
   const { data: capecData } = useQuery({ queryKey: ['references', 'capec', '', ''], queryFn: () => api.browseReferences('capec', '', ''), staleTime: 60_000 });
   const { data: cweData } = useQuery({ queryKey: ['references', 'cwe', '', ''], queryFn: () => api.browseReferences('cwe', '', ''), staleTime: 60_000 });
   const { data: owaspData } = useQuery({ queryKey: ['references', 'owasp', '', ''], queryFn: () => api.browseReferences('owasp', '', ''), staleTime: 60_000 });
@@ -247,6 +292,8 @@ export function ReferencesView() {
 
   const badgeCounts: Record<string, number> = {
     attack: attackData?.total ?? 0,
+    infra_attack_patterns: infraAttackPatternsData?.total ?? 0,
+    software_research_patterns: softwareResearchPatternsData?.total ?? 0,
     capec: capecData?.total ?? 0,
     cwe: cweData?.total ?? 0,
     owasp: owaspData?.total ?? 0,
@@ -550,6 +597,18 @@ export function ReferencesView() {
                       </span>
                     ))}
                   </div>
+                  {selectedCatalog.shared_concepts?.length ? (
+                    <div className="mt-3">
+                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Cross-Environment Concepts</div>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedCatalog.shared_concepts.map((concept) => (
+                          <span key={concept.id} className="rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary">
+                            {concept.label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 {selectedCatalogSummary ? (

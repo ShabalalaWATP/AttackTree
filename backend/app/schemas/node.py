@@ -89,9 +89,13 @@ class DetectionSummary(BaseModel):
 
 class ReferenceMappingSummary(BaseModel):
     id: str
+    node_id: str
     framework: str
     ref_id: str
     ref_name: str
+    confidence: Optional[float] = None
+    rationale: str
+    source: str
     model_config = {"from_attributes": True}
 
 

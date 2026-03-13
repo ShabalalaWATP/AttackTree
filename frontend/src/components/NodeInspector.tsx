@@ -14,6 +14,7 @@ import {
 } from '@/types';
 import { cn } from '@/utils/cn';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { ReferencePicker } from '@/components/ReferencePicker';
 import toast from 'react-hot-toast';
 import { X, Plus, Trash2, Save, HelpCircle, Tag, Scale, FlaskConical, MessageSquare, Send } from 'lucide-react';
 import { RiskChallengerPanel } from '@/components/RiskChallengerPanel';
@@ -132,7 +133,7 @@ function getEditableNodeDraft(node: AttackNodeData): Partial<AttackNodeData> {
 
 export function NodeInspector() {
   const queryClient = useQueryClient();
-  const { selectedNodeId, nodes, setInspectorOpen, pushUndo, updateNodeLocal } = useStore();
+  const { selectedNodeId, nodes, currentProject, setInspectorOpen, pushUndo } = useStore();
   const node = nodes.find(n => n.id === selectedNodeId);
   const [activeTab, setActiveTab] = useState<'details' | 'scoring' | 'research' | 'mitigations' | 'mappings' | 'comments' | 'notes'>('details');
   const [localData, setLocalData] = useState<Partial<AttackNodeData>>({});
@@ -162,16 +163,19 @@ export function NodeInspector() {
 
   const save = useCallback(async () => {
     if (!selectedNodeId || !dirty) return;
+    const projectId = node?.project_id || currentProject?.id;
+    if (!projectId) return;
     try {
       pushUndo('Edit node');
-      const updated = await api.updateNode(selectedNodeId, localData);
-      updateNodeLocal(selectedNodeId, updated);
+      await api.updateNode(selectedNodeId, localData);
+      const refreshedNodes = await api.listNodes(projectId);
+      useStore.getState().setNodes(refreshedNodes);
       setDirty(false);
       toast.success('Saved');
     } catch (e: any) {
       toast.error(e.message);
     }
-  }, [selectedNodeId, localData, dirty, pushUndo, updateNodeLocal]);
+  }, [selectedNodeId, localData, dirty, node?.project_id, currentProject?.id, pushUndo]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -199,10 +203,18 @@ export function NodeInspector() {
     } catch (e: any) { toast.error(e.message); }
   };
 
-  const addMapping = async (framework: string, refId: string, refName: string) => {
+  const addMapping = async (mapping: { framework: string; ref_id: string; ref_name: string; score?: number; reasons?: string[] }) => {
     if (!selectedNodeId || !node) return;
     try {
-      await api.createMapping({ node_id: selectedNodeId, framework, ref_id: refId, ref_name: refName });
+      await api.createMapping({
+        node_id: selectedNodeId,
+        framework: mapping.framework,
+        ref_id: mapping.ref_id,
+        ref_name: mapping.ref_name,
+        confidence: typeof mapping.score === 'number' ? Math.max(0.1, Math.min(1, mapping.score / 1000)) : null,
+        rationale: mapping.reasons?.slice(0, 3).join(', ') || '',
+        source: 'manual',
+      });
       const nodes = await api.listNodes(node.project_id);
       useStore.getState().setNodes(nodes);
     } catch (e: any) { toast.error(e.message); }
@@ -573,20 +585,29 @@ export function NodeInspector() {
 
         {activeTab === 'mappings' && (
           <>
-            <MappingAdder nodeId={node.id} onAdd={addMapping} />
+            <MappingAdder node={node} currentProject={currentProject} onAdd={addMapping} />
             {node.reference_mappings?.map(r => (
-              <div key={r.id} className="flex items-center justify-between p-2 rounded border text-xs">
+              <div key={r.id} className="rounded border p-2 text-xs space-y-1">
                 <div>
                   <span className="font-bold uppercase">{r.framework}</span>
                   <span className="ml-2 font-mono">{r.ref_id}</span>
                   <span className="ml-2 text-muted-foreground">{r.ref_name}</span>
                 </div>
-                <button
-                  onClick={() => setPendingDelete({ type: 'mapping', id: r.id, title: `${r.framework} ${r.ref_id}` })}
-                  className="text-destructive"
-                >
-                  <Trash2 size={12} />
-                </button>
+                {(r.source || r.rationale || r.confidence != null) && (
+                  <div className="text-[10px] text-muted-foreground">
+                    {r.source ? `Source: ${r.source}` : ''}
+                    {r.confidence != null ? `${r.source ? ' · ' : ''}Confidence: ${Math.round((r.confidence || 0) * 100)}%` : ''}
+                    {r.rationale ? ` · ${r.rationale}` : ''}
+                  </div>
+                )}
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setPendingDelete({ type: 'mapping', id: r.id, title: `${r.framework} ${r.ref_id}` })}
+                    className="text-destructive"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
               </div>
             ))}
           </>
@@ -1113,52 +1134,29 @@ function TagsSection({ nodeId, projectId, tags }: { nodeId: string; projectId: s
   );
 }
 
-function MappingAdder({ nodeId, onAdd }: { nodeId: string; onAdd: (framework: string, refId: string, refName: string) => void }) {
-  const [fw, setFw] = useState('attack');
-  const [refId, setRefId] = useState('');
-  const [refName, setRefName] = useState('');
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [query, setQuery] = useState('');
-
-  const search = async () => {
-    if (!query.trim()) return;
-    try {
-      const result = await api.browseReferences(fw, query);
-      setSearchResults(result.items.slice(0, 10));
-    } catch {
-      setSearchResults([]);
-    }
-  };
-
+function MappingAdder({
+  node,
+  currentProject,
+  onAdd,
+}: {
+  node: AttackNodeData;
+  currentProject: { context_preset?: string; root_objective?: string; description?: string } | null;
+  onAdd: (item: { framework: string; ref_id: string; ref_name: string; score?: number; reasons?: string[] }) => void;
+}) {
   return (
     <div className="space-y-2">
-      <div className="flex gap-1">
-        <select value={fw} onChange={(e) => { setFw(e.target.value); setSearchResults([]); }} className="input-field !w-auto !py-1">
-          <option value="attack">ATT&CK</option>
-          <option value="capec">CAPEC</option>
-          <option value="cwe">CWE</option>
-          <option value="owasp">OWASP</option>
-        </select>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} placeholder="Search references..." className="input-field !py-1" />
-        <button onClick={search} className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground shrink-0">Search</button>
-      </div>
-      {searchResults.map((item, i) => (
-        <button
-          key={i}
-          onClick={() => { onAdd(fw, item.id, item.name); setSearchResults([]); setQuery(''); toast.success(`Added ${item.id}`); }}
-          className="w-full text-left p-2 rounded border hover:bg-accent text-xs"
-        >
-          <span className="font-mono font-bold">{item.id}</span>
-          <span className="ml-2">{item.name}</span>
-        </button>
-      ))}
-      <div className="flex gap-1">
-        <input value={refId} onChange={(e) => setRefId(e.target.value)} placeholder="Ref ID (e.g., T1566)" className="input-field !py-1" />
-        <input value={refName} onChange={(e) => setRefName(e.target.value)} placeholder="Name" className="input-field !py-1" />
-        <button onClick={() => { if (refId) { onAdd(fw, refId, refName); setRefId(''); setRefName(''); } }} className="px-2 py-1 text-xs rounded border hover:bg-accent shrink-0">
-          <Plus size={13} />
-        </button>
-      </div>
+      <ReferencePicker
+        artifactType="node_mapping"
+        contextPreset={currentProject?.context_preset || ''}
+        objective={currentProject?.root_objective || ''}
+        scope={currentProject?.description || ''}
+        targetKind={node.node_type}
+        targetSummary={[node.title, node.description, node.attack_surface, node.platform].filter(Boolean).join(' ')}
+        onAdd={(item) => {
+          onAdd(item);
+          toast.success(`Added ${item.ref_id}`);
+        }}
+      />
     </div>
   );
 }

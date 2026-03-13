@@ -8,6 +8,7 @@ import { formatContextPreset } from '@/utils/contextPresets';
 import toast from 'react-hot-toast';
 import { Brain, Send, Loader2, Trash2, Sparkles, Copy, Crosshair, Network, ShieldCheck, Route, Target } from 'lucide-react';
 import { MarkdownContent } from '@/components/MarkdownContent';
+import { useAdvisorPageContext } from '@/hooks/useAdvisorPageContext';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -211,6 +212,28 @@ export function BrainstormView() {
   const treeContext = useMemo(() => buildTreeContext(nodes), [nodes]);
   const contextPackets = useMemo(() => buildContextPackets(currentProject, nodes), [currentProject, nodes]);
   const quickPrompts = useMemo(() => buildQuickPrompts(activeFocus, currentProject, nodes), [activeFocus, currentProject, nodes]);
+  const advisorContext = useMemo(() => ({
+    view: 'brainstorm' as const,
+    title: currentProject ? `${currentProject.name} Brainstorm` : 'Brainstorm',
+    summary: `Brainstorm session focused on ${activeFocus.label.toLowerCase()} with ${technicalDepth === 'deep_technical' ? 'deep technical' : 'standard'} depth.`,
+    packets: [
+      currentProject ? `Workspace: ${currentProject.name}` : '',
+      `Focus mode: ${activeFocus.label}`,
+      `Planning profile: ${selectedPlanningProfile.label}`,
+      `Technical depth: ${technicalDepth === 'deep_technical' ? 'Deep technical' : 'Standard'}`,
+      includeTreeContext ? `Tree context included from ${nodes.length} nodes` : 'Tree context excluded from this brainstorm session',
+      messages.length ? `Conversation turns shown: ${messages.length}` : '',
+    ],
+  }), [
+    activeFocus.label,
+    currentProject,
+    includeTreeContext,
+    messages.length,
+    nodes.length,
+    selectedPlanningProfile.label,
+    technicalDepth,
+  ]);
+  useAdvisorPageContext(advisorContext);
 
   const sendMessage = useCallback(async (userMsg?: string, resetConversation = false) => {
     if (!providerId) {
@@ -235,6 +258,7 @@ export function BrainstormView() {
     try {
       const res = await api.aiBrainstorm({
         provider_id: providerId,
+        project_id: currentProject?.id,
         project_name: currentProject?.name ?? '',
         root_objective: currentProject?.root_objective ?? '',
         context_preset: currentProject?.context_preset ?? '',

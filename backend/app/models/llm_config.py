@@ -48,3 +48,28 @@ class LLMJobHistory(Base):
     tokens_used = Column(Integer, default=0)
     duration_ms = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class LLMAgentRun(Base):
+    __tablename__ = "llm_agent_runs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    provider_id = Column(String(36), nullable=True, index=True)
+    project_id = Column(String(36), nullable=True, index=True)
+    mode = Column(String(30), default="generate")
+    status = Column(String(30), default="queued")  # queued, processing, completed, completed_with_warnings, failed
+    current_stage = Column(String(50), default="structure")
+    nodes_created = Column(Integer, default=0)
+    passes_completed = Column(Integer, default=0)
+    total_passes = Column(Integer, default=4)
+    warnings = Column(JSON, default=list)
+    checkpoints = Column(JSON, default=dict)
+    error_message = Column(Text, default="")
+    model_used = Column(String(200), default="")
+    tokens_used = Column(Integer, default=0)
+    duration_ms = Column(Integer, default=0)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

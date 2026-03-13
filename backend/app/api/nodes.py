@@ -11,9 +11,13 @@ from ..models.detection import Detection
 from ..models.reference_mapping import ReferenceMapping
 from ..schemas.node import NodeCreate, NodeUpdate, NodeResponse
 from ..services.auth import get_current_user_id
-from ..services.risk_engine import compute_inherent_risk, compute_residual_risk, compute_advanced_risk
 from ..services.access_control import require_node_access, require_project_access
 from ..services.audit import log_event
+from ..services.tree_service import (
+    load_validated_project_tree,
+    recalculate_project_tree_scores,
+    validate_parent_assignment,
+)
 
 router = APIRouter(prefix="/nodes", tags=["nodes"])
 
@@ -42,17 +46,14 @@ async def list_nodes(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=NodeResponse, status_code=201)
 async def create_node(data: NodeCreate, db: AsyncSession = Depends(get_db)):
-    await require_project_access(data.project_id, db)
+    project = await require_project_access(data.project_id, db)
+    await validate_parent_assignment(db, project_id=project.id, parent_id=data.parent_id)
     node = Node(**data.model_dump())
-
-    # Compute initial scores
-    node.inherent_risk = compute_inherent_risk(
-        node.likelihood, node.impact, node.effort,
-        node.exploitability, node.detectability,
-    )
 
     db.add(node)
     await log_event(db, node.project_id, "node_created", "node", node.id, {"title": node.title})
+    await db.flush()
+    await recalculate_project_tree_scores(db, node.project_id)
     await db.commit()
     await db.refresh(node)
 
@@ -94,28 +95,19 @@ async def update_node(node_id: str, data: NodeUpdate, db: AsyncSession = Depends
     )
 
     update_data = data.model_dump(exclude_unset=True)
+    if "parent_id" in update_data:
+        await validate_parent_assignment(
+            db,
+            project_id=node.project_id,
+            parent_id=update_data.get("parent_id"),
+            node_id=node.id,
+        )
     for key, value in update_data.items():
         setattr(node, key, value)
 
-    # Recompute scores - simple mode
-    node.inherent_risk = compute_inherent_risk(
-        node.likelihood, node.impact, node.effort,
-        node.exploitability, node.detectability,
-    )
-
-    # Also compute advanced risk if probability is set
-    if node.probability is not None:
-        advanced = compute_advanced_risk(node.probability, node.impact, node.cost_to_attacker)
-        if advanced is not None and node.inherent_risk is None:
-            node.inherent_risk = advanced
-
-    # Compute residual risk
-    max_eff = 0.0
-    if node.mitigations:
-        max_eff = max((m.effectiveness for m in node.mitigations), default=0.0)
-    node.residual_risk = compute_residual_risk(node.inherent_risk, max_eff)
-
     await log_event(db, node.project_id, "node_updated", "node", node_id, {"title": node.title, "fields": list(update_data.keys())})
+    await db.flush()
+    await recalculate_project_tree_scores(db, node.project_id)
     await db.commit()
     await db.refresh(node)
     return _node_to_response(node)
@@ -124,6 +116,7 @@ async def update_node(node_id: str, data: NodeUpdate, db: AsyncSession = Depends
 @router.delete("/{node_id}", status_code=204)
 async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)):
     node = await require_node_access(node_id, db)
+    project_id = node.project_id
 
     # Re-parent children to this node's parent
     children_result = await db.execute(
@@ -135,6 +128,8 @@ async def delete_node(node_id: str, db: AsyncSession = Depends(get_db)):
 
     await log_event(db, node.project_id, "node_deleted", "node", node_id, {"title": node.title})
     await db.delete(node)
+    await db.flush()
+    await recalculate_project_tree_scores(db, project_id)
     await db.commit()
 
 
@@ -188,6 +183,8 @@ async def duplicate_node(node_id: str, db: AsyncSession = Depends(get_db)):
         extended_metadata=dict(original.extended_metadata) if original.extended_metadata else {},
     )
     db.add(new_node)
+    await db.flush()
+    await recalculate_project_tree_scores(db, new_node.project_id)
     await db.commit()
     await db.refresh(new_node)
 
@@ -223,23 +220,17 @@ async def bulk_update_nodes(data: BulkUpdateRequest, db: AsyncSession = Depends(
     nodes = result.scalars().all()
     if not nodes:
         raise HTTPException(404, "No matching nodes found")
+    if "parent_id" in data.updates:
+        raise HTTPException(400, "Bulk parent changes are not supported")
 
     allowed_fields = {c.name for c in Node.__table__.columns} - {"id", "project_id", "created_at", "updated_at"}
     for node in nodes:
         for key, value in data.updates.items():
             if key in allowed_fields:
                 setattr(node, key, value)
-        # Recompute risk if scoring fields changed
-        scoring_keys = {"likelihood", "impact", "effort", "exploitability", "detectability"}
-        if scoring_keys & data.updates.keys():
-            node.inherent_risk = compute_inherent_risk(
-                node.likelihood,
-                node.impact,
-                node.effort,
-                node.exploitability,
-                node.detectability,
-            )
-
+    await db.flush()
+    for project_id in sorted({node.project_id for node in nodes}):
+        await recalculate_project_tree_scores(db, project_id)
     await db.commit()
     return {"updated": len(nodes)}
 
@@ -258,6 +249,22 @@ async def bulk_delete_nodes(data: BulkDeleteRequest, db: AsyncSession = Depends(
     nodes = result.scalars().all()
     if not nodes:
         raise HTTPException(404, "No matching nodes found")
+    touched_project_ids = {node.project_id for node in nodes}
+    node_map = {node.id: node for node in nodes}
+
+    def surviving_parent_id(node: Node) -> str | None:
+        parent_id = node.parent_id
+        seen: set[str] = set()
+        while parent_id and parent_id in ids_set and parent_id not in seen:
+            seen.add(parent_id)
+            parent = node_map.get(parent_id)
+            parent_id = parent.parent_id if parent else None
+        return parent_id if parent_id not in ids_set else None
+
+    surviving_parent_by_node = {
+        node.id: surviving_parent_id(node)
+        for node in nodes
+    }
 
     for node in nodes:
         # Re-parent children that are not also being deleted
@@ -266,10 +273,13 @@ async def bulk_delete_nodes(data: BulkDeleteRequest, db: AsyncSession = Depends(
         )
         for child in children_result.scalars().all():
             if child.id not in ids_set:
-                child.parent_id = node.parent_id
+                child.parent_id = surviving_parent_by_node[node.id]
         await log_event(db, node.project_id, "node_deleted", "node", node.id, {"title": node.title, "bulk": True})
         await db.delete(node)
 
+    await db.flush()
+    for project_id in sorted(touched_project_ids):
+        await recalculate_project_tree_scores(db, project_id)
     await db.commit()
     return {"deleted": len(nodes)}
 
@@ -287,27 +297,21 @@ class CriticalPathResponse(BaseModel):
 async def get_critical_path(project_id: str, db: AsyncSession = Depends(get_db)):
     """Compute the highest-risk root-to-leaf path in the attack tree."""
     await require_project_access(project_id, db)
-    result = await db.execute(
-        select(Node)
-        .where(Node.project_id == project_id)
-        .options(selectinload(Node.mitigations))
-    )
-    nodes = result.scalars().all()
+    tree = await load_validated_project_tree(db, project_id, include_mitigations=True)
+    nodes = tree.nodes
     if not nodes:
         return CriticalPathResponse(path=[], cumulative_risk=0.0, path_details=[], all_paths=[])
 
-    # Build adjacency
-    node_map = {n.id: n for n in nodes}
-    children_map: dict[str, list[str]] = {}
-    roots: list[str] = []
-    for n in nodes:
-        if not n.parent_id or n.parent_id not in node_map:
-            roots.append(n.id)
-        else:
-            children_map.setdefault(n.parent_id, []).append(n.id)
+    node_map = tree.node_map
+    child_ids_by_parent = {
+        parent_id: [child.id for child in children]
+        for parent_id, children in tree.children_map.items()
+        if parent_id is not None
+    }
 
     def node_risk(n: Node) -> float:
-        return n.inherent_risk or n.rolled_up_risk or 0.0
+        # Path scoring should use only the node's own risk so parent roll-ups are not counted twice.
+        return n.inherent_risk or 0.0
 
     # DFS to enumerate all root-to-leaf paths
     all_paths: list[tuple[list[str], float]] = []
@@ -317,7 +321,7 @@ async def get_critical_path(project_id: str, db: AsyncSession = Depends(get_db))
         risk = node_risk(node)
         new_cum = cum_risk + risk
         path.append(nid)
-        kids = children_map.get(nid, [])
+        kids = child_ids_by_parent.get(nid, [])
         if not kids:
             all_paths.append((list(path), round(new_cum, 2)))
         else:
@@ -325,8 +329,8 @@ async def get_critical_path(project_id: str, db: AsyncSession = Depends(get_db))
                 dfs(kid, path, new_cum)
         path.pop()
 
-    for root in roots:
-        dfs(root, [], 0.0)
+    for root in tree.roots:
+        dfs(root.id, [], 0.0)
 
     if not all_paths:
         return CriticalPathResponse(path=[], cumulative_risk=0.0, path_details=[], all_paths=[])

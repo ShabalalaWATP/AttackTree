@@ -349,7 +349,7 @@ TELECOMS_5G_CORE_CATALOG = {
     "sector": "Telecommunications / 5G Core / Carrier Cloud",
     "description": (
         "Reference decomposition of a 5G core environment, including carrier operations, service-based core functions, "
-        "cloud and orchestration layers, signalling and roaming edges, subscriber-data systems, and assurance processes."
+        "cloud and orchestration layers, signalling and roaming edges, subscriber-data systems, charging and voice services, and assurance processes."
     ),
     "context_presets": ["telecoms_5g_core"],
     "nodes": [
@@ -400,11 +400,39 @@ TELECOMS_5G_CORE_CATALOG = {
             "common_protocols": ["HTTP/2", "REST", "PFCP", "GTP-U"],
         },
         {
+            "id": "core_policy_slice_charging",
+            "parent_id": "core_network_functions",
+            "label": "NSSF, PCF, CHF/OCS, and Policy or Charging Services",
+            "category": "service",
+            "description": "Network-slice, policy, charging, and quota-control services that decide traffic treatment, charging state, and subscriber experience.",
+        },
+        {
+            "id": "core_user_plane_breakout",
+            "parent_id": "core_network_functions",
+            "label": "UPF Steering, Local Breakout, and Edge User Plane",
+            "category": "ot",
+            "description": "User-plane steering and breakout functions governing traffic anchoring, lawful routing, and low-latency edge service delivery.",
+        },
+        {
             "id": "core_subscriber_voice",
             "parent_id": "core_network_functions",
             "label": "Subscriber Data, IMS, Messaging, and Voice Services",
             "category": "service",
             "description": "Subscriber records, IMS elements, messaging, and voice-service components with high confidentiality and service impact.",
+        },
+        {
+            "id": "core_udm_udr_hss_eir",
+            "parent_id": "core_network_functions",
+            "label": "UDM, UDR, HSS/HLR, EIR, and SIM Provisioning",
+            "category": "service",
+            "description": "Subscriber and device identity platforms storing provisioning state, IMEI policy, authentication context, and lifecycle information for mobile services.",
+        },
+        {
+            "id": "core_ims_sbc_messaging",
+            "parent_id": "core_network_functions",
+            "label": "IMS CSCF, SBC, SMSC, RCS, and Voice or Messaging Platforms",
+            "category": "service",
+            "description": "Voice, messaging, and interconnect service stacks supporting SIP sessions, SMS, RCS, and subscriber-facing communications services.",
         },
         {
             "id": "core_cloud_management",
@@ -423,6 +451,14 @@ TELECOMS_5G_CORE_CATALOG = {
             "example_technologies": ["Kubernetes", "OpenStack", "OpenShift", "VMware Telco Cloud"],
         },
         {
+            "id": "core_timing_distribution",
+            "parent_id": "core_cloud_management",
+            "label": "ePRTC, PTP Grandmasters, Boundary Clocks, and Time Distribution",
+            "category": "networking",
+            "description": "Carrier timing appliances and distribution paths providing traceable time to cloud platforms, UPFs, charging systems, and RAN-facing services.",
+            "common_protocols": ["PTP", "SyncE", "NTP"],
+        },
+        {
             "id": "core_ci_cd_secrets",
             "parent_id": "core_cloud_management",
             "label": "CI/CD, Images, and Secrets Management",
@@ -430,11 +466,32 @@ TELECOMS_5G_CORE_CATALOG = {
             "description": "Release pipelines, image registries, credential stores, and automation used to deploy or patch the core.",
         },
         {
+            "id": "core_cnf_onboarding_gitops",
+            "parent_id": "core_cloud_management",
+            "label": "CNF Onboarding, GitOps, Helm, and Package Management",
+            "category": "it",
+            "description": "Lifecycle tooling used to onboard vendor packages, apply Helm charts, manage GitOps state, and push changes into production core functions.",
+        },
+        {
+            "id": "core_service_mesh_pki",
+            "parent_id": "core_cloud_management",
+            "label": "Service Mesh, mTLS, and Network Function PKI",
+            "category": "it",
+            "description": "Certificate, mTLS, and service-mesh control layers that authenticate network functions and secure east-west communication.",
+        },
+        {
             "id": "core_oam_observability",
             "parent_id": "core_cloud_management",
             "label": "OAM, Element Managers, and Observability",
             "category": "it",
             "description": "Carrier tooling for provisioning, alarms, KPI analysis, and software rollouts across network functions.",
+        },
+        {
+            "id": "core_oss_bss_subscriber_admin",
+            "parent_id": "core_cloud_management",
+            "label": "OSS, BSS, Subscriber Admin, and Provisioning Systems",
+            "category": "it",
+            "description": "Business and operational support systems used to provision subscribers, activate services, manage billing context, and coordinate carrier operations.",
         },
         {
             "id": "core_interconnect_edges",
@@ -453,11 +510,25 @@ TELECOMS_5G_CORE_CATALOG = {
             "common_protocols": ["SS7", "Diameter", "SIP", "MAP/CAP"],
         },
         {
+            "id": "core_sepp_ipx_roaming",
+            "parent_id": "core_interconnect_edges",
+            "label": "SEPP, IPX, and Roaming Security Functions",
+            "category": "networking",
+            "description": "Roaming security and inter-provider exchange services mediating signalling, policy, and subscriber context across external carrier boundaries.",
+        },
+        {
             "id": "core_sba_api_exposure",
             "parent_id": "core_interconnect_edges",
             "label": "SBA Exposure, API Gateways, and Service Mesh",
             "category": "networking",
             "description": "North-south and east-west exposure layers that govern authentication, discovery, and policy between network functions.",
+        },
+        {
+            "id": "core_nef_scp_partner_apis",
+            "parent_id": "core_interconnect_edges",
+            "label": "NEF, SCP, Partner APIs, and Exposure Mediation",
+            "category": "networking",
+            "description": "Exposure and mediation layers that publish network capabilities, service discovery, and partner-facing APIs into controlled or semi-controlled external consumers.",
         },
         {
             "id": "core_sensitive_compliance",
@@ -475,11 +546,25 @@ TELECOMS_5G_CORE_CATALOG = {
             "description": "Stores and systems governing subscriber auth, certificate trust, and security associations across the core.",
         },
         {
+            "id": "core_hsm_key_material",
+            "parent_id": "core_sensitive_compliance",
+            "label": "HSMs, Key Material, and Subscriber Trust Anchors",
+            "category": "safety",
+            "description": "Cryptographic modules and secret stores protecting signing material, subscriber authentication roots, and operator trust anchors.",
+        },
+        {
             "id": "core_lawful_intercept",
             "parent_id": "core_sensitive_compliance",
             "label": "Lawful Intercept, Compliance, and Sensitive Mediation",
             "category": "service",
             "description": "Highly sensitive mediation and warrant-handling functions whose compromise enables surveillance abuse or blind spots.",
+        },
+        {
+            "id": "core_charging_cdr_mediation",
+            "parent_id": "core_sensitive_compliance",
+            "label": "Charging, CDR, Mediation, and Settlement Platforms",
+            "category": "service",
+            "description": "Billing and mediation services collecting usage records, correlating charging state, and supporting roaming settlement or customer-impact decisions.",
         },
         {
             "id": "core_monitoring_process",
@@ -495,6 +580,20 @@ TELECOMS_5G_CORE_CATALOG = {
             "label": "Fault, Performance, and Trace Assurance",
             "category": "monitoring",
             "description": "Alarm, KPI, and trace data used to detect abuse, service degradation, and anomalous network-function behaviour.",
+        },
+        {
+            "id": "core_signalling_fraud_security",
+            "parent_id": "core_monitoring_process",
+            "label": "Signalling Firewalls, Fraud, and Abuse Detection",
+            "category": "monitoring",
+            "description": "Security analytics and signalling-control layers used to detect roaming abuse, SMS fraud, API misuse, and suspicious subscriber or interconnect behaviour.",
+        },
+        {
+            "id": "core_timing_assurance",
+            "parent_id": "core_monitoring_process",
+            "label": "Timing Assurance, Holdover, and PNT Resilience",
+            "category": "monitoring",
+            "description": "Controls and analytics tracking GNSS loss, grandmaster failover, clock drift, holdover state, and downstream impact on charging, lawful intercept, and ordered event records.",
         },
         {
             "id": "core_change_release_incident",
